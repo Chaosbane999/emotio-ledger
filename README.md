@@ -135,6 +135,16 @@ the file. Without a passcode the app is open — fine locally, not on a domain.
 
 Data lives in the `emotio-ledger-data` volume; back that up, not the container.
 
+**A deployed instance has no book of business.** `seed-data.json` is gitignored,
+so a container built from this repo starts structurally complete and empty. Load
+the real data afterwards, either through the UI or by posting it to the running
+instance over HTTPS.
+
+**Hostinger note:** the Docker Manager's Deploy button writes
+`/docker/<name>/docker-compose.yml` but does not reliably bring the project up —
+it can sit at "Created, 0 containers". If that happens, open the VPS terminal and
+run `cd /docker/<name> && docker compose up -d`.
+
 ## Layout
 
 ```
