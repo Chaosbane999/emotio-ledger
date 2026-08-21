@@ -77,6 +77,7 @@ async function render() {
     if (S.view === 'agency') await renderAgency();
     else if (S.view === 'people') await renderPerson();
     else if (S.view === 'contracts') await renderContracts();
+    else if (S.view === 'internal') await renderInternal();
     else if (S.view === 'schedule') await renderSchedule();
     else await renderSettings();
   } catch (e) {
@@ -295,20 +296,6 @@ async function renderAgency() {
             ${held.map(gridRow).join('')}` : ''}
           ${pipeline.length ? `<tr class="group"><td colspan="${cols.length + 6}">Pipeline — not won yet, not counted in capacity</td></tr>
             ${pipeline.map(gridRow).join('')}` : ''}
-          ${internal ? `<tr class="group"><td colspan="${cols.length + 6}">Internal &amp; training</td></tr>
-            <tr><td class="ini">—</td>
-              <td class="name"><button class="linky" data-contract="${internal.contract_id}">${esc(internal.name)}</button>
-                <span class="sub">budget from each person's utilisation target</span></td>
-              <td class="num">${units(internal.contracted_units)}</td>
-              ${cols.map((p) => {
-                const hh = hoursFor(internal, p.id);
-                return `<td class="num person">${hh ? `<b>${hrs(hh)}</b>` : '<span class="nil">—</span>'}</td>`;
-              }).join('')}
-              <td class="num"><span class="nil">—</span></td>
-              <td class="num">${units(internal.allocated_units)}<span class="sub"><b>${hrs(internal.people_hours)}</b></span></td>
-              <td class="num"><span class="pill ${Math.abs(internal.variance) < 5 ? 'ok' : 'warn'}">${
-                internal.variance < 0 ? `${h(-internal.variance)} over` : `${h(internal.variance)} spare`}</span></td>
-            </tr>` : ''}
         </tbody>
       </table></div>
     </div>`;
@@ -865,6 +852,108 @@ function openContractEditor(c) {
     S.contractId = null; renderContracts();
   });
 }
+
+// ---------------------------------------------------------------------------
+// Internal & training. Hours lead throughout — this is capacity we have chosen
+// not to sell, so clock time is the meaningful measure. Units are shown only
+// because a senior hour still costs more than a junior one.
+// ---------------------------------------------------------------------------
+
+async function renderInternal() {
+  const a = await api(`/api/agency${P()}`);
+  const contract = S.boot.contracts.find((c) => c.type === 'internal');
+  if (!contract) { view().innerHTML = '<p class="muted">No internal contract set up.</p>'; return; }
+  const summary = a.contracts.find((c) => c.type === 'internal');
+
+  const kinds = S.boot.deliverables.filter((d) => d.internal);
+  const hoursOf = (pid, did) => summary.lines
+    .filter((l) => l.person_id === pid && l.deliverable_id === did)
+    .reduce((s, l) => s + l.hours, 0);
+
+  // Anyone with a budget, plus anyone still holding internal hours even after
+  // leaving — otherwise their time is counted in the totals but invisible here.
+  const withHours = new Set(summary.lines.map((l) => l.person_id));
+  const extra = S.boot.people
+    .filter((p) => withHours.has(p.id) && !a.staff.some((s) => s.person_id === p.id))
+    .map((p) => ({ person_id: p.id, name: p.name, utilisation: p.utilisation,
+      available_hours: 0, internal_hours: 0, rate: p.rate, gone: true }));
+
+  const rows = [...a.staff, ...extra].map((p) => {
+    const alloc = kinds.reduce((s, d) => s + hoursOf(p.person_id, d.id), 0);
+    // tolerance matches the quarter-hour display grain, so a 0.03h rounding
+    // difference doesn't paint a zero red
+    return { ...p, alloc, spare: cap2(p.internal_hours - alloc),
+      exempt: !p.gone && p.internal_hours < 0.01 };
+  });
+
+  const budget = rows.reduce((s, r) => s + r.internal_hours, 0);
+  const allocated = rows.reduce((s, r) => s + r.alloc, 0);
+  const exempt = rows.filter((r) => r.exempt);
+
+  view().innerHTML = `
+    <div class="stats">
+      <div class="stat"><span class="k">Budget</span><span class="v">${hrs(budget)}</span>
+        <span class="s">what each target leaves unsold</span></div>
+      <div class="stat"><span class="k">Allocated</span><span class="v">${hrs(allocated)}</span>
+        <span class="s">${pct(budget ? (allocated / budget) * 100 : 0)} of the budget used</span></div>
+      <div class="stat ${budget - allocated < -0.01 ? 'bad' : 'good'}">
+        <span class="k">Spare</span><span class="v">${hrs(budget - allocated)}</span>
+        <span class="s">${budget - allocated < -0.01 ? 'over the internal budget' : 'internal time not yet planned'}</span></div>
+    </div>
+
+    ${exempt.length ? `<div class="banner info"><div>
+      <b>${esc(exempt.map((r) => r.name).join(' and '))} ${exempt.length > 1 ? 'carry' : 'carries'} no internal budget.</b>
+      Their utilisation target is 100%, so every available hour is client&#8209;facing.
+      Change it on the Settings page if that stops being true.
+    </div></div>` : ''}
+
+    <div class="card">
+      <header><h2>Internal &amp; training</h2><p>Type hours straight into the grid</p></header>
+      <div class="scroll"><table class="big">
+        <thead><tr>
+          <th>Person</th><th class="num">Target</th><th class="num">Available</th><th class="num">Budget</th>
+          ${kinds.map((d) => `<th class="num person">${esc(d.name)}</th>`).join('')}
+          <th class="num">Allocated</th><th class="num">Spare</th>
+        </tr></thead>
+        <tbody>${rows.map((r) => `<tr class="${r.gone ? 'archived' : ''}">
+          <td><button class="linky" data-person="${r.person_id}">${esc(r.name)}</button></td>
+          <td class="num">${r.gone ? '—' : pct(r.utilisation * 100)}</td>
+          <td class="num">${r.gone ? '—' : hrs(r.available_hours)}</td>
+          <td class="num">${r.gone ? '<span class="nil">no longer active</span>'
+            : r.exempt ? '<span class="nil">none</span>' : hrs(r.internal_hours)}</td>
+          ${kinds.map((d) => `<td class="num person"><input type="number" class="inh" step="0.25" min="0"
+            data-p="${r.person_id}" data-d="${d.id}" value="${h(hoursOf(r.person_id, d.id))}"></td>`).join('')}
+          <td class="num">${hrs(r.alloc)}</td>
+          <td class="num spare ${r.spare < -0.125 ? 'neg' : 'pos'}">${
+            (r.exempt || r.gone) && !r.alloc ? '—' : hrs(r.spare)}</td>
+        </tr>`).join('')}
+        <tr class="total">
+          <td>Total</td><td class="num"></td>
+          <td class="num">${hrs(rows.reduce((s, r) => s + r.available_hours, 0))}</td>
+          <td class="num">${hrs(budget)}</td>
+          ${kinds.map((d) => `<td class="num person">${hrs(rows.reduce((s, r) => s + hoursOf(r.person_id, d.id), 0))}</td>`).join('')}
+          <td class="num">${hrs(allocated)}</td>
+          <td class="num">${hrs(budget - allocated)}</td>
+        </tr></tbody>
+      </table></div>
+      <div class="body" style="border-top:1px solid var(--rule)">
+        <p class="muted">Budget is <span class="mono">available hours × (1 − utilisation target)</span>
+        for each person, so a 100&#8202;% target leaves none. Hours are the number to plan with:
+        in contract&#8209;value terms the same time is ${units(summary.contracted_units)} budgeted
+        against ${units(summary.allocated_units)} allocated, but a senior hour inflates that
+        figure without adding any capacity.</p>
+      </div>
+    </div>`;
+
+  view().querySelectorAll('.inh').forEach((el) => el.addEventListener('change', async () => {
+    await api('/api/allocation', { body: {
+      contract_id: contract.id, period: S.period, person_id: Number(el.dataset.p),
+      deliverable_id: Number(el.dataset.d), hours: Number(el.value) } });
+    renderInternal();
+  }));
+}
+
+const cap2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 // ---------------------------------------------------------------------------
 // 4 — Schedule. Hours only; units never appear.
