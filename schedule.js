@@ -312,7 +312,7 @@ function toIcs(plan, stamp) {
   const dt = (date, time) => `${date.replace(/-/g, '')}T${time.replace(':', '')}00`;
   const lines = [
     'BEGIN:VCALENDAR', 'VERSION:2.0', 'CALSCALE:GREGORIAN',
-    'PRODID:-//Emotio//Allocation Ledger//EN',
+    'PRODID:-//Emotio//EmotioHours//EN',
     `X-WR-CALNAME:${esc(`${plan.person.name} — ${plan.period}`)}`,
     'X-WR-TIMEZONE:Europe/London',
     ...VTIMEZONE,

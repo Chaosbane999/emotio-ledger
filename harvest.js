@@ -28,7 +28,7 @@ async function api(path, params = {}) {
     headers: {
       Authorization: `Bearer ${token}`,
       'Harvest-Account-Id': String(account),
-      'User-Agent': 'Emotio Allocation Ledger (damon@emotio.co.uk)',
+      'User-Agent': 'EmotioHours (damon@emotio.co.uk)',
       Accept: 'application/json',
     },
   });

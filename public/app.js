@@ -1,4 +1,4 @@
-/* Emotio Allocation Ledger — client.
+/* EmotioHours — client.
    Rule that shapes every screen: hours lead where a person is looking at their
    own month; units lead where the business is looking at contracts.
 

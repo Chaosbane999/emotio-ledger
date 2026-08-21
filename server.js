@@ -397,4 +397,4 @@ if (!get('seeded_at')) {
   catch (e) { console.error('seed failed:', e.message); }
 }
 
-app.listen(PORT, () => console.log(`Allocation Ledger on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`EmotioHours on http://localhost:${PORT}`));

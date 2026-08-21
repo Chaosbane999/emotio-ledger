@@ -1,4 +1,4 @@
-# Emotio Allocation Ledger
+# EmotioHours
 
 Replaces the Marketing Time Allocation Sheet. Contracted units in, team hours
 out, headroom you can hire against, and per-person calendars that know a weekly

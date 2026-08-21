@@ -1,7 +1,7 @@
 {
   "name": "emotio-ledger",
   "version": "1.0.0",
-  "description": "Capacity and time allocation for Emotio — contracted units in, team hours out",
+  "description": "EmotioHours — capacity and time allocation: contracted units in, team hours out",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
