@@ -123,8 +123,11 @@ function personCapacity(person, period) {
     annual_hours: round2(lv.annual_hours),
     sick_hours: round2(lv.sick_hours),
     available_hours: round2(available),
-    // the split that matters: client work vs the internal/training budget
+    // The utilisation target still governs how much is sellable — that is what
+    // protects headroom. What is left over is simply unsold time, not a budget
+    // internal work is measured against.
     client_hours: round2(clientHours),
+    unsold_hours: round2(internalHours),
     internal_hours: round2(internalHours),
     client_units: round2(toUnits(clientHours, person.rate)),
   };
@@ -175,8 +178,11 @@ function contractSummary(contract, period) {
   const tpUnits = tpRows.reduce((s, t) => s + t.units, 0);
   const allocatedUnits = peopleUnits + tpUnits;
 
-  let contractedUnits = contract.monthly_units;
-  if (contract.type === 'internal') contractedUnits = internalBudgetUnits(period);
+  // Internal time has no client and no contracted value, so there is nothing to
+  // reconcile it against. It is simply the hours recorded. Deriving a "budget"
+  // from the utilisation target produced a balance that looked meaningful and
+  // was not — and one dominated by whoever happened to be most expensive.
+  const contractedUnits = contract.type === 'internal' ? 0 : contract.monthly_units;
 
   const availableUnits = contractedUnits + (co.units || 0);
   const variance = round2(availableUnits - allocatedUnits);
@@ -197,7 +203,11 @@ function contractSummary(contract, period) {
     third_party_units: round2(tpUnits),
     allocated_units: round2(allocatedUnits),
     variance,
-    balanced: contract.type === 'pot' ? true : Math.abs(variance) < 0.005,
+    // Neither reconciles monthly: a pot is drawn down across its whole window
+    // in whatever shape suits, and internal time was never sold to anyone.
+    no_balance: contract.type === 'internal' || contract.type === 'pot',
+    balanced: (contract.type === 'pot' || contract.type === 'internal')
+      ? true : Math.abs(variance) < 0.005,
   };
 
   if (contract.type === 'pot') Object.assign(summary, potPosition(contract, period, allocatedUnits));
@@ -246,14 +256,6 @@ function potPosition(contract, period, thisPeriodUnits) {
     pot_overrun: projected > contract.pot_units + 0.005,
     pot_exhausted: remaining <= 0.005,
   };
-}
-
-/** Total internal budget across the team for a period, expressed in units. */
-function internalBudgetUnits(period) {
-  return activePeople().reduce((sum, p) => {
-    const cap = personCapacity(p, period);
-    return sum + toUnits(cap.internal_hours, p.rate);
-  }, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -417,6 +419,6 @@ module.exports = {
   workingDates, workingDays, weekBuckets, monthHours,
   standardRate, toUnits, toHours, round2,
   personCapacity, activePeople,
-  contractSummary, internalBudgetUnits,
+  contractSummary,
   agencySummary, personView,
 };

@@ -54,7 +54,26 @@ app.use((req, res, next) => {
   return res.redirect('/login.html');
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
+// Cache-bust the front end. BUILD changes on every container start, so a
+// deploy always invalidates style.css and app.js in the browser; the HTML
+// itself is never cached, so the new URLs are always picked up.
+const BUILD = require('crypto').createHash('sha1')
+  .update(String(Date.now())).digest('hex').slice(0, 8);
+
+app.get(['/', '/index.html', '/login.html'], (req, res, next) => {
+  const file = req.path === '/' ? 'index.html' : req.path.slice(1);
+  require('fs').readFile(path.join(__dirname, 'public', file), 'utf8', (err, html) => {
+    if (err) return next();
+    res.set('Cache-Control', 'no-store');
+    res.type('html').send(html.replace(/(href|src)="(style\.css|app\.js)"/g, `$1="$2?v=${BUILD}"`));
+  });
+});
+
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, p) => {
+    if (/\.(css|js)$/.test(p)) res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  },
+}));
 
 // ---------------------------------------------------------------------------
 // helpers

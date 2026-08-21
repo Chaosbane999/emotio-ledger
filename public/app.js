@@ -156,8 +156,11 @@ async function renderAgency() {
   const pipeline = a.contracts.filter((c) => c.status === 'pipeline');
   const internal = a.contracts.find((c) => c.type === 'internal');
 
-  const overrun = live.filter((c) => c.variance < -0.005);
-  const underrun = live.filter((c) => c.variance > 0.005);
+  // Only contracts that reconcile month by month can be over or under it.
+  // Pots draw down across their window; internal has no contracted value.
+  const reconciles = live.filter((c) => !c.no_balance);
+  const overrun = reconciles.filter((c) => c.variance < -0.005);
+  const underrun = reconciles.filter((c) => c.variance > 0.005);
   const overrunUnits = overrun.reduce((s, c) => s - c.variance, 0);
   const underrunUnits = underrun.reduce((s, c) => s + c.variance, 0);
   const offBalance = overrun.length + underrun.length;
@@ -216,7 +219,7 @@ async function renderAgency() {
       </div>
       <div class="stat ${offBalance ? 'bad' : 'good'}">
         <span class="k">Out of balance</span>
-        <span class="v">${offBalance}<span class="sep">/</span><span class="alt">${live.length} contracts</span></span>
+        <span class="v">${offBalance}<span class="sep">/</span><span class="alt">${reconciles.length} contracts</span></span>
         <span class="s">${offBalance
           ? [overrun.length ? `${units(overrunUnits)} over` : null,
              underrun.length ? `${units(underrunUnits)} unplanned` : null].filter(Boolean).join(' · ')
@@ -260,7 +263,7 @@ async function renderAgency() {
           <td class="num">${hrs(p.allocated_client_hours)}<span class="sub">${units(p.allocated_client_units)}</span></td>
           <td class="num spare ${p.spare_hours < 0 ? 'neg' : 'pos'}">${hrs(p.spare_hours)}</td>
           <td>${capBar(p.allocated_client_hours, p.client_hours)}<span class="sub">${pct(p.load_pct)}</span></td>
-          <td class="num">${hrs(p.allocated_internal_hours)} <span class="sub">of ${hrs(p.internal_hours)}</span></td>
+          <td class="num">${p.allocated_internal_hours ? hrs(p.allocated_internal_hours) : '<span class="nil">—</span>'}</td>
         </tr>`).join('')}</tbody>
       </table></div>
     </div>
@@ -415,7 +418,7 @@ async function renderPerson() {
 
     <div class="card">
       <header><h2>Internal &amp; training</h2>
-        <p>Budget ${hrs(t.internal_budget_hours)} — the ${pct(100 - v.person.utilisation * 100)} not sold to clients</p></header>
+        <p>Hours booked — not measured against a budget</p></header>
       <div class="scroll"><table>
         <thead><tr><th>Deliverable</th><th class="num">Hours</th><th></th></tr></thead>
         <tbody>${internalDeliverables.map((d) => {
@@ -425,10 +428,7 @@ async function renderPerson() {
               data-d="${d.id}" value="${h(line ? line.hours : 0)}"></td>
             <td class="num">${line ? units(line.units) : ''}</td></tr>`;
         }).join('')}
-        <tr class="total"><td>Total</td><td class="num">${hrs(t.internal_hours)}</td><td></td></tr>
-        <tr><td class="muted">Budget remaining</td>
-          <td class="num" style="color:${t.internal_budget_hours - t.internal_hours < 0 ? 'var(--over)' : 'inherit'}">
-          ${hrs(t.internal_budget_hours - t.internal_hours)}</td><td></td></tr></tbody>
+        <tr class="total"><td>Total</td><td class="num">${hrs(t.internal_hours)}</td><td></td></tr></tbody>
       </table></div>
     </div>
 
@@ -870,78 +870,64 @@ async function renderInternal() {
     .filter((l) => l.person_id === pid && l.deliverable_id === did)
     .reduce((s, l) => s + l.hours, 0);
 
-  // Anyone with a budget, plus anyone still holding internal hours even after
-  // leaving — otherwise their time is counted in the totals but invisible here.
+  // everyone on the team, plus anyone who has left but still holds hours here
   const withHours = new Set(summary.lines.map((l) => l.person_id));
   const extra = S.boot.people
     .filter((p) => withHours.has(p.id) && !a.staff.some((s) => s.person_id === p.id))
-    .map((p) => ({ person_id: p.id, name: p.name, utilisation: p.utilisation,
-      available_hours: 0, internal_hours: 0, rate: p.rate, gone: true }));
+    .map((p) => ({ person_id: p.id, name: p.name, available_hours: 0, gone: true }));
 
-  const rows = [...a.staff, ...extra].map((p) => {
-    const alloc = kinds.reduce((s, d) => s + hoursOf(p.person_id, d.id), 0);
-    // tolerance matches the quarter-hour display grain, so a 0.03h rounding
-    // difference doesn't paint a zero red
-    return { ...p, alloc, spare: cap2(p.internal_hours - alloc),
-      exempt: !p.gone && p.internal_hours < 0.01 };
-  });
+  const rows = [...a.staff, ...extra].map((p) => ({
+    ...p, alloc: kinds.reduce((s, d) => s + hoursOf(p.person_id, d.id), 0),
+  }));
 
-  const budget = rows.reduce((s, r) => s + r.internal_hours, 0);
-  const allocated = rows.reduce((s, r) => s + r.alloc, 0);
-  const exempt = rows.filter((r) => r.exempt);
+  const total = rows.reduce((s, r) => s + r.alloc, 0);
+  const stale = rows.filter((r) => r.gone && r.alloc > 0);
+  const busiest = [...rows].filter((r) => !r.gone).sort((x, y) => y.alloc - x.alloc)[0];
 
   view().innerHTML = `
     <div class="stats">
-      <div class="stat"><span class="k">Budget</span><span class="v">${hrs(budget)}</span>
-        <span class="s">what each target leaves unsold</span></div>
-      <div class="stat"><span class="k">Allocated</span><span class="v">${hrs(allocated)}</span>
-        <span class="s">${pct(budget ? (allocated / budget) * 100 : 0)} of the budget used</span></div>
-      <div class="stat ${budget - allocated < -0.01 ? 'bad' : 'good'}">
-        <span class="k">Spare</span><span class="v">${hrs(budget - allocated)}</span>
-        <span class="s">${budget - allocated < -0.01 ? 'over the internal budget' : 'internal time not yet planned'}</span></div>
+      <div class="stat"><span class="k">Internal hours</span><span class="v">${hrs(total)}</span>
+        <span class="s">recorded this month across ${rows.filter((r) => r.alloc > 0).length} people</span></div>
+      ${kinds.map((d) => {
+        const dh = rows.reduce((s, r) => s + hoursOf(r.person_id, d.id), 0);
+        return `<div class="stat"><span class="k">${esc(d.name)}</span><span class="v">${hrs(dh)}</span>
+          <span class="s">${pct(total ? (dh / total) * 100 : 0)} of internal time</span></div>`;
+      }).join('')}
     </div>
 
-    ${exempt.length ? `<div class="banner info"><div>
-      <b>${esc(exempt.map((r) => r.name).join(' and '))} ${exempt.length > 1 ? 'carry' : 'carries'} no internal budget.</b>
-      Their utilisation target is 100%, so every available hour is client&#8209;facing.
-      Change it on the Settings page if that stops being true.
+    ${stale.length ? `<div class="banner"><div>
+      <b>${esc(stale.map((r) => r.name).join(', '))} still ${stale.length > 1 ? 'hold' : 'holds'}
+      ${hrs(stale.reduce((s, r) => s + r.alloc, 0))} of internal time but ${stale.length > 1 ? 'are' : 'is'} no longer active.</b><br>
+      Clear the hours below, or archive them in Settings.
     </div></div>` : ''}
 
     <div class="card">
-      <header><h2>Internal &amp; training</h2><p>Type hours straight into the grid</p></header>
+      <header><h2>Internal &amp; training</h2><p>Hours recorded — there is nothing to reconcile this against</p></header>
       <div class="scroll"><table class="big">
         <thead><tr>
-          <th>Person</th><th class="num">Target</th><th class="num">Available</th><th class="num">Budget</th>
+          <th>Person</th>
           ${kinds.map((d) => `<th class="num person">${esc(d.name)}</th>`).join('')}
-          <th class="num">Allocated</th><th class="num">Spare</th>
+          <th class="num">Total</th><th class="num">Share of their month</th>
         </tr></thead>
         <tbody>${rows.map((r) => `<tr class="${r.gone ? 'archived' : ''}">
           <td><button class="linky" data-person="${r.person_id}">${esc(r.name)}</button></td>
-          <td class="num">${r.gone ? '—' : pct(r.utilisation * 100)}</td>
-          <td class="num">${r.gone ? '—' : hrs(r.available_hours)}</td>
-          <td class="num">${r.gone ? '<span class="nil">no longer active</span>'
-            : r.exempt ? '<span class="nil">none</span>' : hrs(r.internal_hours)}</td>
           ${kinds.map((d) => `<td class="num person"><input type="number" class="inh" step="0.25" min="0"
             data-p="${r.person_id}" data-d="${d.id}" value="${h(hoursOf(r.person_id, d.id))}"></td>`).join('')}
-          <td class="num">${hrs(r.alloc)}</td>
-          <td class="num spare ${r.spare < -0.125 ? 'neg' : 'pos'}">${
-            (r.exempt || r.gone) && !r.alloc ? '—' : hrs(r.spare)}</td>
+          <td class="num"><b>${hrs(r.alloc)}</b></td>
+          <td class="num">${r.gone || !r.available_hours ? '—'
+            : pct((r.alloc / r.available_hours) * 100)}</td>
         </tr>`).join('')}
         <tr class="total">
-          <td>Total</td><td class="num"></td>
-          <td class="num">${hrs(rows.reduce((s, r) => s + r.available_hours, 0))}</td>
-          <td class="num">${hrs(budget)}</td>
+          <td>Total</td>
           ${kinds.map((d) => `<td class="num person">${hrs(rows.reduce((s, r) => s + hoursOf(r.person_id, d.id), 0))}</td>`).join('')}
-          <td class="num">${hrs(allocated)}</td>
-          <td class="num">${hrs(budget - allocated)}</td>
+          <td class="num">${hrs(total)}</td><td class="num"></td>
         </tr></tbody>
       </table></div>
       <div class="body" style="border-top:1px solid var(--rule)">
-        <p class="muted">Budget is <span class="mono">available hours × (1 − utilisation target)</span>
-        for each person, so a 100&#8202;% target leaves none. Hours are the number to plan with:
-        in contract&#8209;value terms the same time is ${units(summary.contracted_units)} budgeted
-        against ${units(summary.allocated_units)} allocated, but a senior hour inflates that
-        figure without adding any capacity.</p>
+        <p class="muted">Internal time is not sold, so it has no contracted value and nothing to
+        balance against — these are simply the hours booked.
+        ${busiest && busiest.alloc ? `${esc(busiest.name)} carries the most at ${hrs(busiest.alloc)}.` : ''}
+        Client capacity is governed separately by each person's utilisation target on the Settings page.</p>
       </div>
     </div>`;
 
