@@ -120,8 +120,12 @@ select:focus-visible, input:focus-visible, button:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 1px;
 }
 input[type="number"] { width: 78px; text-align: right; }
-.tick input[type="number"] { width: 92px; }
+.tick input[type="number"] {
+  flex: 0 0 108px; width: 108px; height: auto;
+  padding: 6px 10px; font-size: .9rem; text-align: right;
+}
 .tick input[type="number"]:disabled { opacity: .45; }
+.tick { gap: 10px; }
 
 .btn {
   font: inherit; font-size: .85rem; font-weight: 500;
@@ -267,7 +271,7 @@ td.indent { padding-left: 26px; color: var(--ink-2); font-size: .84rem; }
 .rowline { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
 .rowline label { font-size: .8rem; color: var(--muted); min-width: 96px; }
 .tick { display: flex; gap: 8px; align-items: center; font-size: .86rem; padding: 3px 0; }
-.tick input { width: 15px; height: 15px; accent-color: var(--accent); }
+.tick input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); flex: 0 0 auto; }
 
 .balance {
   display: flex; flex-wrap: wrap; gap: 10px 28px; align-items: baseline;

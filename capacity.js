@@ -78,8 +78,19 @@ function weekBuckets(period) {
 
 const standardRate = () => Number(get('standard_rate') || 100);
 
-/** Hours worked by someone on `rate` -> units of contract value consumed. */
-const toUnits = (hours, rate) => (Number(hours) || 0) * (Number(rate) || 0) / standardRate();
+/**
+ * Hours worked by someone on `rate` -> units of contract value consumed.
+ *
+ * Rounded to the same quarter grain as hours. An awkward rate (£33.30) would
+ * otherwise produce 3.33 u from 10 clean hours, and those fractions accumulate
+ * across a grid nobody can then reconcile by eye. Rounding here rather than at
+ * display time keeps the balance rule and the screen showing the same number.
+ */
+const QUARTER = 0.25;
+const toUnits = (hours, rate) => {
+  const raw = (Number(hours) || 0) * (Number(rate) || 0) / standardRate();
+  return Math.round(raw / QUARTER) * QUARTER;
+};
 
 /** Units of contract value -> clock hours for someone on `rate`. */
 const toHours = (units, rate) => (Number(units) || 0) * standardRate() / (Number(rate) || 1);
