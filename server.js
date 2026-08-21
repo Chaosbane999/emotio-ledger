@@ -246,6 +246,9 @@ app.post('/api/leave', ok((req, res) => {
 // months
 // ---------------------------------------------------------------------------
 
+/** The working days in a period — the days a block can be moved to. */
+app.get('/api/workdays', ok((req, res) => res.json(cap.workingDates(period(req)))));
+
 app.get('/api/months', ok((req, res) => {
   res.json(db.prepare('SELECT * FROM months ORDER BY period').all()
     .map((m) => ({ ...m, working_days: cap.workingDays(m.period), hours: cap.monthHours(m.period) })));
@@ -432,22 +435,124 @@ app.post('/api/settings', ok((req, res) => {
 // scheduling + export
 // ---------------------------------------------------------------------------
 
+/**
+ * A person's plan. Once committed, the stored blocks ARE the plan and can be
+ * edited freely; until then this returns the packer's draft so you can see what
+ * it would produce before saving it.
+ */
 app.get('/api/schedule/:id', ok((req, res) => {
-  const plan = schedule.planPerson(Number(req.params.id), period(req));
+  const id = Number(req.params.id);
+  const p = period(req);
+  const saved = db.prepare(
+    'SELECT * FROM schedule_blocks WHERE person_id = ? AND period = ? ORDER BY date, start').all(id, p);
+
+  if (saved.length) {
+    const person = db.prepare('SELECT id, name FROM people WHERE id = ?').get(id);
+    return res.json({
+      person, period: p, committed: true, blocks: saved, unplaced: [],
+      totals: {
+        scheduled_hours: cap.round2(saved.reduce((s, b) => s + b.minutes, 0) / 60),
+        unplaced_hours: 0, blocks: saved.length,
+      },
+    });
+  }
+
+  const plan = schedule.planPerson(id, p);
   if (!plan) return res.status(404).json({ error: 'no such person' });
-  res.json(plan);
+  res.json({ ...plan, committed: false });
+}));
+
+/** Commit the packer's draft, replacing anything already saved. */
+app.post('/api/schedule/:id/generate', ok((req, res) => {
+  const id = Number(req.params.id);
+  const p = period(req);
+  const plan = schedule.planPerson(id, p);
+  if (!plan) return res.status(404).json({ error: 'no such person' });
+
+  db.prepare('DELETE FROM schedule_blocks WHERE person_id = ? AND period = ?').run(id, p);
+  const ins = db.prepare(`INSERT INTO schedule_blocks
+    (person_id, period, contract_id, deliverable_id, label, date, start, minutes, anchored, manual)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`);
+  for (const b of plan.blocks) {
+    ins.run(id, p, b.contract_id || null, b.deliverable_id || null,
+      b.label, b.date, b.start, Math.round(b.minutes), b.anchored ? 1 : 0);
+  }
+  res.json({ saved: plan.blocks.length, unplaced: plan.unplaced.length });
+}));
+
+/** Discard the plan and go back to the live draft. */
+app.delete('/api/schedule/:id/plan', ok((req, res) => {
+  db.prepare('DELETE FROM schedule_blocks WHERE person_id = ? AND period = ?')
+    .run(Number(req.params.id), period(req));
+  res.json({ ok: true });
+}));
+
+/** Move a block to another day, change its time, or resize it. */
+app.patch('/api/schedule/block/:blockId', ok((req, res) => {
+  const b = db.prepare('SELECT * FROM schedule_blocks WHERE id = ?').get(Number(req.params.blockId));
+  if (!b) return res.status(404).json({ error: 'no such block' });
+
+  const date = req.body.date || b.date;
+  const start = req.body.start || b.start;
+  // hours in, quarter-hour grain out — the same grain the packer works on
+  const mins = req.body.hours !== undefined
+    ? Math.max(15, Math.round((Number(req.body.hours) * 60) / 15) * 15)
+    : b.minutes;
+
+  db.prepare('UPDATE schedule_blocks SET date=?, start=?, minutes=?, manual=1 WHERE id=?')
+    .run(date, start, mins, b.id);
+  res.json({ ok: true });
+}));
+
+app.delete('/api/schedule/block/:blockId', ok((req, res) => {
+  db.prepare('DELETE FROM schedule_blocks WHERE id = ?').run(Number(req.params.blockId));
+  res.json({ ok: true });
+}));
+
+/** Add a block by hand — work the packer knew nothing about. */
+app.post('/api/schedule/block', ok((req, res) => {
+  const b = req.body;
+  if (!b.person_id || !b.date) throw new Error('person and date are required');
+  const c = b.contract_id ? db.prepare('SELECT name FROM contracts WHERE id = ?').get(b.contract_id) : null;
+  const d = b.deliverable_id ? db.prepare('SELECT name FROM deliverables WHERE id = ?').get(b.deliverable_id) : null;
+  const label = b.label || [c?.name, d?.name].filter(Boolean).join(' — ') || 'Untitled';
+
+  db.prepare(`INSERT INTO schedule_blocks
+    (person_id, period, contract_id, deliverable_id, label, date, start, minutes, anchored, manual)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`)
+    .run(b.person_id, b.period || period(req), b.contract_id || null, b.deliverable_id || null,
+      label, b.date, b.start || '09:00',
+      Math.max(15, Math.round((Number(b.hours || 1) * 60) / 15) * 15));
+  res.json({ ok: true });
 }));
 
 app.get('/api/schedule/:id/ics', ok((req, res) => {
   const p = period(req);
-  const plan = schedule.planPerson(Number(req.params.id), p);
-  if (!plan) return res.status(404).json({ error: 'no such person' });
+  const id = Number(req.params.id);
+  const saved = db.prepare(
+    'SELECT * FROM schedule_blocks WHERE person_id = ? AND period = ? ORDER BY date, start').all(id, p);
+  const person = db.prepare('SELECT id, name FROM people WHERE id = ?').get(id);
+  if (!person) return res.status(404).json({ error: 'no such person' });
+
+  // export whatever they are actually looking at: the committed plan if there
+  // is one, otherwise the live draft
+  const plan = saved.length
+    ? { person, period: p, blocks: saved.map((b) => ({
+        ...b, end: addMinutes(b.start, b.minutes), deliverable: b.label })) }
+    : schedule.planPerson(id, p);
+
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
-  const safe = plan.person.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+  const safe = person.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
   res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="${safe}-${p}.ics"`);
   res.send(schedule.toIcs(plan, stamp));
 }));
+
+function addMinutes(hhmm, mins) {
+  const [h, m] = hhmm.split(':').map(Number);
+  const t = h * 60 + m + mins;
+  return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+}
 
 // ---------------------------------------------------------------------------
 // harvest

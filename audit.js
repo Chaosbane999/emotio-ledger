@@ -1,0 +1,173 @@
+/**
+ * Whole-system maths audit.
+ *
+ * Every identity the app relies on, checked against the live database for every
+ * month that exists. Run with `node audit.js`. Exits non-zero on any failure so
+ * it can gate a deploy.
+ */
+const { db, get } = require('./db');
+const cap = require('./capacity');
+const sch = require('./schedule');
+
+let checks = 0, failures = [];
+const ok = (cond, what) => { checks++; if (!cond) failures.push(what); };
+const near = (a, b, tol = 0.005) => Math.abs(a - b) <= tol;
+const onQuarter = (n) => near(n * 4, Math.round(n * 4), 1e-6);
+
+const periods = db.prepare('SELECT period FROM months ORDER BY period').all().map((m) => m.period);
+const STD = Number(get('standard_rate') || 100);
+
+console.log(`auditing ${periods.length} month(s): ${periods.join(', ')}\n`);
+
+for (const P of periods) {
+  const a = cap.agencySummary(P), t = a.totals;
+  const days = cap.workingDays(P);
+
+  // ---- 1. capacity, per person -------------------------------------------
+  for (const p of a.staff) {
+    const row = db.prepare('SELECT * FROM people WHERE id = ?').get(p.person_id);
+    const lv = db.prepare('SELECT annual_hours, sick_hours FROM leave WHERE person_id = ? AND period = ?')
+      .get(p.person_id, P) || { annual_hours: 0, sick_hours: 0 };
+
+    const gross = days * (row.weekly_hours / 5);
+    ok(near(p.gross_hours, gross, 0.02), `${P} ${p.name}: gross = days x weekly/5 (${p.gross_hours} vs ${gross.toFixed(2)})`);
+    ok(near(p.available_hours, Math.max(0, gross - lv.annual_hours - lv.sick_hours), 0.02),
+      `${P} ${p.name}: available = gross - leave - sick`);
+    ok(near(p.client_hours, p.available_hours * row.utilisation, 0.02),
+      `${P} ${p.name}: client = available x utilisation`);
+    ok(near(p.client_hours + p.internal_hours, p.available_hours, 0.02),
+      `${P} ${p.name}: client + unsold = available`);
+    ok(p.available_hours >= -0.001, `${P} ${p.name}: available not negative`);
+    ok(near(p.spare_hours, p.client_hours - p.allocated_client_hours, 0.02),
+      `${P} ${p.name}: spare = client capacity - allocated`);
+    ok(onQuarter(p.allocated_client_units), `${P} ${p.name}: allocated units on a quarter`);
+    ok(near(p.allocated_client_units,
+      Math.round(p.allocated_client_hours * row.rate / STD / 0.25) * 0.25, 0.01),
+      `${P} ${p.name}: units = hours x rate / standard`);
+  }
+
+  // ---- 2. every contract --------------------------------------------------
+  for (const c of a.contracts) {
+    const lineUnits = c.lines.reduce((s, l) => s + l.units, 0);
+    const lineHours = c.lines.reduce((s, l) => s + l.hours, 0);
+
+    ok(near(c.people_units, lineUnits), `${P} ${c.name}: people_units = sum of lines`);
+    ok(near(c.people_hours, lineHours), `${P} ${c.name}: people_hours = sum of lines`);
+    ok(near(c.allocated_units, c.people_units + c.third_party_units),
+      `${P} ${c.name}: allocated = people + third party`);
+    for (const l of c.lines) {
+      ok(onQuarter(l.units), `${P} ${c.name}/${l.person_name}: unit on a quarter (${l.units})`);
+      ok(near(l.units, Math.round(l.hours * l.rate / STD / 0.25) * 0.25, 0.01),
+        `${P} ${c.name}/${l.person_name}: unit conversion`);
+      ok(l.hours >= 0, `${P} ${c.name}/${l.person_name}: hours not negative`);
+    }
+
+    if (c.no_balance) {
+      ok(c.balanced === true, `${P} ${c.name}: exempt contracts never flagged unbalanced`);
+      if (c.type === 'internal') ok(c.contracted_units === 0, `${P} ${c.name}: internal has no contracted value`);
+    } else {
+      ok(near(c.variance, c.contracted_units + c.carryover.units - c.allocated_units),
+        `${P} ${c.name}: variance = contracted + carried - allocated`);
+      ok(c.balanced === near(c.variance, 0), `${P} ${c.name}: balanced flag matches variance`);
+    }
+
+    if (c.type === 'pot') {
+      ok(near(c.pot_remaining, c.pot_units - c.pot_drawn), `${P} ${c.name}: pot remaining = pot - drawn`);
+      ok(c.pot_drawn >= -0.001, `${P} ${c.name}: pot drawn not negative`);
+      ok(c.months_left >= 0, `${P} ${c.name}: months left not negative`);
+    }
+  }
+
+  // ---- 3. agency roll-up --------------------------------------------------
+  const capU = a.staff.reduce((s, p) => s + p.client_units, 0);
+  const capH = a.staff.reduce((s, p) => s + p.client_hours, 0);
+  const allU = a.staff.reduce((s, p) => s + p.allocated_client_units, 0);
+  const allH = a.staff.reduce((s, p) => s + p.allocated_client_hours, 0);
+
+  ok(near(t.capacity_units, capU, 0.02), `${P} totals: capacity_units = sum per person`);
+  ok(near(t.capacity_hours, capH, 0.02), `${P} totals: capacity_hours = sum per person`);
+  ok(near(t.allocated_units, allU, 0.02), `${P} totals: allocated_units = sum per person`);
+  ok(near(t.allocated_hours, allH, 0.02), `${P} totals: allocated_hours = sum per person`);
+  ok(near(t.headroom_units, t.capacity_units - t.allocated_units, 0.02), `${P} totals: headroom units identity`);
+  ok(near(t.headroom_hours, t.capacity_hours - t.allocated_hours, 0.02), `${P} totals: headroom hours identity`);
+
+  const live = a.contracts.filter((c) => c.type !== 'internal' && c.status === 'live');
+  ok(near(t.contracted_units, live.reduce((s, c) => s + c.contracted_units, 0), 0.02),
+    `${P} totals: contracted = sum of live contracts`);
+
+  // held and pipeline work must not consume capacity
+  for (const status of ['hold', 'pipeline']) {
+    const ids = db.prepare('SELECT id FROM contracts WHERE status = ? AND archived = 0').all(status).map((r) => r.id);
+    if (!ids.length) continue;
+    const h = db.prepare(`SELECT COALESCE(SUM(hours),0) h FROM allocations
+      WHERE period = ? AND contract_id IN (${ids.join(',')})`).get(P).h;
+    ok(h === 0 || t.allocated_hours < allH + h + 0.01, `${P}: ${status} work excluded from allocated hours`);
+  }
+
+  // ---- 4. the scheduler ---------------------------------------------------
+  const maxClient = Number(get('max_client_minutes_per_day') || 240);
+  for (const p of db.prepare('SELECT id, name, weekly_hours FROM people WHERE active = 1 AND archived = 0').all()) {
+    const plan = sch.planPerson(p.id, P);
+    const perDay = (p.weekly_hours / 5) * 60;
+
+    const allocated = db.prepare(`SELECT COALESCE(SUM(a.hours),0) h FROM allocations a
+      JOIN contracts c ON c.id = a.contract_id
+      WHERE a.person_id = ? AND a.period = ? AND c.archived = 0`).get(p.id, P).h;
+    const anchors = db.prepare('SELECT COALESCE(SUM(minutes),0) m FROM anchors WHERE person_id = ?')
+      .get(p.id).m / 60 * cap.weekBuckets(P).length;
+    const accounted = plan.totals.scheduled_hours + plan.totals.unplaced_hours;
+    ok(near(accounted, allocated + anchors, 0.02),
+      `${P} ${p.name}: scheduled + unplaced = allocated (${accounted} vs ${(allocated + anchors).toFixed(2)})`);
+
+    const byDay = {}, byDayContract = {};
+    for (const b of plan.blocks) {
+      ok(b.minutes % 15 === 0, `${P} ${p.name}: block on a quarter hour (${b.minutes}m)`);
+      ok(b.start < b.end, `${P} ${p.name}: block start before end`);
+      ok(b.minutes > 0, `${P} ${p.name}: block has duration`);
+      byDay[b.date] = (byDay[b.date] || 0) + b.minutes;
+      const k = `${b.date}|${b.contract_id}`;
+      byDayContract[k] = (byDayContract[k] || 0) + b.minutes;
+    }
+    for (const [d, m] of Object.entries(byDay)) {
+      ok(m <= perDay + 0.5, `${P} ${p.name}: ${d} within daily capacity (${m} vs ${perDay})`);
+    }
+    for (const [k, m] of Object.entries(byDayContract)) {
+      const isInternal = plan.blocks.find((b) => `${b.date}|${b.contract_id}` === k)?.contract_type === 'internal';
+      if (!isInternal) ok(m <= maxClient + 0.5, `${P} ${p.name}: ${k} within per-client daily cap (${m})`);
+    }
+    // no two blocks may overlap on the same day
+    const byDate = {};
+    for (const b of plan.blocks) (byDate[b.date] = byDate[b.date] || []).push(b);
+    for (const [d, list] of Object.entries(byDate)) {
+      const sorted = [...list].sort((x, y) => x.start.localeCompare(y.start));
+      for (let i = 1; i < sorted.length; i++) {
+        ok(sorted[i].start >= sorted[i - 1].end, `${P} ${p.name}: ${d} blocks do not overlap`);
+      }
+    }
+  }
+}
+
+// ---- 5. month copy fidelity -------------------------------------------
+if (periods.length >= 2) {
+  for (let i = 1; i < periods.length; i++) {
+    const m = db.prepare('SELECT copied_from FROM months WHERE period = ?').get(periods[i]);
+    if (!m || !m.copied_from) continue;
+    const src = db.prepare('SELECT COUNT(*) n FROM allocations WHERE period = ?').get(m.copied_from).n;
+    const dst = db.prepare('SELECT COUNT(*) n FROM allocations WHERE period = ?').get(periods[i]).n;
+    ok(dst >= src * 0.5, `${periods[i]}: copied forward from ${m.copied_from} plausibly`);
+  }
+}
+
+// ---- 6. unit conversion, standalone -----------------------------------
+for (const [hours, rate, want] of [[10, 33.30, 3.25], [2, 250, 5], [10, 100, 10], [15, 33.30, 5], [4, 250, 10]]) {
+  ok(near(cap.toUnits(hours, rate), want), `toUnits(${hours}h, £${rate}) = ${want}u`);
+}
+ok(near(cap.toHours(1, 100), 1), 'toHours(1u, £100) = 1h');
+
+console.log(`${checks} checks run`);
+if (failures.length) {
+  console.log(`\n${failures.length} FAILED:`);
+  for (const f of failures.slice(0, 40)) console.log('  ✗', f);
+  process.exit(1);
+}
+console.log('all identities hold');

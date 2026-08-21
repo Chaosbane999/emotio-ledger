@@ -301,6 +301,12 @@ td.indent { padding-left: 26px; color: var(--ink-2); font-size: .84rem; }
 }
 .blk:last-child { border-bottom: 0; }
 .blk .t { font-family: ui-monospace, Menlo, monospace; font-size: .78rem; color: var(--muted); white-space: nowrap; }
+.blk.manual { border-left: 3px solid var(--warn); }
+.blk select, .blk input { font-size: .8rem; padding: 4px 7px; }
+.blk select.bDate { width: 118px; }
+.blk input.bStart { width: 92px; }
+.blk input.bH { width: 74px; }
+.blk .lbl { flex: 1; min-width: 140px; }
 .blk .m { margin-left: auto; font-family: ui-monospace, Menlo, monospace; font-size: .78rem; color: var(--muted); }
 .blk.fixed { background: var(--accent-soft); }
 

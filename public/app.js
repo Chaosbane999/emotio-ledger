@@ -16,9 +16,13 @@ const view = () => $('#view');
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const h = (n, d = 2) => (Number(n) || 0).toFixed(d).replace(/\.00$/, '');
+const h = (n, d = 2) => (Number(n) || 0).toFixed(d).replace(/\.?0+$/, '');
 const NB = '\u00a0';                                                 // keeps "12.5 h" unbreakable
-const hrs = (n) => `${h(Math.round((Number(n) || 0) * 4) / 4)}${NB}h`; // display rounds to 0.25
+// Show hours as they really are. Forcing derived capacity onto a quarter grain
+// understated it — 4 h/week across 21 working days is 16.8 h, and snapping
+// displayed 16.75. Allocations and schedule blocks are already on quarters, so
+// they still read cleanly.
+const hrs = (n) => `${h(n)}${NB}h`;
 const units = (n) => `${h(n)}${NB}u`;
 const pct = (n) => `${Math.round(Number(n) || 0)}%`;
 const DOW_NAMES = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
@@ -351,8 +355,7 @@ async function renderPerson() {
   // value alongside so the cost of their time stays visible.
   // Convert from the same 0.25-rounded figure the hours display uses, or a
   // £100 person reads "148.50 h / 148.51 u" and looks broken.
-  const q = (hh) => Math.round((Number(hh) || 0) * 4) / 4;
-  const asUnits = (hh) => q(hh) * v.person.rate / S.boot.settings.standard_rate;
+  const asUnits = (hh) => (Number(hh) || 0) * v.person.rate / S.boot.settings.standard_rate;
   const pairH = (hh) => `${hrs(hh)}<span class="sep">/</span><span class="alt">${units(asUnits(hh))}</span>`;
   const clientLines = v.lines.filter((l) => l.type !== 'internal');
   const internalLines = v.lines.filter((l) => l.type === 'internal');
@@ -946,12 +949,14 @@ const cap2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 // ---------------------------------------------------------------------------
 
 async function renderSchedule() {
-  const people = S.boot.people.filter((p) => p.active);
+  const people = S.boot.people.filter((p) => p.active && !p.archived);
   if (!S.personId || !people.some((p) => p.id === S.personId)) S.personId = people[0]?.id;
   if (!S.personId) { view().innerHTML = '<p class="muted">No active people.</p>'; return; }
 
   const plan = await api(`/api/schedule/${S.personId}${P()}`);
   const pv = await api(`/api/person/${S.personId}${P()}`);
+  const dates = await api(`/api/workdays${P()}`);
+
   const byDate = new Map();
   for (const b of plan.blocks) {
     if (!byDate.has(b.date)) byDate.set(b.date, []);
@@ -960,13 +965,25 @@ async function renderSchedule() {
   const dayLabel = (iso) => new Date(`${iso}T00:00:00Z`)
     .toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
 
+  const dayOptions = (sel) => dates.map((d) =>
+    `<option value="${d}"${d === sel ? ' selected' : ''}>${esc(dayLabel(d))}</option>`).join('');
+
+  const contractOptions = S.boot.contracts.filter((c) => !c.archived)
+    .map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  const deliverableOptions = S.boot.deliverables
+    .map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+
   view().innerHTML = `
     <div class="rowline">
       <label for="schedPick">Person</label>
       <select id="schedPick">${people.map((p) =>
         `<option value="${p.id}"${p.id === S.personId ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
+      <span class="pill ${plan.committed ? 'ok' : 'warn'}">${plan.committed ? 'Saved plan' : 'Draft'}</span>
       <span class="spacer"></span>
-      <a class="btn primary small" href="/api/schedule/${S.personId}/ics${P()}">Download .ics</a>
+      <button class="btn small ${plan.committed ? '' : 'primary'}" id="genPlan">
+        ${plan.committed ? 'Rebuild from allocations' : 'Save this plan'}</button>
+      ${plan.committed ? '<button class="btn small danger" id="clearPlan">Discard plan</button>' : ''}
+      <a class="btn small primary" href="/api/schedule/${S.personId}/ics${P()}">Download .ics</a>
     </div>
 
     <div class="stats">
@@ -983,22 +1000,89 @@ async function renderSchedule() {
     ${plan.unplaced.length ? `<div class="banner"><div>
       <b>${plan.unplaced.length} sessions wouldn't fit.</b>
       ${esc([...new Set(plan.unplaced.map((u) => u.label))].slice(0, 6).join('; '))}.
-      Either this person is overbooked, or a block is too long for a single day.</div></div>` : ''}
+    </div></div>` : ''}
 
-    <div class="banner info"><div>Blocks follow each deliverable's recipe — a weekly email lands once a week,
-      a campaign build gets one long sitting, fixed calls keep their slot. Change the recipes in Settings.</div></div>
+    <div class="banner ${plan.committed ? 'info' : ''}"><div>
+      ${plan.committed
+        ? 'This is a saved plan — move blocks between days, change their hours, or delete them and they stay put. Rebuilding from allocations discards these edits.'
+        : 'This is a draft from the scheduling recipes. Save it to start moving blocks around by hand.'}
+    </div></div>
+
+    ${plan.committed ? `<div class="card">
+      <header><h2>Add a block</h2><p>Work the recipes knew nothing about</p></header>
+      <div class="body"><div class="rowline">
+        <select id="nbC"><option value="">No contract</option>${contractOptions}</select>
+        <select id="nbD"><option value="">No deliverable</option>${deliverableOptions}</select>
+        <select id="nbDate">${dayOptions(dates[0])}</select>
+        <input type="time" id="nbStart" value="09:00" style="width:104px">
+        <input type="number" id="nbH" step="0.25" min="0.25" value="1"><span class="muted">h</span>
+        <button class="btn small primary" id="addBlock">Add</button>
+      </div></div>
+    </div>` : ''}
 
     <div class="weekgrid">${[...byDate.entries()].map(([date, blocks]) => `
       <div class="day">
         <h4><span>${esc(dayLabel(date))}</span>
           <span>${hrs(blocks.reduce((s, b) => s + b.minutes, 0) / 60)}</span></h4>
-        ${blocks.map((b) => `<div class="blk${b.anchored ? ' fixed' : ''}">
-          <span class="t">${esc(b.start)}–${esc(b.end)}</span>
-          <span>${esc(b.label)}${b.anchored ? ' <span class="pill info">fixed</span>' : ''}</span>
-          <span class="m">${hrs(b.minutes / 60)}</span></div>`).join('')}
-      </div>`).join('')}</div>`;
+        ${blocks.map((b) => plan.committed ? `
+          <div class="blk${b.anchored ? ' fixed' : ''}${b.manual ? ' manual' : ''}">
+            <select class="bDate" data-b="${b.id}">${dayOptions(b.date)}</select>
+            <input type="time" class="bStart" data-b="${b.id}" value="${esc(b.start)}">
+            <input type="number" class="bH" data-b="${b.id}" step="0.25" min="0.25"
+              value="${h(b.minutes / 60)}"><span class="muted">h</span>
+            <span class="lbl">${esc(b.label)}${b.anchored ? ' <span class="pill info">fixed</span>' : ''}${
+              b.manual ? ' <span class="pill warn">moved</span>' : ''}</span>
+            <button class="btn small danger bDel" data-b="${b.id}">Remove</button>
+          </div>` : `
+          <div class="blk${b.anchored ? ' fixed' : ''}">
+            <span class="t">${esc(b.start)}–${esc(b.end)}</span>
+            <span>${esc(b.label)}${b.anchored ? ' <span class="pill info">fixed</span>' : ''}</span>
+            <span class="m">${hrs(b.minutes / 60)}</span>
+          </div>`).join('')}
+      </div>`).join('') || '<p class="muted">Nothing scheduled this month.</p>'}</div>`;
 
   $('#schedPick').addEventListener('change', (e) => { S.personId = Number(e.target.value); renderSchedule(); });
+
+  $('#genPlan').addEventListener('click', async () => {
+    if (plan.committed && !confirm('Rebuild from the allocations?\n\nEvery block you have moved, resized or added by hand will be replaced.')) return;
+    const r = await api(`/api/schedule/${S.personId}/generate${P()}`, { method: 'POST' });
+    toast(`Plan saved — ${r.saved} blocks${r.unplaced ? `, ${r.unplaced} could not be placed` : ''}.`);
+    renderSchedule();
+  });
+
+  const clear = $('#clearPlan');
+  if (clear) clear.addEventListener('click', async () => {
+    if (!confirm('Discard this plan and go back to the live draft?')) return;
+    await api(`/api/schedule/${S.personId}/plan${P()}`, { method: 'DELETE' });
+    toast('Plan discarded.');
+    renderSchedule();
+  });
+
+  const patch = async (id, body) => {
+    await api(`/api/schedule/block/${id}`, { method: 'PATCH', body });
+    renderSchedule();
+  };
+  view().querySelectorAll('.bDate').forEach((el) => el.addEventListener('change',
+    () => patch(el.dataset.b, { date: el.value })));
+  view().querySelectorAll('.bStart').forEach((el) => el.addEventListener('change',
+    () => patch(el.dataset.b, { start: el.value })));
+  view().querySelectorAll('.bH').forEach((el) => el.addEventListener('change',
+    () => patch(el.dataset.b, { hours: Number(el.value) })));
+  view().querySelectorAll('.bDel').forEach((el) => el.addEventListener('click', async () => {
+    await api(`/api/schedule/block/${el.dataset.b}`, { method: 'DELETE' });
+    renderSchedule();
+  }));
+
+  const add = $('#addBlock');
+  if (add) add.addEventListener('click', async () => {
+    await api('/api/schedule/block', { body: {
+      person_id: S.personId, period: S.period,
+      contract_id: Number($('#nbC').value) || null,
+      deliverable_id: Number($('#nbD').value) || null,
+      date: $('#nbDate').value, start: $('#nbStart').value, hours: Number($('#nbH').value) } });
+    toast('Block added.');
+    renderSchedule();
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -164,6 +164,24 @@ CREATE TABLE IF NOT EXISTS task_map (
   deliverable_id INTEGER NOT NULL REFERENCES deliverables(id) ON DELETE CASCADE
 );
 
+-- A person's committed plan for a month. The packer produces a first draft;
+-- once saved, these rows are the plan and can be moved, resized or deleted by
+-- hand. Regenerating discards manual edits, which is why it asks first.
+CREATE TABLE IF NOT EXISTS schedule_blocks (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  person_id      INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+  period         TEXT    NOT NULL,
+  contract_id    INTEGER REFERENCES contracts(id)    ON DELETE CASCADE,
+  deliverable_id INTEGER REFERENCES deliverables(id) ON DELETE SET NULL,
+  label          TEXT    NOT NULL,
+  date           TEXT    NOT NULL,
+  start          TEXT    NOT NULL,
+  minutes        INTEGER NOT NULL,
+  anchored       INTEGER NOT NULL DEFAULT 0,
+  manual         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_blocks ON schedule_blocks(person_id, period);
+
 -- Months that exist. Adding one copies the previous month's allocations
 -- forward so you edit a populated month rather than starting from nothing.
 CREATE TABLE IF NOT EXISTS months (
@@ -196,8 +214,8 @@ const defaults = {
   standard_rate: '100',       // £ that defines one unit
   work_start: '09:00',
   work_end: '17:30',
-  lunch_start: '13:00',
-  lunch_minutes: '30',
+  lunch_start: '12:30',
+  lunch_minutes: '60',
   max_client_minutes_per_day: '240',   // ceiling on one client in one day
   round_display: '0.25',
   harvest_account_id: '',

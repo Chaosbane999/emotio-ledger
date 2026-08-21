@@ -39,12 +39,41 @@ const GRAIN = 15;
 const snap = (mins) => Math.max(GRAIN, Math.round(mins / GRAIN) * GRAIN);
 
 /**
+ * Split `total` into `n` quarter-hour pieces summing to exactly `total`.
+ * Rounding each piece independently loses minutes — 600 into three snapped
+ * 195s is 585 — and those minutes vanish from the plan silently.
+ */
+/**
+ * Share `total` across buckets weighted by `weights`, in quarter-hour pieces
+ * that sum to exactly `total`. Snapping each share independently drifts upward
+ * — a few minutes per week becomes an hour a month, and the schedule then
+ * claims more time than was ever allocated.
+ */
+function shareExact(total, weights) {
+  const sum = weights.reduce((a, b) => a + b, 0) || 1;
+  const raw = weights.map((w) => (total * w) / sum);
+  const out = raw.map((r) => Math.floor(r / GRAIN) * GRAIN);
+  let rem = total - out.reduce((a, b) => a + b, 0);
+  const order = raw.map((r, i) => [r - out[i], i]).sort((a, b) => b[0] - a[0]);
+  for (let k = 0; rem >= GRAIN; k++, rem -= GRAIN) out[order[k % order.length][1]] += GRAIN;
+  return out;
+}
+
+function splitExact(total, n) {
+  const base = Math.max(GRAIN, Math.floor(total / n / GRAIN) * GRAIN);
+  const out = Array.from({ length: n }, () => base);
+  let rem = total - base * n;
+  for (let i = 0; rem >= GRAIN; i++, rem -= GRAIN) out[i % n] += GRAIN;
+  return out;
+}
+
+/**
  * Expand one allocation into the sessions its recipe demands.
  * `buckets` is the month's working weeks, so a short week takes a smaller
  * share than a full one rather than being handed an impossible load.
  * Returns [{ minutes, week, anchored, dow, time }].
  */
-function expand(alloc, recipe, buckets) {
+function expand(alloc, recipe, buckets, ceiling) {
   const weeks = buckets.length;
   const totalMin = Math.round(alloc.hours * 60);
   if (totalMin <= 0 || weeks === 0) return [];
@@ -53,14 +82,22 @@ function expand(alloc, recipe, buckets) {
   const splittable = !!recipe.splittable;
   const sessions = [];
 
-  /** Split `minutes` into at most `cap` sittings of roughly `block` each. */
+  /**
+   * Split `minutes` into sittings of roughly `block`, at most `cap` of them.
+   *
+   * max_sittings is a preference about fragmentation, never a promise the
+   * result will fit: two 6h pieces cannot be placed when a client is capped at
+   * 4h a day. So the ceiling sets a floor on how many pieces there must be, and
+   * feasibility wins over the preference.
+   */
   const chop = (minutes, week, cap) => {
     if (minutes <= 0.5) return;
     if (!splittable) { sessions.push({ minutes, week }); return; }
     const hard = recipe.max_sittings > 0 ? recipe.max_sittings : cap;
-    const pieces = Math.min(Math.max(1, Math.ceil(minutes / block)), hard);
-    const size = minutes / pieces;
-    for (let i = 0; i < pieces; i++) sessions.push({ minutes: size, week });
+    const wanted = Math.min(Math.max(1, Math.ceil(minutes / block)), hard);
+    const needed = ceiling ? Math.ceil(minutes / ceiling) : 1;
+    const pieces = Math.max(wanted, needed);
+    for (const m of splitExact(minutes, pieces)) sessions.push({ minutes: m, week });
   };
 
   switch (recipe.cadence) {
@@ -71,10 +108,11 @@ function expand(alloc, recipe, buckets) {
       for (let w = 0; w < weeks; w += step) active.push(w);
       // weight each week by its working days, so a 3-day week gets 3 days' worth
       const days = active.map((w) => buckets[w].length);
-      const totalDays = days.reduce((s, d) => s + d, 0) || 1;
+      const shares = shareExact(totalMin, days);
 
       active.forEach((w, i) => {
-        const per = totalMin * (days[i] / totalDays);
+        const per = shares[i];
+        if (per < GRAIN) return;
         if (recipe.distribution === 'anchored') {
           sessions.push({ minutes: per, week: w, anchored: true, dow: recipe.anchor_dow, time: recipe.anchor_time });
         } else {
@@ -102,18 +140,17 @@ function expand(alloc, recipe, buckets) {
         break;
       }
       // spread across the month, weighted by working days per week
-      const pieces = splittable
-        ? Math.min(Math.max(1, Math.ceil(totalMin / block)), MAX_PIECES_PER_MONTH)
-        : 1;
-      const size = totalMin / pieces;
-      for (let i = 0; i < pieces; i++) {
-        sessions.push({ minutes: size, week: Math.min(weeks - 1, Math.floor((i * weeks) / pieces)) });
-      }
+      const byBlock = Math.min(Math.max(1, Math.ceil(totalMin / block)), MAX_PIECES_PER_MONTH);
+      const byCeiling = ceiling ? Math.ceil(totalMin / ceiling) : 1;
+      const pieces = splittable ? Math.max(byBlock, byCeiling) : 1;
+      splitExact(totalMin, pieces).forEach((m, i) => {
+        sessions.push({ minutes: m, week: Math.min(weeks - 1, Math.floor((i * weeks) / pieces)) });
+      });
       break;
     }
   }
-  return sessions.map((s) => ({ ...s, minutes: snap(s.minutes) }))
-    .filter((s) => s.minutes > 0);
+  return sessions.map((s) => ({ ...s, minutes: Math.round(s.minutes), splittable }))
+    .filter((s) => s.minutes >= GRAIN);
 }
 
 const DEFAULT_RECIPE = {
@@ -157,7 +194,9 @@ function planPerson(personId, period) {
   const wanted = [];
   for (const r of rows) {
     const recipe = recipeFor.get(r.deliverable_id) || DEFAULT_RECIPE;
-    for (const s of expand(r, recipe, buckets)) {
+    const ceiling = r.contract_type === 'internal'
+      ? perDayCapMin : Math.min(maxClientMin, perDayCapMin);
+    for (const s of expand(r, recipe, buckets, ceiling)) {
       const label = r.contract_type === 'internal'
         ? r.deliverable_name
         : `${r.contract_name} — ${r.deliverable_name}`;
@@ -180,6 +219,21 @@ function planPerson(personId, period) {
       });
     }
   }
+
+  // max_sittings is a preference about fragmentation, not a promise the result
+  // will fit. A 12h build chopped into two 6h pieces can never be placed when a
+  // client is capped at 4h a day, so subdivide anything that cannot physically
+  // land before trying to place it at all.
+  const ceilingFor = (item) => (item.contract_type === 'internal'
+    ? perDayCapMin : Math.min(maxClientMin, perDayCapMin));
+
+  const feasible = (item) => {
+    const ceiling = ceilingFor(item);
+    if (item.minutes <= ceiling || !item.splittable) return [item];
+    const n = Math.ceil(item.minutes / ceiling);
+    return splitExact(item.minutes, n)
+      .map((minutes) => ({ ...item, minutes, subdivided: true }));
+  };
 
   const placed = [];
   const unplaced = [];
@@ -252,17 +306,32 @@ function planPerson(personId, period) {
     return false;
   };
 
-  const flexible = wanted.filter((w) => !w.anchored).sort((a, b) => b.minutes - a.minutes);
-  for (const item of flexible) {
+  const flexible = wanted.filter((w) => !w.anchored)
+    .flatMap(feasible)
+    .sort((a, b) => b.minutes - a.minutes);
+
+  /** Place an item, halving it as a last resort before giving up. */
+  const place = (item) => {
     const home = Math.min(item.week, weeks - 1);
-    // nearest-first: home week, then ±1, ±2 ...
-    const order = [home];
+    const order = [home];                       // nearest week first, then out
     for (let d = 1; d < weeks; d++) {
       if (home - d >= 0) order.push(home - d);
       if (home + d < weeks) order.push(home + d);
     }
-    if (!order.some((w) => tryWeek(item, w))) unplaced.push(item);
-  }
+    if (order.some((w) => tryWeek(item, w))) return true;
+
+    // nothing took it whole — split and try again rather than dropping work
+    if (item.splittable && item.minutes >= GRAIN * 2) {
+      const half = snap(item.minutes / 2);
+      const rest = item.minutes - half;
+      const a = place({ ...item, minutes: half, subdivided: true });
+      const b = rest >= GRAIN ? place({ ...item, minutes: rest, subdivided: true }) : true;
+      return a && b;
+    }
+    return false;
+  };
+
+  for (const item of flexible) if (!place(item)) unplaced.push(item);
 
   placed.sort((a, b) => (a.date === b.date ? a.start.localeCompare(b.start) : a.date.localeCompare(b.date)));
 
