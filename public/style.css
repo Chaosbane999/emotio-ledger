@@ -120,6 +120,8 @@ select:focus-visible, input:focus-visible, button:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 1px;
 }
 input[type="number"] { width: 78px; text-align: right; }
+.tick input[type="number"] { width: 92px; }
+.tick input[type="number"]:disabled { opacity: .45; }
 
 .btn {
   font: inherit; font-size: .85rem; font-weight: 500;
@@ -184,6 +186,46 @@ tr.total td { font-weight: 600; background: var(--accent-soft); }
 td .sub { display: block; font-size: .76rem; color: var(--muted); }
 .linky { color: var(--accent); cursor: pointer; text-decoration: underline;
   text-underline-offset: 2px; background: none; border: 0; font: inherit; padding: 0; }
+
+/* ---------- capacity table: the most-read thing on the page ---------- */
+
+table.big { font-size: .95rem; }
+table.big td { padding: 11px 14px; }
+table.big td.spare { font-weight: 700; font-size: 1.02rem; }
+table.big td.spare.pos { color: var(--ok); }
+table.big td.spare.neg { color: var(--over); }
+
+/* ---------- the sheet: one column per person ---------- */
+
+table.sheet { font-size: .84rem; }
+table.sheet th, table.sheet td { padding: 8px 10px; }
+table.sheet td.ini {
+  font-family: ui-monospace, Menlo, monospace; font-size: .74rem;
+  color: var(--muted); font-weight: 600; text-align: center;
+}
+table.sheet th.person, table.sheet td.person {
+  text-align: right; width: 62px;
+  border-left: 1px solid var(--rule);
+}
+table.sheet th.person { font-size: .7rem; color: var(--ink-2); }
+table.sheet th.person.gone { color: var(--over); text-decoration: line-through; }
+table.sheet td.person b { font-weight: 600; }
+table.sheet .nil { color: var(--rule-2); }
+table.sheet td.name { min-width: 190px; }
+table.sheet tr.hidden { display: none; }
+
+/* ---------- archived + expandable rows ---------- */
+
+tr.archived td { opacity: .5; }
+tr.archived td:first-child::before { content: 'archived · '; font-size: .7rem; color: var(--muted); }
+tr.hidden { display: none; }
+
+tr.ct { cursor: pointer; }
+tr.ct td.tw { width: 26px; text-align: center; color: var(--muted); }
+tr.ct .caret { font-size: .8rem; }
+tr.ct.open { background: var(--surface-2); }
+tr.sub-row td { background: var(--surface-2); border-bottom-color: transparent; }
+td.indent { padding-left: 26px; color: var(--ink-2); font-size: .84rem; }
 
 /* ---------- pills ---------- */
 

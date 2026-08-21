@@ -33,6 +33,11 @@ function dayWindows() {
 const MAX_PIECES_PER_WEEK = 3;
 const MAX_PIECES_PER_MONTH = 10;
 
+// Nobody books 119 minutes. Every block lands on a quarter hour, minimum 15 min,
+// so the calendar reads in the same units people actually plan in.
+const GRAIN = 15;
+const snap = (mins) => Math.max(GRAIN, Math.round(mins / GRAIN) * GRAIN);
+
 /**
  * Expand one allocation into the sessions its recipe demands.
  * `buckets` is the month's working weeks, so a short week takes a smaller
@@ -107,7 +112,8 @@ function expand(alloc, recipe, buckets) {
       break;
     }
   }
-  return sessions.filter((s) => s.minutes > 0.5);
+  return sessions.map((s) => ({ ...s, minutes: snap(s.minutes) }))
+    .filter((s) => s.minutes > 0);
 }
 
 const DEFAULT_RECIPE = {

@@ -8,7 +8,7 @@
    Summing hours across people is legitimate as a capacity figure; it is only
    meaningless as a measure of value, so the balance rule stays units-only. */
 
-const S = { period: null, boot: null, view: 'agency', personId: null, contractId: null, plan: null };
+const S = { period: null, boot: null, view: 'agency', personId: null, contractId: null, plan: null, showArchived: false };
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const view = () => $('#view');
@@ -21,6 +21,7 @@ const NB = '\u00a0';                                                 // keeps "1
 const hrs = (n) => `${h(Math.round((Number(n) || 0) * 4) / 4)}${NB}h`; // display rounds to 0.25
 const units = (n) => `${h(n)}${NB}u`;
 const pct = (n) => `${Math.round(Number(n) || 0)}%`;
+const DOW_NAMES = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
 async function api(path, opts) {
   const r = await fetch(path, {
@@ -60,8 +61,12 @@ async function boot() {
   S.period = S.boot.period;
 
   const sel = $('#period');
-  sel.innerHTML = S.boot.periods.map((p) =>
-    `<option value="${p}"${p === S.period ? ' selected' : ''}>${esc(monthName(p))}</option>`).join('');
+  const size = new Map((S.boot.months || []).map((m) => [m.period, m]));
+  sel.innerHTML = S.boot.periods.map((p) => {
+    const m = size.get(p);
+    return `<option value="${p}"${p === S.period ? ' selected' : ''}>${
+      esc(monthName(p))}${m ? ` — ${h(m.hours, 0)} h` : ''}</option>`;
+  }).join('');
 
   await render();
 }
@@ -92,16 +97,36 @@ $('#period').addEventListener('change', async (e) => {
   render();
 });
 
-$('#syncBtn').addEventListener('click', async () => {
-  const btn = $('#syncBtn');
-  btn.disabled = true; btn.textContent = 'Syncing…';
+$('#addMonth').addEventListener('click', async () => {
+  const last = S.boot.periods[S.boot.periods.length - 1] || S.period;
+  const next = shiftPeriodClient(last, 1);
+  if (!confirm(`Add ${monthName(next)}?\n\nIt starts as a copy of ${monthName(last)} — same contracts, same allocations — for you to edit.`)) return;
   try {
-    const r = await api(`/api/harvest/sync-actuals${P()}`, { method: 'POST' });
-    toast(`Pulled ${r.entries} entries (${h(r.hours)} h). ${r.unmapped_task_entries} could not be matched to a deliverable.`);
-    await render();
+    const r = await api('/api/months', { body: { period: next, copy_from: last } });
+    toast(`${monthName(next)} added — ${r.copied.allocations} allocations copied forward.`);
+    S.period = next;
+    S.boot = await api(`/api/bootstrap${P()}`);
+    await boot();
   } catch (e) { toast(e.message, true); }
-  btn.disabled = false; btn.textContent = 'Sync Harvest';
 });
+
+$('#delMonth').addEventListener('click', async () => {
+  if (S.boot.periods.length <= 1) return toast('That is the only month — add another before deleting this one.', true);
+  if (!confirm(`Delete ${monthName(S.period)}?\n\nEvery allocation, third-party line and carry-over in it goes too. This cannot be undone.`)) return;
+  try {
+    const r = await api(`/api/months/${S.period}`, { method: 'DELETE' });
+    toast(`${monthName(S.period)} deleted.`);
+    S.period = r.months[r.months.length - 1];
+    await boot();
+  } catch (e) { toast(e.message, true); }
+});
+
+/** Month arithmetic on the client, mirroring capacity.shiftPeriod. */
+function shiftPeriodClient(period, delta) {
+  const [y, m] = period.split('-').map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + delta, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
 
 // ---------------------------------------------------------------------------
 // 1 — Agency. Units lead.
@@ -115,75 +140,78 @@ function capBar(usedH, capH) {
     <i class="used" style="width:${w(used)}"></i><i class="over" style="width:${w(over)}"></i></div>`;
 }
 
+/** Hours lead on every headline figure; units ride alongside. */
+const pairHU = (hh, u) => `${hrs(hh)}<span class="sep">/</span><span class="alt">${units(u)}</span>`;
+
 async function renderAgency() {
   const a = await api(`/api/agency${P()}`);
   const t = a.totals;
   const people = S.boot.people;
   const execName = (id) => people.find((p) => p.id === id)?.name || 'Unassigned';
+  const execIni = (id) => people.find((p) => p.id === id)?.initials || '—';
 
   const live = a.contracts.filter((c) => c.type !== 'internal' && c.status === 'live');
+  const held = a.contracts.filter((c) => c.status === 'hold');
   const pipeline = a.contracts.filter((c) => c.status === 'pipeline');
   const internal = a.contracts.find((c) => c.type === 'internal');
 
-  const byExec = new Map();
-  for (const c of live) {
-    const contract = S.boot.contracts.find((x) => x.id === c.contract_id);
-    const key = contract?.exec_person_id ?? 0;
-    if (!byExec.has(key)) byExec.set(key, []);
-    byExec.get(key).push(c);
-  }
-
-  const contractRow = (c) => {
-    const bad = !c.balanced;
-    const pot = c.type === 'pot';
-    return `<tr>
-      <td><button class="linky" data-contract="${c.contract_id}">${esc(c.name)}</button>
-        ${pot ? `<span class="sub">pot ${units(c.pot_units)} · ${c.pot_start} to ${c.pot_end}</span>` : ''}</td>
-      <td>${pot ? '<span class="pill info">Pot</span>' : '<span class="pill mute">Retainer</span>'}</td>
-      <td class="num">${pot ? units(c.pot_units) : units(c.contracted_units)}</td>
-      <td class="num">${c.carryover.units ? units(c.carryover.units) : '—'}</td>
-      <td class="num">${units(c.people_units)}</td>
-      <td class="num">${c.third_party_units ? units(c.third_party_units) : '—'}</td>
-      <td class="num">${units(c.allocated_units)}</td>
-      <td class="num">${pot
-        ? `${units(c.pot_remaining)} left`
-        : `<span class="pill ${bad ? 'bad' : 'ok'}">${bad ? (c.variance > 0 ? `${h(c.variance)} under` : `${h(-c.variance)} over`) : 'balanced'}</span>`}</td>
-    </tr>`;
-  };
-
-  // A contract is out of balance in either direction. Over-allocating burns
-  // margin; under-allocating means work you have been paid for is unplanned.
   const overrun = live.filter((c) => c.variance < -0.005);
   const underrun = live.filter((c) => c.variance > 0.005);
   const overrunUnits = overrun.reduce((s, c) => s - c.variance, 0);
   const underrunUnits = underrun.reduce((s, c) => s + c.variance, 0);
   const offBalance = overrun.length + underrun.length;
-  const potWarn = a.contracts.filter((c) => c.type === 'pot' && (c.pot_overrun || c.pot_exhausted));
+
   const inactiveOwned = S.boot.contracts.filter((c) => {
     const ex = people.find((p) => p.id === c.exec_person_id);
-    return c.status === 'live' && c.type !== 'internal' && ex && !ex.active;
+    return !c.archived && c.status === 'live' && c.type !== 'internal' && ex && (!ex.active || ex.archived);
   });
 
-  // Every tile carries both denominations: units answer "can we sell more?",
-  // hours answer "has anyone got room?". They diverge when rates differ.
-  const pair = (u, hh) => `${units(u)}<span class="sep">/</span><span class="alt">${hrs(hh)}</span>`;
+  // Columns are everyone who can carry client work, plus anyone still holding
+  // allocations this month — otherwise a departed person's hours vanish from
+  // the row and the numbers stop adding up.
+  const allocated = new Set(a.contracts.flatMap((c) => c.lines.map((l) => l.person_id)));
+  const cols = people.filter((p) => (p.active && !p.archived) || allocated.has(p.id));
+  const hoursFor = (c, pid) => c.lines.filter((l) => l.person_id === pid).reduce((s, l) => s + l.hours, 0);
+
+  const gridRow = (c) => {
+    const contract = S.boot.contracts.find((x) => x.id === c.contract_id) || {};
+    const pot = c.type === 'pot';
+    return `<tr>
+      <td class="ini">${esc(execIni(contract.exec_person_id))}</td>
+      <td class="name"><button class="linky" data-contract="${c.contract_id}">${esc(c.name)}</button>
+        ${pot ? `<span class="sub">pot ${units(c.pot_units)} · to ${c.pot_end}</span>` : ''}</td>
+      <td class="num">${pot ? units(c.pot_units) : units(c.contracted_units)}</td>
+      ${cols.map((p) => {
+        const hh = hoursFor(c, p.id);
+        return `<td class="num person">${hh ? `<b>${hrs(hh)}</b>` : '<span class="nil">—</span>'}</td>`;
+      }).join('')}
+      <td class="num">${c.third_party_units ? units(c.third_party_units) : '<span class="nil">—</span>'}</td>
+      <td class="num">${units(c.allocated_units)}<span class="sub"><b>${hrs(c.people_hours)}</b></span></td>
+      <td class="num">${pot
+        ? `${units(c.pot_remaining)} left`
+        : `<span class="pill ${c.balanced ? 'ok' : 'bad'}">${c.balanced ? 'balanced'
+            : (c.variance > 0 ? `${h(c.variance)} under` : `${h(-c.variance)} over`)}</span>`}</td>
+    </tr>`;
+  };
+
+  const colTotal = (pid) => live.reduce((s, c) => s + hoursFor(c, pid), 0);
 
   view().innerHTML = `
     <div class="stats">
-      <div class="stat ${t.headroom_units > 40 ? 'good' : t.headroom_units < 0 ? 'bad' : 'warn'}">
+      <div class="stat ${t.headroom_hours > 60 ? 'good' : t.headroom_hours < 0 ? 'bad' : 'warn'}">
         <span class="k">Delivery headroom</span>
-        <span class="v">${pair(t.headroom_units, t.headroom_hours)}</span>
-        <span class="s">of ${units(t.capacity_units)} / ${hrs(t.capacity_hours)} capacity</span>
+        <span class="v">${pairHU(t.headroom_hours, t.headroom_units)}</span>
+        <span class="s">of ${hrs(t.capacity_hours)} / ${units(t.capacity_units)} capacity</span>
       </div>
       <div class="stat">
         <span class="k">Allocated</span>
-        <span class="v">${pair(t.allocated_units, t.allocated_hours)}</span>
-        <span class="s">${pct(t.capacity_units ? (t.allocated_units / t.capacity_units) * 100 : 0)} of capacity by value</span>
+        <span class="v">${pairHU(t.allocated_hours, t.allocated_units)}</span>
+        <span class="s">${pct(t.capacity_hours ? (t.allocated_hours / t.capacity_hours) * 100 : 0)} of clock capacity</span>
       </div>
       <div class="stat">
         <span class="k">Contracted</span>
-        <span class="v">${pair(t.contracted_units, t.contracted_hours)}</span>
-        <span class="s">${live.length} live contracts · hours committed to deliver them</span>
+        <span class="v">${pairHU(t.contracted_hours, t.contracted_units)}</span>
+        <span class="s">${live.length} live contracts</span>
       </div>
       <div class="stat ${offBalance ? 'bad' : 'good'}">
         <span class="k">Out of balance</span>
@@ -193,43 +221,34 @@ async function renderAgency() {
              underrun.length ? `${units(underrunUnits)} unplanned` : null].filter(Boolean).join(' · ')
           : 'every contract reconciles'}</span>
       </div>
-      <div class="stat ${t.constraint ? 'bad' : 'good'}">
-        <span class="k">Binding constraint</span>
-        <span class="v" style="font-size:1.15rem">${t.constraint ? esc(t.constraint.name) : 'None'}</span>
-        <span class="s">${t.constraint ? `over by ${hrs(t.constraint.over_by_hours)}` : 'nobody is overbooked'}</span>
-      </div>
     </div>
 
     ${overrun.length ? `<div class="banner bad"><div>
       <b>${overrun.length} contracts are allocated beyond what they're contracted for — ${units(overrunUnits)} in total.</b><br>
-      Re-costed at real rates, senior time consumes more contract value than the old sheet assumed.
-      Either trim the allocation, or declare the extra as carry-over on the contract.
+      Trim the allocation, or declare the extra as carry-over on the contract.
+      <button class="linky" data-filter="over">Show them</button>
     </div></div>` : ''}
 
     ${underrun.length ? `<div class="banner"><div>
       <b>${underrun.length} contracts have ${units(underrunUnits)} of contracted work with nobody on it.</b><br>
       ${t.allocated_units < 0.005
-        ? `Nothing is allocated for ${esc(monthName(S.period))} yet — plan the month on each contract.`
+        ? `Nothing is allocated for ${esc(monthName(S.period))} yet.`
         : 'Either allocate the remaining value, or reduce what the client is billed for.'}
+      <button class="linky" data-filter="under">Show them</button>
     </div></div>` : ''}
 
     ${inactiveOwned.length ? `<div class="banner"><div>
-      <b>${inactiveOwned.length} live contracts belong to someone no longer active</b>
-      (${esc(inactiveOwned.map((c) => c.name).join(', '))}). Reassign them in Contracts.
-    </div></div>` : ''}
-
-    ${potWarn.length ? `<div class="banner"><div>
-      <b>Pot warning.</b> ${potWarn.map((c) =>
-        `${esc(c.name)} — ${c.pot_exhausted ? 'exhausted' : `on pace for ${units(c.pot_projected)} against a ${units(c.pot_units)} pot`}`).join('; ')}
+      <b>${inactiveOwned.length} live contracts belong to someone no longer active.</b>
+      <button class="linky" data-filter="orphan">Show them</button>
     </div></div>` : ''}
 
     <div class="card">
       <header><h2>Capacity by person</h2><p>Clock hours each, with what those hours are worth</p></header>
-      <div class="scroll"><table>
+      <div class="scroll"><table class="big">
         <thead><tr>
           <th>Person</th><th class="num">Rate</th><th class="num">Available</th>
           <th class="num">Client capacity</th><th class="num">Allocated</th><th class="num">Spare</th>
-          <th style="width:130px">Load</th><th class="num">Internal</th><th class="num">Logged</th>
+          <th style="width:140px">Load</th><th class="num">Internal</th>
         </tr></thead>
         <tbody>${a.staff.map((p) => `<tr>
           <td><button class="linky" data-person="${p.person_id}">${esc(p.name)}</button>
@@ -238,51 +257,93 @@ async function renderAgency() {
           <td class="num">${hrs(p.available_hours)}</td>
           <td class="num">${hrs(p.client_hours)}</td>
           <td class="num">${hrs(p.allocated_client_hours)}<span class="sub">${units(p.allocated_client_units)}</span></td>
-          <td class="num" style="color:${p.spare_hours < 0 ? 'var(--over)' : 'inherit'}">${hrs(p.spare_hours)}</td>
+          <td class="num spare ${p.spare_hours < 0 ? 'neg' : 'pos'}">${hrs(p.spare_hours)}</td>
           <td>${capBar(p.allocated_client_hours, p.client_hours)}<span class="sub">${pct(p.load_pct)}</span></td>
           <td class="num">${hrs(p.allocated_internal_hours)} <span class="sub">of ${hrs(p.internal_hours)}</span></td>
-          <td class="num">${p.actual_hours ? hrs(p.actual_hours) : '—'}</td>
         </tr>`).join('')}</tbody>
       </table></div>
     </div>
 
     <div class="card">
-      <header><h2>Contracts</h2><p>Units — the currency contracts are written in</p></header>
-      <div class="scroll"><table>
+      <header>
+        <h2>Contracts</h2>
+        <div class="rowline" style="gap:8px">
+          <input type="search" id="gridSearch" placeholder="Find a contract…" style="width:180px">
+          <span class="pill mute" id="gridCount"></span>
+        </div>
+      </header>
+      <div class="scroll"><table class="sheet">
         <thead><tr>
-          <th>Contract</th><th>Type</th><th class="num">Contracted</th><th class="num">Carried</th>
-          <th class="num">People</th><th class="num">Third party</th><th class="num">Allocated</th><th class="num">Balance</th>
+          <th>Own</th><th>Contract</th><th class="num">Contracted</th>
+          ${cols.map((p) => `<th class="num person ${p.active && !p.archived ? '' : 'gone'}"
+            title="${esc(p.name)}${p.active && !p.archived ? '' : ' — no longer active'}"
+            >${esc(p.initials || p.name.slice(0, 2))}</th>`).join('')}
+          <th class="num">3P</th><th class="num">Allocated</th><th class="num">Balance</th>
         </tr></thead>
-        <tbody>
-        ${[...byExec.entries()].map(([execId, list]) => `
-          <tr class="group"><td colspan="8">${esc(execName(execId))}</td></tr>
-          ${list.map(contractRow).join('')}`).join('')}
-        <tr class="total">
-          <td colspan="2">Live total</td>
-          <td class="num">${units(t.contracted_units)}</td><td class="num"></td>
-          <td class="num">${units(live.reduce((s, c) => s + c.people_units, 0))}</td>
-          <td class="num">${units(live.reduce((s, c) => s + c.third_party_units, 0))}</td>
-          <td class="num">${units(live.reduce((s, c) => s + c.allocated_units, 0))}</td>
-          <td class="num"></td>
-        </tr>
-        ${internal ? `<tr class="group"><td colspan="8">Internal</td></tr>
-          <tr><td><button class="linky" data-contract="${internal.contract_id}">${esc(internal.name)}</button>
-            <span class="sub">budget derived from each person's utilisation target</span></td>
-          <td><span class="pill mute">Internal</span></td>
-          <td class="num">${units(internal.contracted_units)}</td><td class="num">—</td>
-          <td class="num">${units(internal.people_units)}</td><td class="num">—</td>
-          <td class="num">${units(internal.allocated_units)}</td>
-          <td class="num"><span class="pill ${Math.abs(internal.variance) < 5 ? 'ok' : 'warn'}">${
-            internal.variance < 0 ? `${h(-internal.variance)} over budget` : `${h(internal.variance)} spare`}</span></td></tr>` : ''}
-        ${pipeline.length ? `<tr class="group"><td colspan="8">Pipeline — not counted in headroom</td></tr>
-          ${pipeline.map((c) => `<tr><td><button class="linky" data-contract="${c.contract_id}">${esc(c.name)}</button></td>
-            <td><span class="pill warn">Pipeline</span></td><td class="num">${units(c.contracted_units)}</td>
-            <td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>`).join('')}` : ''}
+        <tbody id="gridBody">
+          ${live.map(gridRow).join('')}
+          <tr class="total">
+            <td></td><td>Live total</td>
+            <td class="num">${units(t.contracted_units)}</td>
+            ${cols.map((p) => `<td class="num person"><b>${hrs(colTotal(p.id))}</b></td>`).join('')}
+            <td class="num">${units(live.reduce((s, c) => s + c.third_party_units, 0))}</td>
+            <td class="num">${units(live.reduce((s, c) => s + c.allocated_units, 0))}
+              <span class="sub"><b>${hrs(live.reduce((s, c) => s + c.people_hours, 0))}</b></span></td>
+            <td></td>
+          </tr>
+          ${held.length ? `<tr class="group"><td colspan="${cols.length + 6}">On hold — paused, not counted in capacity</td></tr>
+            ${held.map(gridRow).join('')}` : ''}
+          ${pipeline.length ? `<tr class="group"><td colspan="${cols.length + 6}">Pipeline — not won yet, not counted in capacity</td></tr>
+            ${pipeline.map(gridRow).join('')}` : ''}
+          ${internal ? `<tr class="group"><td colspan="${cols.length + 6}">Internal &amp; training</td></tr>
+            <tr><td class="ini">—</td>
+              <td class="name"><button class="linky" data-contract="${internal.contract_id}">${esc(internal.name)}</button>
+                <span class="sub">budget from each person's utilisation target</span></td>
+              <td class="num">${units(internal.contracted_units)}</td>
+              ${cols.map((p) => {
+                const hh = hoursFor(internal, p.id);
+                return `<td class="num person">${hh ? `<b>${hrs(hh)}</b>` : '<span class="nil">—</span>'}</td>`;
+              }).join('')}
+              <td class="num"><span class="nil">—</span></td>
+              <td class="num">${units(internal.allocated_units)}<span class="sub"><b>${hrs(internal.people_hours)}</b></span></td>
+              <td class="num"><span class="pill ${Math.abs(internal.variance) < 5 ? 'ok' : 'warn'}">${
+                internal.variance < 0 ? `${h(-internal.variance)} over` : `${h(internal.variance)} spare`}</span></td>
+            </tr>` : ''}
         </tbody>
       </table></div>
     </div>`;
-}
 
+  // ---- search + banner filters, both driven off the same row matcher ----
+  const rows = () => [...view().querySelectorAll('#gridBody tr')];
+  const applyFilter = (fn, label) => {
+    let shown = 0;
+    for (const tr of rows()) {
+      if (tr.classList.contains('total') || tr.classList.contains('group')) { tr.classList.remove('hidden'); continue; }
+      const keep = fn(tr);
+      tr.classList.toggle('hidden', !keep);
+      if (keep) shown++;
+    }
+    $('#gridCount').textContent = label ? `${shown} shown · ${label}` : '';
+  };
+
+  const idsFor = (kind) => new Set(
+    (kind === 'over' ? overrun : kind === 'under' ? underrun
+      : inactiveOwned.map((c) => ({ contract_id: c.id }))).map((c) => c.contract_id));
+
+  view().querySelectorAll('[data-filter]').forEach((b) => b.addEventListener('click', () => {
+    const ids = idsFor(b.dataset.filter);
+    const label = { over: 'over contract', under: 'unplanned work', orphan: 'owner inactive' }[b.dataset.filter];
+    applyFilter((tr) => ids.has(Number(tr.querySelector('[data-contract]')?.dataset.contract)), label);
+    $('#gridSearch').value = '';
+    view().querySelector('.sheet').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }));
+
+  $('#gridSearch').addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    if (!q) return applyFilter(() => true, '');
+    applyFilter((tr) => (tr.querySelector('.name')?.textContent || '').toLowerCase().includes(q), `matching “${q}”`);
+  });
+}
 // ---------------------------------------------------------------------------
 // 2 — Person. Hours lead.
 // ---------------------------------------------------------------------------
@@ -305,6 +366,15 @@ async function renderPerson() {
   const pairH = (hh) => `${hrs(hh)}<span class="sep">/</span><span class="alt">${units(asUnits(hh))}</span>`;
   const clientLines = v.lines.filter((l) => l.type !== 'internal');
   const internalLines = v.lines.filter((l) => l.type === 'internal');
+  const internalDeliverables = S.boot.deliverables.filter((d) => d.internal);
+  const internalContract = S.boot.contracts.find((c) => c.type === 'internal');
+
+  // roll the flat line list up per contract so the list stays short
+  const byContract = [...clientLines.reduce((m, l) => {
+    const g = m.get(l.contract_id) || { contract_id: l.contract_id, name: l.contract_name, hours: 0, units: 0, lines: [] };
+    g.hours += l.hours; g.units += l.units; g.lines.push(l);
+    return m.set(l.contract_id, g);
+  }, new Map()).values()].sort((a, b) => b.hours - a.hours);
 
   view().innerHTML = `
     <div class="rowline">
@@ -335,18 +405,24 @@ async function renderPerson() {
       Move work to someone with room, or reduce what's committed this month.</div></div>` : ''}
 
     <div class="card">
-      <header><h2>Client work</h2><p>Hours lead · units shown for reference</p></header>
+      <header><h2>Client work</h2><p>One row per contract — click to see the deliverables inside</p></header>
       <div class="scroll"><table>
-        <thead><tr><th>Contract</th><th>Deliverable</th><th class="num">Hours</th><th class="num">Units</th><th class="num">Logged</th></tr></thead>
-        <tbody>${clientLines.length ? clientLines.map((l) => `<tr>
-          <td><button class="linky" data-contract="${l.contract_id}">${esc(l.contract_name)}</button></td>
-          <td>${esc(l.deliverable_name)}</td>
-          <td class="num">${hrs(l.hours)}</td>
-          <td class="num">${units(l.units)}</td>
-          <td class="num">${v.actual_by_contract[l.contract_id] != null ? hrs(v.actual_by_contract[l.contract_id]) : '—'}</td>
-        </tr>`).join('') : '<tr><td colspan="5" class="muted">Nothing allocated this month.</td></tr>'}
-        <tr class="total"><td colspan="2">Total</td><td class="num">${hrs(t.client_hours)}</td>
-          <td class="num">${units(t.client_units)}</td><td class="num"></td></tr></tbody>
+        <thead><tr><th></th><th>Contract</th><th class="num">Hours</th><th class="num">Units</th><th class="num">Deliverables</th></tr></thead>
+        <tbody>${byContract.length ? byContract.map((g) => `
+          <tr class="ct" data-grp="${g.contract_id}">
+            <td class="tw"><span class="caret">▸</span></td>
+            <td><button class="linky" data-contract="${g.contract_id}">${esc(g.name)}</button></td>
+            <td class="num"><b>${hrs(g.hours)}</b></td>
+            <td class="num">${units(g.units)}</td>
+            <td class="num">${g.lines.length}</td>
+          </tr>
+          ${g.lines.map((l) => `<tr class="sub-row hidden" data-of="${g.contract_id}">
+            <td></td><td class="indent">${esc(l.deliverable_name)}</td>
+            <td class="num">${hrs(l.hours)}</td><td class="num">${units(l.units)}</td><td></td>
+          </tr>`).join('')}`).join('')
+          : '<tr><td colspan="5" class="muted">Nothing allocated this month.</td></tr>'}
+        <tr class="total"><td></td><td>Total</td><td class="num">${hrs(t.client_hours)}</td>
+          <td class="num">${units(t.client_units)}</td><td></td></tr></tbody>
       </table></div>
     </div>
 
@@ -354,13 +430,18 @@ async function renderPerson() {
       <header><h2>Internal &amp; training</h2>
         <p>Budget ${hrs(t.internal_budget_hours)} — the ${pct(100 - v.person.utilisation * 100)} not sold to clients</p></header>
       <div class="scroll"><table>
-        <thead><tr><th>Deliverable</th><th class="num">Hours</th></tr></thead>
-        <tbody>${internalLines.map((l) => `<tr><td>${esc(l.deliverable_name)}</td>
-          <td class="num">${hrs(l.hours)}</td></tr>`).join('')}
-        <tr class="total"><td>Total</td><td class="num">${hrs(t.internal_hours)}</td></tr>
+        <thead><tr><th>Deliverable</th><th class="num">Hours</th><th></th></tr></thead>
+        <tbody>${internalDeliverables.map((d) => {
+          const line = internalLines.find((l) => l.deliverable_id === d.id);
+          return `<tr><td>${esc(d.name)}</td>
+            <td class="num"><input type="number" class="ih" step="0.25" min="0"
+              data-d="${d.id}" value="${h(line ? line.hours : 0)}"></td>
+            <td class="num">${line ? units(line.units) : ''}</td></tr>`;
+        }).join('')}
+        <tr class="total"><td>Total</td><td class="num">${hrs(t.internal_hours)}</td><td></td></tr>
         <tr><td class="muted">Budget remaining</td>
           <td class="num" style="color:${t.internal_budget_hours - t.internal_hours < 0 ? 'var(--over)' : 'inherit'}">
-          ${hrs(t.internal_budget_hours - t.internal_hours)}</td></tr></tbody>
+          ${hrs(t.internal_budget_hours - t.internal_hours)}</td><td></td></tr></tbody>
       </table></div>
     </div>
 
@@ -378,6 +459,23 @@ async function renderPerson() {
     </div>`;
 
   $('#personPick').addEventListener('change', (e) => { S.personId = Number(e.target.value); renderPerson(); });
+
+  view().querySelectorAll('tr.ct').forEach((tr) => tr.addEventListener('click', (e) => {
+    if (e.target.closest('[data-contract]')) return;      // let the link through
+    const open = tr.classList.toggle('open');
+    tr.querySelector('.caret').textContent = open ? '▾' : '▸';
+    view().querySelectorAll(`tr.sub-row[data-of="${tr.dataset.grp}"]`)
+      .forEach((r) => r.classList.toggle('hidden', !open));
+  }));
+
+  view().querySelectorAll('.ih').forEach((el) => el.addEventListener('change', async () => {
+    if (!internalContract) return toast('No internal contract set up.', true);
+    await api('/api/allocation', { body: {
+      contract_id: internalContract.id, period: S.period, person_id: S.personId,
+      deliverable_id: Number(el.dataset.d), hours: Number(el.value) } });
+    toast('Internal time updated.');
+    renderPerson();
+  }));
   $('#lvSave').addEventListener('click', async () => {
     await api('/api/leave', { body: {
       person_id: S.personId, period: S.period,
@@ -395,15 +493,18 @@ async function renderContracts() {
   if (!S.contractId) {
     const a = await api(`/api/agency${P()}`);
     view().innerHTML = `
-      <div class="rowline"><h2>Contracts</h2><span class="spacer"></span>
-        <button class="btn small" id="newContract">New contract</button></div>
+      <div class="rowline"><h2>Contracts</h2>
+        <input type="search" id="cSearch" placeholder="Find a contract…" style="width:200px">
+        <label class="tick"><input type="checkbox" id="cArch"${S.showArchived ? ' checked' : ''}> show archived</label>
+        <span class="spacer"></span>
+        <button class="btn small primary" id="newContract">New contract</button></div>
       <div class="card"><div class="scroll"><table>
         <thead><tr><th>Contract</th><th>Owner</th><th>Type</th><th>Status</th>
           <th class="num">Contracted</th><th class="num">Allocated</th><th class="num">Balance</th></tr></thead>
-        <tbody>${a.contracts.map((c) => {
+        <tbody id="cBody">${a.contracts.map((c) => {
           const cc = S.boot.contracts.find((x) => x.id === c.contract_id) || {};
           const ex = S.boot.people.find((p) => p.id === cc.exec_person_id);
-          return `<tr>
+          return `<tr class="${cc.archived ? 'archived' : ''}">
             <td><button class="linky" data-contract="${c.contract_id}">${esc(c.name)}</button></td>
             <td>${ex ? esc(ex.name) + (ex.active ? '' : ' <span class="pill warn">inactive</span>') : '<span class="muted">—</span>'}</td>
             <td><span class="pill ${c.type === 'pot' ? 'info' : 'mute'}">${esc(c.type)}</span></td>
@@ -416,6 +517,17 @@ async function renderContracts() {
           </tr>`;
         }).join('')}</tbody></table></div></div>`;
     $('#newContract').addEventListener('click', () => openContractEditor(null));
+    $('#cSearch').addEventListener('input', (e) => {
+      const q = e.target.value.trim().toLowerCase();
+      for (const tr of view().querySelectorAll('#cBody tr')) {
+        tr.classList.toggle('hidden', !!q && !tr.textContent.toLowerCase().includes(q));
+      }
+    });
+    $('#cArch').addEventListener('change', async (e) => {
+      S.showArchived = e.target.checked;
+      S.boot = await api(`/api/bootstrap${P()}${S.showArchived ? '&archived=1' : ''}`);
+      renderContracts();
+    });
     return;
   }
   await renderContractDetail(S.contractId);
@@ -423,6 +535,7 @@ async function renderContracts() {
 
 async function renderContractDetail(id) {
   const d = await api(`/api/contract/${id}${P()}`);
+  const anchors = (await api('/api/anchors')).filter((x) => x.contract_id === id);
   const c = d.contract, s = d.summary;
   const people = S.boot.people.filter((p) => p.active || s.lines.some((l) => l.person_id === p.id));
   const deliverables = S.boot.deliverables.filter((x) => (c.type === 'internal') === !!x.internal);
@@ -449,6 +562,8 @@ async function renderContractDetail(id) {
       <span class="pill ${isPot ? 'info' : 'mute'}">${esc(c.type)}</span>
       <span class="spacer"></span>
       <button class="btn small" id="editC">Edit contract</button>
+      <button class="btn small" id="archC">${c.archived ? 'Restore' : 'Archive'}</button>
+      <button class="btn small danger" id="delC">Delete</button>
     </div>
 
     <div class="balance ${s.balanced ? '' : 'bad'}">
@@ -527,6 +642,29 @@ async function renderContractDetail(id) {
         <button class="btn primary small" id="coSave">Save</button>
       </div></div>
     </div>` : ''}
+
+    <div class="card">
+      <header><h2>Fixed commitments</h2><p>Standing calls and meetings — the scheduler works around these</p></header>
+      <div class="scroll"><table>
+        <thead><tr><th>Who</th><th>What</th><th>When</th><th class="num">Length</th><th></th></tr></thead>
+        <tbody>${anchors.length ? anchors.map((x) => `<tr>
+          <td>${esc(x.person_name)}</td><td>${esc(x.label)}</td>
+          <td>${DOW_NAMES[x.dow]} ${esc(x.time)}</td>
+          <td class="num">${hrs(x.minutes / 60)}</td>
+          <td class="num"><button class="btn small danger dela" data-a="${x.id}">Remove</button></td>
+        </tr>`).join('') : '<tr><td colspan="5" class="muted">None on this contract.</td></tr>'}</tbody>
+      </table></div>
+      <div class="body" style="border-top:1px solid var(--rule)">
+        <div class="rowline"><label>Add</label>
+          <select id="naP">${people.filter((p) => p.active).map((p) =>
+            `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+          <input type="text" id="naLabel" placeholder="e.g. Weekly call" style="width:170px">
+          <select id="naDow">${[1, 2, 3, 4, 5].map((x) => `<option value="${x}">${DOW_NAMES[x]}</option>`).join('')}</select>
+          <input type="time" id="naTime" value="10:00" style="width:100px">
+          <input type="number" id="naMin" value="60" step="15" min="15"><span class="muted">min</span>
+          <button class="btn small primary" id="addAnchor">Add</button></div>
+      </div>
+    </div>
 
     <div class="card">
       <header><h2>Channels in scope</h2><p>Recorded on the contract — hours stay under Paid Social</p></header>
@@ -620,6 +758,47 @@ function wireContractDetail(id, deliverables) {
     reload();
   });
 
+  view().querySelectorAll('.dela').forEach((el) => el.addEventListener('click', async () => {
+    await api(`/api/anchors/${el.dataset.a}`, { method: 'DELETE' });
+    reload();
+  }));
+
+  const addA = $('#addAnchor');
+  if (addA) addA.addEventListener('click', async () => {
+    const label = $('#naLabel').value.trim();
+    if (!label) return toast('What is the commitment?', true);
+    await api('/api/anchors', { body: {
+      person_id: Number($('#naP').value), contract_id: id, label,
+      dow: Number($('#naDow').value), time: $('#naTime').value, minutes: Number($('#naMin').value) } });
+    toast('Commitment added.');
+    reload();
+  });
+
+  $('#archC').addEventListener('click', async () => {
+    const cur = S.boot.contracts.find((x) => x.id === id);
+    if (cur?.archived) {
+      await api('/api/restore', { body: { contract_id: id } });
+      toast('Contract restored.');
+    } else {
+      if (!confirm('Archive this contract? Its history stays, but it drops off every view unless you tick "show archived".')) return;
+      await api(`/api/contracts/${id}`, { method: 'DELETE' });
+      toast('Contract archived.');
+    }
+    S.boot = await api(`/api/bootstrap${P()}${S.showArchived ? '&archived=1' : ''}`);
+    S.contractId = null;
+    renderContracts();
+  });
+
+  $('#delC').addEventListener('click', async () => {
+    const cur = S.boot.contracts.find((x) => x.id === id);
+    if (!confirm(`Permanently delete ${cur?.name || 'this contract'}?\n\nEvery allocation against it, in every month, is deleted too. This cannot be undone — archive instead if you just want it out of the way.`)) return;
+    await api(`/api/contracts/${id}?hard=1`, { method: 'DELETE' });
+    toast('Contract deleted.');
+    S.boot = await api(`/api/bootstrap${P()}`);
+    S.contractId = null;
+    renderContracts();
+  });
+
   const chSave = async () => {
     const on = [...view().querySelectorAll('.chtick')].filter((x) => x.checked).map((x) => Number(x.value));
     await api(`/api/contract/${id}/channels`, { body: { channels: on } });
@@ -697,6 +876,7 @@ async function renderSchedule() {
   if (!S.personId) { view().innerHTML = '<p class="muted">No active people.</p>'; return; }
 
   const plan = await api(`/api/schedule/${S.personId}${P()}`);
+  const pv = await api(`/api/person/${S.personId}${P()}`);
   const byDate = new Map();
   for (const b of plan.blocks) {
     if (!byDate.has(b.date)) byDate.set(b.date, []);
@@ -717,6 +897,9 @@ async function renderSchedule() {
     <div class="stats">
       <div class="stat"><span class="k">Scheduled</span><span class="v">${hrs(plan.totals.scheduled_hours)}</span>
         <span class="s">${plan.totals.blocks} blocks across ${byDate.size} days</span></div>
+      <div class="stat ${pv.totals.spare_hours < 0 ? 'bad' : 'good'}">
+        <span class="k">Headroom</span><span class="v">${hrs(pv.totals.spare_hours)}</span>
+        <span class="s">of ${hrs(pv.capacity.client_hours)} client capacity · ${pct(pv.totals.load_pct)} loaded</span></div>
       <div class="stat ${plan.totals.unplaced_hours > 0 ? 'warn' : 'good'}">
         <span class="k">Couldn't place</span><span class="v">${hrs(plan.totals.unplaced_hours)}</span>
         <span class="s">${plan.totals.unplaced_hours > 0 ? 'no room left in the month' : 'everything fits'}</span></div>
@@ -737,7 +920,7 @@ async function renderSchedule() {
         ${blocks.map((b) => `<div class="blk${b.anchored ? ' fixed' : ''}">
           <span class="t">${esc(b.start)}–${esc(b.end)}</span>
           <span>${esc(b.label)}${b.anchored ? ' <span class="pill info">fixed</span>' : ''}</span>
-          <span class="m">${Math.round(b.minutes)}m</span></div>`).join('')}
+          <span class="m">${hrs(b.minutes / 60)}</span></div>`).join('')}
       </div>`).join('')}</div>`;
 
   $('#schedPick').addEventListener('change', (e) => { S.personId = Number(e.target.value); renderSchedule(); });
@@ -755,11 +938,13 @@ async function renderSettings() {
 
   view().innerHTML = `
     <div class="card">
-      <header><h2>People &amp; rates</h2><p>Rate sets the unit conversion · utilisation is the client share, the rest is internal &amp; training</p></header>
+      <header><h2>People &amp; rates</h2>
+        <label class="tick"><input type="checkbox" id="showArch"${S.showArchived ? ' checked' : ''}> show archived</label>
+      </header>
       <div class="scroll"><table>
         <thead><tr><th>Name</th><th>Initials</th><th class="num">Hours/week</th><th class="num">Rate £/h</th>
-          <th class="num">Utilisation</th><th class="num">Units per hour</th><th>Active</th><th></th></tr></thead>
-        <tbody>${S.boot.people.map((p) => `<tr data-p="${p.id}">
+          <th class="num">Utilisation</th><th class="num">Units/h</th><th>Active</th><th></th></tr></thead>
+        <tbody>${S.boot.people.map((p) => `<tr data-p="${p.id}" class="${p.archived ? 'archived' : ''}">
           <td><input type="text" class="pn" value="${esc(p.name)}" style="width:150px"></td>
           <td><input type="text" class="pi" value="${esc(p.initials)}" style="width:56px"></td>
           <td class="num"><input type="number" class="pw" step="0.5" min="0" value="${h(p.weekly_hours)}"></td>
@@ -767,7 +952,13 @@ async function renderSettings() {
           <td class="num"><input type="number" class="pu" step="1" min="0" max="100" value="${Math.round(p.utilisation * 100)}"></td>
           <td class="num">${h(p.rate / st.standard_rate)}</td>
           <td><input type="checkbox" class="pa"${p.active ? ' checked' : ''}></td>
-          <td class="num"><button class="btn small primary savep">Save</button></td>
+          <td class="num" style="white-space:nowrap">
+            <button class="btn small primary savep">Save</button>
+            ${p.archived
+              ? '<button class="btn small restp">Restore</button>'
+              : '<button class="btn small archp">Archive</button>'}
+            <button class="btn small danger delp">Delete</button>
+          </td>
         </tr>`).join('')}</tbody>
       </table></div>
       <div class="body" style="border-top:1px solid var(--rule)">
@@ -821,32 +1012,6 @@ async function renderSettings() {
           <td class="num"><button class="btn small primary saver">Save</button></td>
         </tr>`).join('')}</tbody>
       </table></div>
-    </div>
-
-    <div class="card">
-      <header><h2>Fixed commitments</h2><p>Weekly calls and standing meetings — the packer works around these</p></header>
-      <div class="scroll"><table>
-        <thead><tr><th>Person</th><th>What</th><th>When</th><th class="num">Minutes</th><th></th></tr></thead>
-        <tbody>${anchors.length ? anchors.map((a) => `<tr>
-          <td>${esc(a.person_name)}</td>
-          <td>${esc(a.label)}${a.contract_name ? ` <span class="muted">· ${esc(a.contract_name)}</span>` : ''}</td>
-          <td>${DOW[a.dow]} ${esc(a.time)}</td>
-          <td class="num">${a.minutes}</td>
-          <td class="num"><button class="btn small danger dela" data-a="${a.id}">Remove</button></td>
-        </tr>`).join('') : '<tr><td colspan="5" class="muted">None yet.</td></tr>'}</tbody>
-      </table></div>
-      <div class="body" style="border-top:1px solid var(--rule)">
-        <div class="rowline"><label>Add</label>
-          <select id="naP">${S.boot.people.filter((p) => p.active).map((p) =>
-            `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
-          <select id="naC"><option value="">No contract</option>${S.boot.contracts.map((c) =>
-            `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
-          <input type="text" id="naLabel" placeholder="e.g. Weekly call" style="width:170px">
-          <select id="naDow">${[1, 2, 3, 4, 5].map((d) => `<option value="${d}">${DOW[d]}</option>`).join('')}</select>
-          <input type="time" id="naTime" value="10:00" style="width:96px">
-          <input type="number" id="naMin" value="60" step="15" min="15">
-          <button class="btn small primary" id="addAnchor">Add</button></div>
-      </div>
     </div>
 
     <div class="grid2">
@@ -905,6 +1070,37 @@ function wireSettings() {
     toast('Person saved.'); renderSettings();
   }));
 
+  $('#showArch').addEventListener('change', async (e) => {
+    S.showArchived = e.target.checked;
+    S.boot = await api(`/api/bootstrap${P()}${S.showArchived ? '&archived=1' : ''}`);
+    renderSettings();
+  });
+
+  const reloadPeople = async () => {
+    S.boot = await api(`/api/bootstrap${P()}${S.showArchived ? '&archived=1' : ''}`);
+    renderSettings();
+  };
+
+  view().querySelectorAll('.archp').forEach((b) => b.addEventListener('click', async () => {
+    const tr = b.closest('tr'); const name = $('.pn', tr).value;
+    if (!confirm(`Archive ${name}?\n\nThey drop out of capacity and every grid, but their history stays.`)) return;
+    await api(`/api/people/${tr.dataset.p}`, { method: 'DELETE' });
+    toast(`${name} archived.`); reloadPeople();
+  }));
+
+  view().querySelectorAll('.restp').forEach((b) => b.addEventListener('click', async () => {
+    const tr = b.closest('tr');
+    await api('/api/restore', { body: { person_id: Number(tr.dataset.p) } });
+    toast(`${$('.pn', tr).value} restored.`); reloadPeople();
+  }));
+
+  view().querySelectorAll('.delp').forEach((b) => b.addEventListener('click', async () => {
+    const tr = b.closest('tr'); const name = $('.pn', tr).value;
+    if (!confirm(`Permanently delete ${name}?\n\nEvery allocation of theirs, in every month, goes too. Archive instead if you only want them out of the way.`)) return;
+    await api(`/api/people/${tr.dataset.p}?hard=1`, { method: 'DELETE' });
+    toast(`${name} deleted.`); reloadPeople();
+  }));
+
   $('#addPerson').addEventListener('click', async () => {
     const name = $('#npName').value.trim();
     if (!name) return toast('Name required.', true);
@@ -946,20 +1142,6 @@ function wireSettings() {
         anchor_dow: Number($('.ra', tr).value), anchor_time: $('.rt', tr).value } } });
     toast('Recipe saved.');
   }));
-
-  view().querySelectorAll('.dela').forEach((btn) => btn.addEventListener('click', async () => {
-    await api(`/api/anchors/${btn.dataset.a}`, { method: 'DELETE' });
-    renderSettings();
-  }));
-
-  $('#addAnchor').addEventListener('click', async () => {
-    const label = $('#naLabel').value.trim();
-    if (!label) return toast('What is the commitment?', true);
-    await api('/api/anchors', { body: {
-      person_id: Number($('#naP').value), contract_id: Number($('#naC').value) || null,
-      label, dow: Number($('#naDow').value), time: $('#naTime').value, minutes: Number($('#naMin').value) } });
-    toast('Commitment added.'); renderSettings();
-  });
 
   $('#saveSettings').addEventListener('click', async () => {
     await api('/api/settings', { body: {

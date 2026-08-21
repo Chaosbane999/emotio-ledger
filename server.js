@@ -71,10 +71,12 @@ const okAsync = (fn) => async (req, res) => {
   try { await fn(req, res); } catch (e) { res.status(400).json({ error: e.message }); }
 };
 
-const listPeople = () => db.prepare('SELECT * FROM people ORDER BY active = 0, sort_order, name').all();
+const listPeople = (withArchived) => db.prepare(
+  `SELECT * FROM people ${withArchived ? '' : 'WHERE archived = 0'} ORDER BY archived, active = 0, sort_order, name`).all();
 const listDeliverables = () => db.prepare('SELECT * FROM deliverables WHERE active = 1 ORDER BY internal, sort_order').all();
 const listThirdParties = () => db.prepare('SELECT * FROM third_parties WHERE active = 1 ORDER BY sort_order, name').all();
-const listContracts = () => db.prepare('SELECT * FROM contracts WHERE archived = 0 ORDER BY sort_order, name').all();
+const listContracts = (withArchived) => db.prepare(
+  `SELECT * FROM contracts ${withArchived ? '' : 'WHERE archived = 0'} ORDER BY archived, sort_order, name`).all();
 
 // ---------------------------------------------------------------------------
 // read
@@ -82,14 +84,18 @@ const listContracts = () => db.prepare('SELECT * FROM contracts WHERE archived =
 
 app.get('/api/bootstrap', ok((req, res) => {
   const p = period(req);
+  const withArchived = req.query.archived === '1';
+  const months = db.prepare('SELECT period FROM months ORDER BY period').all().map((m) => m.period);
   res.json({
     period: p,
-    periods: [-3, -2, -1, 0, 1, 2].map((d) => cap.shiftPeriod(p, d)),
-    people: listPeople(),
+    // only months that actually exist — new ones are created deliberately
+    periods: months,
+    months: months.map((m) => ({ period: m, working_days: cap.workingDays(m), hours: cap.monthHours(m) })),
+    people: listPeople(withArchived),
     deliverables: listDeliverables(),
     third_parties: listThirdParties(),
     channels: db.prepare('SELECT * FROM channels ORDER BY sort_order, name').all(),
-    contracts: listContracts(),
+    contracts: listContracts(withArchived),
     settings: {
       standard_rate: cap.standardRate(),
       work_start: get('work_start'),
@@ -218,16 +224,63 @@ app.post('/api/leave', ok((req, res) => {
 }));
 
 // ---------------------------------------------------------------------------
+// months
+// ---------------------------------------------------------------------------
+
+app.get('/api/months', ok((req, res) => {
+  res.json(db.prepare('SELECT * FROM months ORDER BY period').all()
+    .map((m) => ({ ...m, working_days: cap.workingDays(m.period), hours: cap.monthHours(m.period) })));
+}));
+
+/**
+ * Add a month. By default it copies the previous month's allocations forward,
+ * so you start from last month's plan and edit it rather than a blank sheet.
+ */
+app.post('/api/months', ok((req, res) => {
+  const p = String(req.body.period || '').trim();
+  cap.parsePeriod(p);                                   // throws on a bad shape
+  if (db.prepare('SELECT 1 FROM months WHERE period = ?').get(p)) throw new Error(`${p} already exists`);
+
+  const from = req.body.copy_from === null ? null : (req.body.copy_from || cap.shiftPeriod(p, -1));
+  let copied = { allocations: 0, third_party: 0 };
+
+  if (from && db.prepare('SELECT 1 FROM months WHERE period = ?').get(from)) {
+    const a = db.prepare(`INSERT OR IGNORE INTO allocations (contract_id, period, person_id, deliverable_id, hours)
+      SELECT contract_id, ?, person_id, deliverable_id, hours FROM allocations WHERE period = ?`).run(p, from);
+    const t = db.prepare(`INSERT OR IGNORE INTO tp_allocations (contract_id, period, third_party_id, units)
+      SELECT contract_id, ?, third_party_id, units FROM tp_allocations WHERE period = ?`).run(p, from);
+    copied = { allocations: Number(a.changes), third_party: Number(t.changes) };
+  }
+
+  db.prepare('INSERT INTO months (period, copied_from) VALUES (?, ?)').run(p, from || '');
+  res.json({ period: p, copied_from: from || null, copied });
+}));
+
+/** Remove a month and everything planned in it. */
+app.delete('/api/months/:period', ok((req, res) => {
+  const p = req.params.period;
+  db.prepare('DELETE FROM allocations WHERE period = ?').run(p);
+  db.prepare('DELETE FROM tp_allocations WHERE period = ?').run(p);
+  db.prepare('DELETE FROM carryover WHERE period = ?').run(p);
+  db.prepare('DELETE FROM actuals WHERE period = ?').run(p);
+  db.prepare('DELETE FROM leave WHERE period = ?').run(p);
+  db.prepare('DELETE FROM months WHERE period = ?').run(p);
+  const left = db.prepare('SELECT period FROM months ORDER BY period').all().map((m) => m.period);
+  if (get('default_period') === p && left.length) set('default_period', left[left.length - 1]);
+  res.json({ ok: true, months: left });
+}));
+
+// ---------------------------------------------------------------------------
 // write — settings CRUD
 // ---------------------------------------------------------------------------
 
 app.post('/api/people', ok((req, res) => {
   const b = req.body;
   if (b.id) {
-    db.prepare(`UPDATE people SET name=?, initials=?, weekly_hours=?, rate=?, utilisation=?, active=?, harvest_user_id=?
-      WHERE id=?`).run(b.name, b.initials || '', num(b.weekly_hours, 37.5), num(b.rate, 100),
-      Math.min(1, Math.max(0, num(b.utilisation, 0.87))), b.active ? 1 : 0,
-      b.harvest_user_id ? Number(b.harvest_user_id) : null, b.id);
+    db.prepare(`UPDATE people SET name=?, initials=?, weekly_hours=?, rate=?, utilisation=?, active=?,
+      archived=?, harvest_user_id=? WHERE id=?`).run(b.name, b.initials || '', num(b.weekly_hours, 37.5),
+      num(b.rate, 100), Math.min(1, Math.max(0, num(b.utilisation, 0.87))), b.active ? 1 : 0,
+      b.archived ? 1 : 0, b.harvest_user_id ? Number(b.harvest_user_id) : null, b.id);
   } else {
     db.prepare(`INSERT INTO people (name, initials, weekly_hours, rate, utilisation, active, harvest_user_id, sort_order)
       VALUES (?, ?, ?, ?, ?, ?, ?, 50)`).run(b.name, b.initials || '', num(b.weekly_hours, 37.5),
@@ -237,9 +290,12 @@ app.post('/api/people', ok((req, res) => {
   res.json(listPeople());
 }));
 
+/** Archive by default; ?hard=1 deletes outright, taking their allocations. */
 app.delete('/api/people/:id', ok((req, res) => {
-  db.prepare('UPDATE people SET active = 0 WHERE id = ?').run(Number(req.params.id));
-  res.json(listPeople());
+  const id = Number(req.params.id);
+  if (req.query.hard === '1') db.prepare('DELETE FROM people WHERE id = ?').run(id);
+  else db.prepare('UPDATE people SET archived = 1, active = 0 WHERE id = ?').run(id);
+  res.json(listPeople(req.query.archived === '1'));
 }));
 
 app.post('/api/contracts', ok((req, res) => {
@@ -255,12 +311,22 @@ app.post('/api/contracts', ok((req, res) => {
       pot_units, pot_start, pot_end, harvest_ids, notes, sort_order)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 50)`).run(...fields);
   }
-  res.json(listContracts());
+  res.json(listContracts(req.query.archived === '1'));
 }));
 
+/** Archive by default; ?hard=1 deletes it and every allocation against it. */
 app.delete('/api/contracts/:id', ok((req, res) => {
-  db.prepare('UPDATE contracts SET archived = 1 WHERE id = ?').run(Number(req.params.id));
-  res.json(listContracts());
+  const id = Number(req.params.id);
+  if (req.query.hard === '1') db.prepare('DELETE FROM contracts WHERE id = ?').run(id);
+  else db.prepare('UPDATE contracts SET archived = 1 WHERE id = ?').run(id);
+  res.json(listContracts(req.query.archived === '1'));
+}));
+
+/** Bring an archived contract or person back. */
+app.post('/api/restore', ok((req, res) => {
+  if (req.body.contract_id) db.prepare('UPDATE contracts SET archived = 0 WHERE id = ?').run(req.body.contract_id);
+  if (req.body.person_id) db.prepare('UPDATE people SET archived = 0, active = 1 WHERE id = ?').run(req.body.person_id);
+  res.json({ ok: true });
 }));
 
 app.post('/api/third-parties', ok((req, res) => {

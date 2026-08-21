@@ -164,11 +164,32 @@ CREATE TABLE IF NOT EXISTS task_map (
   deliverable_id INTEGER NOT NULL REFERENCES deliverables(id) ON DELETE CASCADE
 );
 
+-- Months that exist. Adding one copies the previous month's allocations
+-- forward so you edit a populated month rather than starting from nothing.
+CREATE TABLE IF NOT EXISTS months (
+  period     TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  copied_from TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
 `);
+
+// migration: archived people stay in history but drop out of every view
+try { db.exec('ALTER TABLE people ADD COLUMN archived INTEGER NOT NULL DEFAULT 0'); }
+catch (e) { /* already there */ }
+
+// migration: seed `months` from whatever periods already have allocations
+try {
+  const rows = db.prepare('SELECT DISTINCT period FROM allocations').all();
+  const ins = db.prepare('INSERT OR IGNORE INTO months (period) VALUES (?)');
+  for (const r of rows) ins.run(r.period);
+  const dp = db.prepare("SELECT value FROM settings WHERE key = 'default_period'").get();
+  if (dp) ins.run(dp.value);
+} catch (e) { /* nothing to backfill */ }
 
 // ---- defaults ----
 const defaults = {

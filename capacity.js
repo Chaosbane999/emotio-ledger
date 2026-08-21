@@ -43,6 +43,13 @@ function workingDates(period) {
 
 const workingDays = (period) => workingDates(period).length;
 
+/** Total client-facing hours the whole team has in a period — shown in the
+ *  month picker so you can see at a glance how big a month is. */
+function monthHours(period) {
+  const days = workingDays(period);
+  return round2(activePeople().reduce((s, p) => s + days * (p.weekly_hours / 5), 0));
+}
+
 /** ISO week index (0-based) of each working date within the period. */
 function weekBuckets(period) {
   const dates = workingDates(period);
@@ -113,7 +120,7 @@ function personCapacity(person, period) {
 }
 
 const activePeople = () =>
-  db.prepare('SELECT * FROM people WHERE active = 1 ORDER BY sort_order, name').all();
+  db.prepare('SELECT * FROM people WHERE active = 1 AND archived = 0 ORDER BY sort_order, name').all();
 
 // ---------------------------------------------------------------------------
 // Contract reconciliation.
@@ -255,7 +262,7 @@ function agencySummary(period) {
     SELECT a.person_id, c.type, SUM(a.hours) AS hours
       FROM allocations a
       JOIN contracts c ON c.id = a.contract_id
-     WHERE a.period = ? AND c.archived = 0 AND c.status != 'pipeline'
+     WHERE a.period = ? AND c.archived = 0 AND c.status = 'live'
      GROUP BY a.person_id, c.type`).all(period);
 
   const perPerson = new Map(caps.map((c) => [c.person_id, {
@@ -396,7 +403,7 @@ function personView(personId, period) {
 
 module.exports = {
   periodOf, thisPeriod, parsePeriod, shiftPeriod,
-  workingDates, workingDays, weekBuckets,
+  workingDates, workingDays, weekBuckets, monthHours,
   standardRate, toUnits, toHours, round2,
   personCapacity, activePeople,
   contractSummary, internalBudgetUnits,
