@@ -1,7 +1,12 @@
 /* Emotio Allocation Ledger — client.
    Rule that shapes every screen: hours lead where a person is looking at their
-   own month; units lead where the business is looking at contracts. Hours are
-   never summed across people, because different rates make that meaningless. */
+   own month; units lead where the business is looking at contracts.
+
+   Both denominations appear together on the headline tiles, because they answer
+   different questions — units say what the team can deliver in contract value,
+   hours say whether anyone actually has room. They diverge wherever rates do.
+   Summing hours across people is legitimate as a capacity figure; it is only
+   meaningless as a measure of value, so the balance rule stays units-only. */
 
 const S = { period: null, boot: null, view: 'agency', personId: null, contractId: null, plan: null };
 
@@ -12,8 +17,9 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const h = (n, d = 2) => (Number(n) || 0).toFixed(d).replace(/\.00$/, '');
-const hrs = (n) => `${h(Math.round((Number(n) || 0) * 4) / 4)} h`;   // display rounds to 0.25
-const units = (n) => `${h(n)} u`;
+const NB = '\u00a0';                                                 // keeps "12.5 h" unbreakable
+const hrs = (n) => `${h(Math.round((Number(n) || 0) * 4) / 4)}${NB}h`; // display rounds to 0.25
+const units = (n) => `${h(n)}${NB}u`;
 const pct = (n) => `${Math.round(Number(n) || 0)}%`;
 
 async function api(path, opts) {
@@ -145,30 +151,47 @@ async function renderAgency() {
     </tr>`;
   };
 
+  // A contract is out of balance in either direction. Over-allocating burns
+  // margin; under-allocating means work you have been paid for is unplanned.
   const overrun = live.filter((c) => c.variance < -0.005);
+  const underrun = live.filter((c) => c.variance > 0.005);
   const overrunUnits = overrun.reduce((s, c) => s - c.variance, 0);
+  const underrunUnits = underrun.reduce((s, c) => s + c.variance, 0);
+  const offBalance = overrun.length + underrun.length;
   const potWarn = a.contracts.filter((c) => c.type === 'pot' && (c.pot_overrun || c.pot_exhausted));
   const inactiveOwned = S.boot.contracts.filter((c) => {
     const ex = people.find((p) => p.id === c.exec_person_id);
     return c.status === 'live' && c.type !== 'internal' && ex && !ex.active;
   });
 
+  // Every tile carries both denominations: units answer "can we sell more?",
+  // hours answer "has anyone got room?". They diverge when rates differ.
+  const pair = (u, hh) => `${units(u)}<span class="sep">/</span><span class="alt">${hrs(hh)}</span>`;
+
   view().innerHTML = `
     <div class="stats">
       <div class="stat ${t.headroom_units > 40 ? 'good' : t.headroom_units < 0 ? 'bad' : 'warn'}">
         <span class="k">Delivery headroom</span>
-        <span class="v">${units(t.headroom_units)}</span>
-        <span class="s">of ${units(t.capacity_units)} capacity · can we sell more?</span>
+        <span class="v">${pair(t.headroom_units, t.headroom_hours)}</span>
+        <span class="s">of ${units(t.capacity_units)} / ${hrs(t.capacity_hours)} capacity</span>
+      </div>
+      <div class="stat">
+        <span class="k">Allocated</span>
+        <span class="v">${pair(t.allocated_units, t.allocated_hours)}</span>
+        <span class="s">${pct(t.capacity_units ? (t.allocated_units / t.capacity_units) * 100 : 0)} of capacity by value</span>
       </div>
       <div class="stat">
         <span class="k">Contracted</span>
-        <span class="v">${units(t.contracted_units)}</span>
-        <span class="s">${live.length} live contracts</span>
+        <span class="v">${pair(t.contracted_units, t.contracted_hours)}</span>
+        <span class="s">${live.length} live contracts · hours committed to deliver them</span>
       </div>
-      <div class="stat ${t.unbalanced ? 'bad' : 'good'}">
+      <div class="stat ${offBalance ? 'bad' : 'good'}">
         <span class="k">Out of balance</span>
-        <span class="v">${overrun.length}</span>
-        <span class="s">${overrun.length ? `${units(overrunUnits)} over contract` : 'every contract reconciles'}</span>
+        <span class="v">${offBalance}<span class="sep">/</span><span class="alt">${live.length} contracts</span></span>
+        <span class="s">${offBalance
+          ? [overrun.length ? `${units(overrunUnits)} over` : null,
+             underrun.length ? `${units(underrunUnits)} unplanned` : null].filter(Boolean).join(' · ')
+          : 'every contract reconciles'}</span>
       </div>
       <div class="stat ${t.constraint ? 'bad' : 'good'}">
         <span class="k">Binding constraint</span>
@@ -183,6 +206,13 @@ async function renderAgency() {
       Either trim the allocation, or declare the extra as carry-over on the contract.
     </div></div>` : ''}
 
+    ${underrun.length ? `<div class="banner"><div>
+      <b>${underrun.length} contracts have ${units(underrunUnits)} of contracted work with nobody on it.</b><br>
+      ${t.allocated_units < 0.005
+        ? `Nothing is allocated for ${esc(monthName(S.period))} yet — plan the month on each contract.`
+        : 'Either allocate the remaining value, or reduce what the client is billed for.'}
+    </div></div>` : ''}
+
     ${inactiveOwned.length ? `<div class="banner"><div>
       <b>${inactiveOwned.length} live contracts belong to someone no longer active</b>
       (${esc(inactiveOwned.map((c) => c.name).join(', '))}). Reassign them in Contracts.
@@ -194,7 +224,7 @@ async function renderAgency() {
     </div></div>` : ''}
 
     <div class="card">
-      <header><h2>Capacity by person</h2><p>Hours, per person — never summed across people</p></header>
+      <header><h2>Capacity by person</h2><p>Clock hours each, with what those hours are worth</p></header>
       <div class="scroll"><table>
         <thead><tr>
           <th>Person</th><th class="num">Rate</th><th class="num">Available</th>
@@ -265,6 +295,14 @@ async function renderPerson() {
   const v = await api(`/api/person/${S.personId}${P()}`);
   const lv = (await api(`/api/leave${P()}`)).find((l) => l.person_id === S.personId) || { annual_hours: 0, sick_hours: 0 };
   const t = v.totals, c = v.capacity;
+
+  // Person surfaces lead with hours — it's their own diary — with the unit
+  // value alongside so the cost of their time stays visible.
+  // Convert from the same 0.25-rounded figure the hours display uses, or a
+  // £100 person reads "148.50 h / 148.51 u" and looks broken.
+  const q = (hh) => Math.round((Number(hh) || 0) * 4) / 4;
+  const asUnits = (hh) => q(hh) * v.person.rate / S.boot.settings.standard_rate;
+  const pairH = (hh) => `${hrs(hh)}<span class="sep">/</span><span class="alt">${units(asUnits(hh))}</span>`;
   const clientLines = v.lines.filter((l) => l.type !== 'internal');
   const internalLines = v.lines.filter((l) => l.type === 'internal');
 
@@ -279,14 +317,17 @@ async function renderPerson() {
     </div>
 
     <div class="stats">
-      <div class="stat"><span class="k">Client capacity</span><span class="v">${hrs(c.client_hours)}</span>
-        <span class="s">of ${hrs(c.available_hours)} available</span></div>
-      <div class="stat"><span class="k">Allocated</span><span class="v">${hrs(t.client_hours)}</span>
-        <span class="s">${units(t.client_units)} of contract value</span></div>
+      <div class="stat"><span class="k">Client capacity</span>
+        <span class="v">${pairH(c.client_hours)}</span>
+        <span class="s">of ${hrs(c.available_hours)} available after leave</span></div>
+      <div class="stat"><span class="k">Allocated</span>
+        <span class="v">${pairH(t.client_hours)}</span>
+        <span class="s">${pct(t.load_pct)} of their client capacity</span></div>
       <div class="stat ${t.spare_hours < 0 ? 'bad' : 'good'}"><span class="k">Spare</span>
-        <span class="v">${hrs(t.spare_hours)}</span><span class="s">${pct(t.load_pct)} loaded</span></div>
+        <span class="v">${pairH(t.spare_hours)}</span>
+        <span class="s">${t.spare_hours < 0 ? 'overbooked' : 'room for more work'}</span></div>
       <div class="stat"><span class="k">Logged in Harvest</span>
-        <span class="v">${t.actual_hours ? hrs(t.actual_hours) : '—'}</span>
+        <span class="v">${t.actual_hours ? pairH(t.actual_hours) : '—'}</span>
         <span class="s">${t.actual_hours ? `${h(t.actual_vs_allocated)} h vs allocated` : 'not synced yet'}</span></div>
     </div>
 

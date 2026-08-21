@@ -33,11 +33,18 @@ ledger holds both currencies and is strict about which appears where.
 | Person view | Hours | The team thinks in their own day |
 | Contract view | Hours entered, units checked | You allocate the way you always have |
 | Agency grid | Units | Contracts are written in units |
-| Headroom | Units | "Can we sell another contract?" |
+| Headroom tiles | Both, paired | Value and clock time answer different questions |
 | Calendar export | Hours | A block in a diary is clock time |
 
-**Hours are never summed across people.** Adding a £250 hour to a £33 hour gives
-a number that looks meaningful and isn't. Cross-person totals are always units.
+**Two questions, two denominations.** Units answer "can we sell another
+contract?" — what the team can deliver in contract value. Hours answer "has
+anyone actually got room?" — clock time available. They diverge wherever rates
+do: a director is few hours but many units, an offshore specialist the reverse.
+The headline tiles show both side by side so that tension stays visible.
+
+Summing hours across people is legitimate as a *capacity* figure. It is only
+meaningless as a measure of *value* — so the balance rule runs on units alone,
+and a contract's worth is never expressed in hours.
 
 ## The balance rule
 

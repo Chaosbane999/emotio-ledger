@@ -294,9 +294,17 @@ function agencySummary(period) {
   const live = summaries.filter((s) => s.contract.type !== 'internal' && s.contract.status === 'live');
   const pipeline = summaries.filter((s) => s.contract.status === 'pipeline');
 
-  // delivery headroom, in units — the hiring signal
+  // Two headroom figures, because they answer different questions.
+  //   units — "can we sell another contract?"  (value the team can deliver)
+  //   hours — "has anyone got room in their diary?"  (clock time available)
+  // They diverge whenever rates differ: a director is few hours but many units,
+  // an offshore specialist the reverse. Summing hours across people is fine as a
+  // capacity measure; it is only meaningless as a measure of contract value, so
+  // the balance rule still runs on units alone.
   const capacityUnits = staff.reduce((s, p) => s + p.client_units, 0);
   const allocatedUnits = staff.reduce((s, p) => s + p.allocated_client_units, 0);
+  const capacityHours = staff.reduce((s, p) => s + p.client_hours, 0);
+  const allocatedHours = staff.reduce((s, p) => s + p.allocated_client_hours, 0);
 
   const constrained = staff.filter((p) => p.spare_hours < 0)
     .sort((a, b) => a.spare_hours - b.spare_hours);
@@ -310,9 +318,18 @@ function agencySummary(period) {
       capacity_units: round2(capacityUnits),
       allocated_units: round2(allocatedUnits),
       headroom_units: round2(capacityUnits - allocatedUnits),
+      capacity_hours: round2(capacityHours),
+      allocated_hours: round2(allocatedHours),
+      headroom_hours: round2(capacityHours - allocatedHours),
       contracted_units: round2(live.reduce((s, x) => s + x.summary.contracted_units, 0)),
+      // clock hours currently committed to delivering the live book
+      contracted_hours: round2(live.reduce((s, x) => s + x.summary.people_hours, 0)),
+      // hours sitting on the contracts that breach their value
+      overrun_hours: round2(live.filter((x) => x.summary.variance < -0.005)
+        .reduce((s, x) => s + x.summary.people_hours, 0)),
       third_party_units: round2(summaries.reduce((s, x) => s + x.summary.third_party_units, 0)),
       pipeline_units: round2(pipeline.reduce((s, x) => s + x.summary.contracted_units, 0)),
+      pipeline_hours: round2(pipeline.reduce((s, x) => s + x.summary.people_hours, 0)),
       unbalanced: summaries.filter((s) => !s.summary.balanced).length,
       // the binding constraint, named — headroom in units is meaningless if
       // the one person who can do the work is already full
