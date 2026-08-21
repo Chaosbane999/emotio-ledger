@@ -1,0 +1,19 @@
+services:
+  emotio-ledger:
+    build: https://github.com/Chaosbane999/emotio-ledger.git
+    volumes:
+      - emotio-ledger-data:/data
+    environment:
+      # set the real values in the Hostinger Docker Manager yaml, not here
+      - APP_PASSCODE=${APP_PASSCODE:-}
+      - HARVEST_ACCOUNT_ID=${HARVEST_ACCOUNT_ID:-}
+      - HARVEST_TOKEN=${HARVEST_TOKEN:-}
+    labels:
+      - traefik.enable=true
+      - "traefik.http.routers.emotio-ledger.rule=Host(`capacity.emotioflow.com`)"
+      - traefik.http.routers.emotio-ledger.entrypoints=websecure
+      - traefik.http.routers.emotio-ledger.tls.certresolver=letsencrypt
+      - traefik.http.services.emotio-ledger.loadbalancer.server.port=3000
+    restart: unless-stopped
+volumes:
+  emotio-ledger-data:

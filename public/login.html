@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Allocation Ledger — sign in</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="brand" style="font-size:1.3rem">Allocation<span>Ledger</span></div>
+    <p class="muted">Enter your passcode to continue.</p>
+    <form id="loginForm">
+      <input type="password" id="passcode" placeholder="Passcode" autofocus autocomplete="current-password">
+      <p class="err hidden" id="loginErr" style="margin-top:10px">That passcode didn't match — try again.</p>
+      <button type="submit" class="btn primary" style="margin-top:12px;width:100%">Enter</button>
+    </form>
+  </div>
+</div>
+<script>
+document.getElementById('loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const r = await fetch('/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ passcode: document.getElementById('passcode').value }),
+  });
+  if (r.ok) location.href = '/';
+  else document.getElementById('loginErr').classList.remove('hidden');
+});
+</script>
+</body>
+</html>

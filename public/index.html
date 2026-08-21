@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emotio Allocation Ledger</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>⏱</text></svg>">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">Allocation<span>Ledger</span></div>
+  <nav class="tabs" id="tabs">
+    <button data-view="agency" class="on">Agency</button>
+    <button data-view="people">People</button>
+    <button data-view="contracts">Contracts</button>
+    <button data-view="schedule">Schedule</button>
+    <button data-view="settings">Settings</button>
+  </nav>
+  <div class="spacer"></div>
+  <label class="muted" for="period">Month</label>
+  <select id="period"></select>
+  <button class="btn small" id="syncBtn" title="Pull this month's actuals from Harvest">Sync Harvest</button>
+</header>
+
+<main>
+  <section class="view" id="view"><p class="muted">Loading…</p></section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
