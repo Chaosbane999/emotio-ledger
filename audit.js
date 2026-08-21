@@ -92,8 +92,27 @@ for (const P of periods) {
   ok(near(t.headroom_hours, t.capacity_hours - t.allocated_hours, 0.02), `${P} totals: headroom hours identity`);
 
   const live = a.contracts.filter((c) => c.type !== 'internal' && c.status === 'live');
-  ok(near(t.contracted_units, live.reduce((s, c) => s + c.contracted_units, 0), 0.02),
-    `${P} totals: contracted = sum of live contracts`);
+  const retainers = live.filter((c) => c.type !== 'pot');
+  const pots = live.filter((c) => c.type === 'pot');
+
+  // contracted = retainer values + whatever pots have drawn this month
+  ok(near(t.contracted_units,
+    retainers.reduce((s, c) => s + c.contracted_units, 0)
+    + pots.reduce((s, c) => s + c.allocated_units, 0), 0.02),
+    `${P} totals: contracted = retainers + pot draw`);
+
+  ok(near(t.assigned_units, live.reduce((s, c) => s + c.allocated_units, 0), 0.02),
+    `${P} totals: assigned = sum of live allocated`);
+
+  // the clock-hours tiles must reconcile through the orphan figure
+  ok(near(t.contracted_hours - t.orphan_hours, t.allocated_hours, 0.02),
+    `${P} totals: live clock hours - orphan = allocated (${t.contracted_hours} - ${t.orphan_hours} vs ${t.allocated_hours})`);
+
+  // and on a book where every retainer balances, contracted must equal assigned
+  if (retainers.every((c) => c.balanced)) {
+    ok(near(t.contracted_units, t.assigned_units, 0.02),
+      `${P} totals: balanced book means contracted = assigned (${t.contracted_units} vs ${t.assigned_units})`);
+  }
 
   // held and pipeline work must not consume capacity
   for (const status of ['hold', 'pipeline']) {

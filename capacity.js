@@ -341,9 +341,27 @@ function agencySummary(period) {
       capacity_hours: round2(capacityHours),
       allocated_hours: round2(allocatedHours),
       headroom_hours: round2(capacityHours - allocatedHours),
-      contracted_units: round2(live.reduce((s, x) => s + x.summary.contracted_units, 0)),
-      // clock hours currently committed to delivering the live book
+      // What clients have committed for this month. A pot has no monthly figure
+      // — its value lives in pot_units — so what it commits this month is
+      // whatever has been drawn against it.
+      contracted_units: round2(
+        live.filter((x) => x.contract.type !== 'pot')
+          .reduce((s, x) => s + x.summary.contracted_units, 0)
+        + live.filter((x) => x.contract.type === 'pot')
+          .reduce((s, x) => s + x.summary.allocated_units, 0)),
+
+      // What has been assigned against it: team units plus third-party spend.
+      // On a balanced book this equals contracted_units exactly.
+      assigned_units: round2(live.reduce((s, x) => s + x.summary.allocated_units, 0)),
+      // clock hours on the live book, whoever holds them
       contracted_hours: round2(live.reduce((s, x) => s + x.summary.people_hours, 0)),
+
+      // Hours on live contracts held by someone no longer in the capacity list.
+      // They inflate the clock-hours figure while contributing no capacity,
+      // which is exactly the gap that made the two tiles disagree.
+      orphan_hours: round2(live.reduce((s, x) => s + x.summary.lines
+        .filter((l) => !staff.some((p) => p.person_id === l.person_id))
+        .reduce((n, l) => n + l.hours, 0), 0)),
       // hours sitting on the contracts that breach their value
       overrun_hours: round2(live.filter((x) => x.summary.variance < -0.005)
         .reduce((s, x) => s + x.summary.people_hours, 0)),

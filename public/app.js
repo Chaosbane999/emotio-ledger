@@ -214,12 +214,17 @@ async function renderAgency() {
       <div class="stat">
         <span class="k">Allocated</span>
         <span class="v">${pairHU(t.allocated_hours, t.allocated_units)}</span>
-        <span class="s">${pct(t.capacity_hours ? (t.allocated_hours / t.capacity_hours) * 100 : 0)} of clock capacity</span>
+        <span class="s">${pct(t.capacity_hours ? (t.allocated_hours / t.capacity_hours) * 100 : 0)} of clock capacity${
+          t.orphan_hours ? ` · ${hrs(t.orphan_hours)} more held by people off the team` : ''}</span>
       </div>
-      <div class="stat">
+      <div class="stat ${Math.abs(t.contracted_units - t.assigned_units) < 0.01 ? '' : 'warn'}">
         <span class="k">Contracted</span>
-        <span class="v">${pairHU(t.contracted_hours, t.contracted_units)}</span>
-        <span class="s">${live.length} live contracts</span>
+        <span class="v">${units(t.contracted_units)}</span>
+        <span class="s">${live.length} live contracts · ${
+          Math.abs(t.contracted_units - t.assigned_units) < 0.01
+            ? `${units(t.assigned_units)} assigned, matches`
+            : `${units(t.assigned_units)} assigned — ${units(Math.abs(t.contracted_units - t.assigned_units))} ${
+                t.assigned_units > t.contracted_units ? 'over' : 'short'}`}</span>
       </div>
       <div class="stat ${offBalance ? 'bad' : 'good'}">
         <span class="k">Out of balance</span>
@@ -243,6 +248,13 @@ async function renderAgency() {
         ? `Nothing is allocated for ${esc(monthName(S.period))} yet.`
         : 'Either allocate the remaining value, or reduce what the client is billed for.'}
       <button class="linky" data-filter="under">Show them</button>
+    </div></div>` : ''}
+
+    ${t.orphan_hours ? `<div class="banner"><div>
+      <b>${hrs(t.orphan_hours)} of live client work is held by people who are not in the capacity list.</b><br>
+      It counts against the contracts but adds no capacity, which is why the clock-hours figures differ.
+      Reassign it, or bring them back in Settings.
+      <button class="linky" data-filter="orphanhours">Show those contracts</button>
     </div></div>` : ''}
 
     ${inactiveOwned.length ? `<div class="banner"><div>
@@ -320,13 +332,19 @@ async function renderAgency() {
     $('#gridCount').textContent = label ? `${shown} shown · ${label}` : '';
   };
 
-  const idsFor = (kind) => new Set(
-    (kind === 'over' ? overrun : kind === 'under' ? underrun
-      : inactiveOwned.map((c) => ({ contract_id: c.id }))).map((c) => c.contract_id));
+  const activeIds = new Set(a.staff.map((p) => p.person_id));
+  const idsFor = (kind) => new Set((
+    kind === 'over' ? overrun
+      : kind === 'under' ? underrun
+      : kind === 'orphanhours'
+        ? live.filter((c) => c.lines.some((l) => !activeIds.has(l.person_id)))
+        : inactiveOwned.map((c) => ({ contract_id: c.id }))
+  ).map((c) => c.contract_id));
 
   view().querySelectorAll('[data-filter]').forEach((b) => b.addEventListener('click', () => {
     const ids = idsFor(b.dataset.filter);
-    const label = { over: 'over contract', under: 'unplanned work', orphan: 'owner inactive' }[b.dataset.filter];
+    const label = { over: 'over contract', under: 'unplanned work',
+      orphan: 'owner inactive', orphanhours: 'work held by people off the team' }[b.dataset.filter];
     applyFilter((tr) => ids.has(Number(tr.querySelector('[data-contract]')?.dataset.contract)), label);
     $('#gridSearch').value = '';
     view().querySelector('.sheet').scrollIntoView({ behavior: 'smooth', block: 'start' });
