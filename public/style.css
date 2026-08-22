@@ -221,6 +221,8 @@ table.sheet tr.hidden { display: none; }
 /* ---------- archived + expandable rows ---------- */
 
 tr.archived td { opacity: .5; }
+tr.own td { background: var(--accent-soft); }
+select:disabled, input:disabled { opacity: .4; cursor: not-allowed; }
 tr.archived td:first-child::before { content: 'archived · '; font-size: .7rem; color: var(--muted); }
 tr.hidden { display: none; }
 

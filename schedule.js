@@ -28,10 +28,12 @@ function dayWindows() {
   return [[start, lunch], [Math.min(end, lunch + lunchLen), end]];
 }
 
-// A week only has so many useful slots. Past this, extra "sessions" stop being
-// scheduling and start being confetti — grow the block instead of fragmenting.
-const MAX_PIECES_PER_WEEK = 3;
-const MAX_PIECES_PER_MONTH = 10;
+// A backstop against confetti, not a design constraint. It only bites when the
+// block size implies absurd fragmentation; a deliberate block size well inside
+// these bounds is honoured exactly, which is what someone setting "2 hours a
+// sitting" expects to get.
+const MAX_PIECES_PER_WEEK = 6;
+const MAX_PIECES_PER_MONTH = 16;
 
 // Nobody books 119 minutes. Every block lands on a quarter hour, minimum 15 min,
 // so the calendar reads in the same units people actually plan in.
@@ -189,11 +191,14 @@ function planPerson(personId, period) {
      WHERE a.person_id = ? AND a.period = ? AND c.archived = 0 AND a.hours > 0`)
     .all(personId, period);
 
+  // a person's own recipe wins over the agency default
+  const ownRecipe = db.prepare('SELECT * FROM person_recipes WHERE person_id = ? AND deliverable_id = ?');
   const recipeFor = db.prepare('SELECT * FROM recipes WHERE deliverable_id = ?');
 
   const wanted = [];
   for (const r of rows) {
-    const recipe = recipeFor.get(r.deliverable_id) || DEFAULT_RECIPE;
+    const recipe = ownRecipe.get(personId, r.deliverable_id)
+      || recipeFor.get(r.deliverable_id) || DEFAULT_RECIPE;
     const ceiling = r.contract_type === 'internal'
       ? perDayCapMin : Math.min(maxClientMin, perDayCapMin);
     for (const s of expand(r, recipe, buckets, ceiling)) {

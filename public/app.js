@@ -974,6 +974,7 @@ async function renderSchedule() {
   const plan = await api(`/api/schedule/${S.personId}${P()}`);
   const pv = await api(`/api/person/${S.personId}${P()}`);
   const dates = await api(`/api/workdays${P()}`);
+  const recipes = await api(`/api/person-recipes/${S.personId}`);
 
   const byDate = new Map();
   for (const b of plan.blocks) {
@@ -999,7 +1000,7 @@ async function renderSchedule() {
       <span class="pill ${plan.committed ? 'ok' : 'warn'}">${plan.committed ? 'Saved plan' : 'Draft'}</span>
       <span class="spacer"></span>
       <button class="btn small ${plan.committed ? '' : 'primary'}" id="genPlan">
-        ${plan.committed ? 'Rebuild from allocations' : 'Save this plan'}</button>
+        ${plan.committed ? 'Rebuild from allocations' : 'Edit this plan'}</button>
       ${plan.committed ? '<button class="btn small danger" id="clearPlan">Discard plan</button>' : ''}
       <a class="btn small primary" href="/api/schedule/${S.personId}/ics${P()}">Download .ics</a>
     </div>
@@ -1025,6 +1026,43 @@ async function renderSchedule() {
         ? 'This is a saved plan — move blocks between days, change their hours, or delete them and they stay put. Rebuilding from allocations discards these edits.'
         : 'This is a draft from the scheduling recipes. Save it to start moving blocks around by hand.'}
     </div></div>
+
+    <div class="card">
+      <header><h2>How this person's work is shaped</h2>
+        <p>Their own recipes. Blank rows follow the agency default in Settings</p></header>
+      <div class="scroll"><table>
+        <thead><tr><th>Deliverable</th><th>Cadence</th><th>Distribution</th><th class="num">Block (min)</th>
+          <th>Splittable</th><th class="num">Max sittings</th><th>Anchor</th><th></th></tr></thead>
+        <tbody>${recipes.map((r) => `<tr data-d="${r.id}" class="${r.overridden ? 'own' : ''}">
+          <td>${esc(r.name)}${r.internal ? ' <span class="pill mute">internal</span>' : ''}
+            ${r.overridden ? ' <span class="pill info">theirs</span>' : ''}</td>
+          <td><select class="prc">${['weekly', 'fortnightly', 'monthly', 'oneoff'].map((x) =>
+            `<option${r.cadence === x ? ' selected' : ''}>${x}</option>`).join('')}</select></td>
+          <td><select class="prd">${['spread', 'frontload', 'deadline', 'anchored'].map((x) =>
+            `<option${r.distribution === x ? ' selected' : ''}>${x}</option>`).join('')}</select></td>
+          <td class="num"><input type="number" class="prb" step="15" min="15" value="${r.block_minutes ?? 60}"></td>
+          <td><input type="checkbox" class="prs"${r.splittable ? ' checked' : ''}></td>
+          <td class="num"><input type="number" class="prm" step="1" min="0" value="${r.max_sittings ?? 0}"
+            title="0 = let the block size decide. A daily ceiling overrides this either way."></td>
+          <td class="anchorCell">
+            <select class="pra"${r.distribution === 'anchored' ? '' : ' disabled'}>${[1, 2, 3, 4, 5].map((dd) =>
+              `<option value="${dd}"${r.anchor_dow === dd ? ' selected' : ''}>${DOW_NAMES[dd]}</option>`).join('')}</select>
+            <input type="time" class="prt" value="${esc(r.anchor_time || '10:00')}" style="width:100px"
+              ${r.distribution === 'anchored' ? '' : 'disabled'}></td>
+          <td class="num" style="white-space:nowrap">
+            <button class="btn small primary prSave">Save</button>
+            ${r.overridden ? '<button class="btn small prReset">Default</button>' : ''}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+      <div class="body" style="border-top:1px solid var(--rule)">
+        <p class="muted"><b>Max sittings</b> caps how many separate blocks one allocation is broken
+        into. Leave it 0 and the block size decides. It is a preference either way: if a block would
+        not physically fit a day, the daily ceiling wins and it splits further — which is why a 12h
+        build lands as 3 x 4h however this is set.
+        <b>Anchor</b> only applies when Distribution is <span class="mono">anchored</span>; it is
+        greyed out otherwise because it has no effect.</p>
+      </div>
+    </div>
 
     ${plan.committed ? `<div class="card">
       <header><h2>Add a block</h2><p>Work the recipes knew nothing about</p></header>
@@ -1060,6 +1098,32 @@ async function renderSchedule() {
       </div>`).join('') || '<p class="muted">Nothing scheduled this month.</p>'}</div>`;
 
   $('#schedPick').addEventListener('change', (e) => { S.personId = Number(e.target.value); renderSchedule(); });
+
+  // anchor controls follow the distribution, so they never look live when idle
+  view().querySelectorAll('.prd').forEach((el) => el.addEventListener('change', () => {
+    const tr = el.closest('tr'), on = el.value === 'anchored';
+    $('.pra', tr).disabled = !on;
+    $('.prt', tr).disabled = !on;
+  }));
+
+  view().querySelectorAll('.prSave').forEach((btn) => btn.addEventListener('click', async () => {
+    const tr = btn.closest('tr');
+    await api(`/api/person-recipes/${S.personId}`, { body: {
+      deliverable_id: Number(tr.dataset.d),
+      cadence: $('.prc', tr).value, distribution: $('.prd', tr).value,
+      block_minutes: Number($('.prb', tr).value), splittable: $('.prs', tr).checked,
+      max_sittings: Number($('.prm', tr).value),
+      anchor_dow: Number($('.pra', tr).value), anchor_time: $('.prt', tr).value } });
+    toast('Recipe saved for this person.');
+    renderSchedule();
+  }));
+
+  view().querySelectorAll('.prReset').forEach((btn) => btn.addEventListener('click', async () => {
+    const tr = btn.closest('tr');
+    await api(`/api/person-recipes/${S.personId}/${tr.dataset.d}`, { method: 'DELETE' });
+    toast('Back to the agency default.');
+    renderSchedule();
+  }));
 
   $('#genPlan').addEventListener('click', async () => {
     if (plan.committed && !confirm('Rebuild from the allocations?\n\nEvery block you have moved, resized or added by hand will be replaced.')) return;
@@ -1170,7 +1234,8 @@ async function renderSettings() {
     </div>
 
     <div class="card">
-      <header><h2>Scheduling recipes</h2><p>How each deliverable's hours are shaped into calendar blocks</p></header>
+      <header><h2>Scheduling recipes</h2>
+        <p>Agency defaults · a person can override these on their Schedule tab</p></header>
       <div class="scroll"><table>
         <thead><tr><th>Deliverable</th><th>Cadence</th><th>Distribution</th><th class="num">Block (min)</th>
           <th>Splittable</th><th class="num">Max sittings</th><th>Anchor</th><th></th></tr></thead>
@@ -1183,9 +1248,10 @@ async function renderSettings() {
           <td class="num"><input type="number" class="rb" step="15" min="15" value="${r.block_minutes ?? 60}"></td>
           <td><input type="checkbox" class="rs"${r.splittable ? ' checked' : ''}></td>
           <td class="num"><input type="number" class="rm" step="1" min="0" value="${r.max_sittings ?? 0}"></td>
-          <td><select class="ra">${[1, 2, 3, 4, 5].map((d) =>
+          <td><select class="ra"${r.distribution === 'anchored' ? '' : ' disabled'}>${[1, 2, 3, 4, 5].map((d) =>
             `<option value="${d}"${r.anchor_dow === d ? ' selected' : ''}>${DOW[d]}</option>`).join('')}</select>
-            <input type="time" class="rt" value="${esc(r.anchor_time || '10:00')}" style="width:96px"></td>
+            <input type="time" class="rt" value="${esc(r.anchor_time || '10:00')}" style="width:96px"
+              ${r.distribution === 'anchored' ? '' : 'disabled'}></td>
           <td class="num"><button class="btn small primary saver">Save</button></td>
         </tr>`).join('')}</tbody>
       </table></div>
@@ -1307,6 +1373,12 @@ function wireSettings() {
     S.boot.third_parties = await api('/api/third-parties', { body: { name, default_units: Number($('#ntUnits').value) } });
     toast('Service added.'); renderSettings();
   });
+
+  view().querySelectorAll('.rd').forEach((el) => el.addEventListener('change', () => {
+    const tr = el.closest('tr'), on = el.value === 'anchored';
+    $('.ra', tr).disabled = !on;
+    $('.rt', tr).disabled = !on;
+  }));
 
   view().querySelectorAll('.saver').forEach((btn) => btn.addEventListener('click', async () => {
     const tr = btn.closest('tr');

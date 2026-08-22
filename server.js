@@ -271,7 +271,26 @@ app.post('/api/months', ok((req, res) => {
       SELECT contract_id, ?, person_id, deliverable_id, hours FROM allocations WHERE period = ?`).run(p, from);
     const t = db.prepare(`INSERT OR IGNORE INTO tp_allocations (contract_id, period, third_party_id, units)
       SELECT contract_id, ?, third_party_id, units FROM tp_allocations WHERE period = ?`).run(p, from);
-    copied = { allocations: Number(a.changes), third_party: Number(t.changes) };
+    copied = { allocations: Number(a.changes), third_party: Number(t.changes), blocks: 0 };
+
+    // Carry saved schedules across too, mapped by working-day index: a block on
+    // the 3rd working day of one month lands on the 3rd of the next. Months
+    // differ in length, so anything past the end is dropped rather than piled
+    // onto the last day.
+    const fromDays = cap.workingDates(from);
+    const toDays = cap.workingDates(p);
+    const idx = new Map(fromDays.map((d, i) => [d, i]));
+    const blocks = db.prepare('SELECT * FROM schedule_blocks WHERE period = ?').all(from);
+    const insB = db.prepare(`INSERT INTO schedule_blocks
+      (person_id, period, contract_id, deliverable_id, label, date, start, minutes, anchored, manual)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const b of blocks) {
+      const i = idx.get(b.date);
+      if (i === undefined || i >= toDays.length) continue;
+      insB.run(b.person_id, p, b.contract_id, b.deliverable_id, b.label,
+        toDays[i], b.start, b.minutes, b.anchored, b.manual);
+      copied.blocks += 1;
+    }
   }
 
   db.prepare('INSERT INTO months (period, copied_from) VALUES (?, ?)').run(p, from || '');
@@ -399,6 +418,49 @@ app.get('/api/recipes', ok((req, res) => {
     r.splittable, r.max_sittings, r.anchor_dow, r.anchor_time
     FROM deliverables d LEFT JOIN recipes r ON r.deliverable_id = d.id
     WHERE d.active = 1 ORDER BY d.internal, d.sort_order`).all());
+}));
+
+/** A person's recipes: the agency default for each deliverable, plus their own
+ *  override where one exists. */
+app.get('/api/person-recipes/:id', ok((req, res) => {
+  const id = Number(req.params.id);
+  res.json(db.prepare(`
+    SELECT d.id, d.name, d.internal,
+           COALESCE(pr.cadence, r.cadence)             AS cadence,
+           COALESCE(pr.distribution, r.distribution)   AS distribution,
+           COALESCE(pr.block_minutes, r.block_minutes) AS block_minutes,
+           COALESCE(pr.splittable, r.splittable)       AS splittable,
+           COALESCE(pr.max_sittings, r.max_sittings)   AS max_sittings,
+           COALESCE(pr.anchor_dow, r.anchor_dow)       AS anchor_dow,
+           COALESCE(pr.anchor_time, r.anchor_time)     AS anchor_time,
+           pr.person_id IS NOT NULL                    AS overridden
+      FROM deliverables d
+      LEFT JOIN recipes r         ON r.deliverable_id = d.id
+      LEFT JOIN person_recipes pr ON pr.deliverable_id = d.id AND pr.person_id = ?
+     WHERE d.active = 1 ORDER BY d.internal, d.sort_order`).all(id));
+}));
+
+app.post('/api/person-recipes/:id', ok((req, res) => {
+  const b = req.body;
+  db.prepare(`INSERT INTO person_recipes
+    (person_id, deliverable_id, cadence, distribution, block_minutes, splittable, max_sittings, anchor_dow, anchor_time)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(person_id, deliverable_id) DO UPDATE SET
+      cadence=excluded.cadence, distribution=excluded.distribution,
+      block_minutes=excluded.block_minutes, splittable=excluded.splittable,
+      max_sittings=excluded.max_sittings, anchor_dow=excluded.anchor_dow,
+      anchor_time=excluded.anchor_time`)
+    .run(Number(req.params.id), b.deliverable_id, b.cadence || 'monthly', b.distribution || 'spread',
+      num(b.block_minutes, 60), b.splittable ? 1 : 0, num(b.max_sittings),
+      num(b.anchor_dow, 2), b.anchor_time || '10:00');
+  res.json({ ok: true });
+}));
+
+/** Drop the override and fall back to the agency default. */
+app.delete('/api/person-recipes/:id/:deliverableId', ok((req, res) => {
+  db.prepare('DELETE FROM person_recipes WHERE person_id = ? AND deliverable_id = ?')
+    .run(Number(req.params.id), Number(req.params.deliverableId));
+  res.json({ ok: true });
 }));
 
 app.get('/api/anchors', ok((req, res) => {

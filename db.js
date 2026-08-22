@@ -79,6 +79,22 @@ CREATE TABLE IF NOT EXISTS recipes (
   anchor_time    TEXT    NOT NULL DEFAULT '10:00'
 );
 
+-- Per-person overrides of a scheduling recipe. Settings holds the agency
+-- default; anything here wins for that person only. A row exists only where
+-- someone actually works differently.
+CREATE TABLE IF NOT EXISTS person_recipes (
+  person_id      INTEGER NOT NULL REFERENCES people(id)       ON DELETE CASCADE,
+  deliverable_id INTEGER NOT NULL REFERENCES deliverables(id) ON DELETE CASCADE,
+  cadence        TEXT    NOT NULL DEFAULT 'weekly',
+  distribution   TEXT    NOT NULL DEFAULT 'spread',
+  block_minutes  INTEGER NOT NULL DEFAULT 60,
+  splittable     INTEGER NOT NULL DEFAULT 1,
+  max_sittings   INTEGER NOT NULL DEFAULT 0,
+  anchor_dow     INTEGER NOT NULL DEFAULT 2,
+  anchor_time    TEXT    NOT NULL DEFAULT '10:00',
+  PRIMARY KEY (person_id, deliverable_id)
+);
+
 -- Third-party rate card. Consumes contract units, no team hours.
 CREATE TABLE IF NOT EXISTS third_parties (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
