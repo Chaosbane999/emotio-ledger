@@ -27,7 +27,16 @@ CREATE TABLE IF NOT EXISTS people (
   sort_order       INTEGER NOT NULL DEFAULT 0
 );
 
--- Leave and sick, typed by hand, per person per period ('YYYY-MM').
+-- Sign-in sessions. A row per signed-in device, revocable individually.
+-- person_id NULL means the shared passcode was used, which is always admin.
+CREATE TABLE IF NOT EXISTS sessions (
+  token      TEXT PRIMARY KEY,
+  person_id  INTEGER REFERENCES people(id) ON DELETE CASCADE,
+  role       TEXT    NOT NULL DEFAULT 'member',
+  created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Leave and sick, typed by hand, per period ('YYYY-MM').
 CREATE TABLE IF NOT EXISTS leave (
   person_id     INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
   period        TEXT    NOT NULL,
@@ -215,6 +224,18 @@ CREATE TABLE IF NOT EXISTS settings (
 // migration: archived people stay in history but drop out of every view
 try { db.exec('ALTER TABLE people ADD COLUMN archived INTEGER NOT NULL DEFAULT 0'); }
 catch (e) { /* already there */ }
+
+// migration: per-person sign-in. A member sees only their own month, in hours;
+// an admin sees the whole agency. Rates never reach a member, because units
+// divided by hours would give them away.
+for (const [col, def] of [
+  ['email', "TEXT NOT NULL DEFAULT ''"],
+  ['password_hash', "TEXT NOT NULL DEFAULT ''"],
+  ['role', "TEXT NOT NULL DEFAULT 'member'"],
+]) {
+  try { db.exec(`ALTER TABLE people ADD COLUMN ${col} ${def}`); }
+  catch (e) { /* already there */ }
+}
 
 // migration: seed `months` from whatever periods already have allocations
 try {

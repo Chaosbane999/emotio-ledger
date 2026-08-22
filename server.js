@@ -53,6 +53,21 @@ function passcodeMatches(candidate) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+/** Check a plain value against a stored "salt:hash" record. */
+function verifyAgainst(candidate, record) {
+  if (!record) return false;
+  const [salt, want] = record.split(':');
+  if (!salt || !want) return false;
+  const a = Buffer.from(scrypt(candidate, salt), 'hex');
+  const b = Buffer.from(want, 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+const hashSecret = (value) => {
+  const salt = crypto.randomBytes(16).toString('hex');
+  return `${salt}:${scrypt(value, salt)}`;
+};
+
 function setPasscode(next) {
   const salt = crypto.randomBytes(16).toString('hex');
   set('passcode_hash', `${salt}:${scrypt(next, salt)}`);
@@ -73,45 +88,120 @@ const authCookie = (req, res) => {
     `el_auth=${sessionToken()}; Path=/; HttpOnly; SameSite=Lax;${secure} Max-Age=31536000`);
 };
 
+// ---- sessions ----------------------------------------------------------
+// A row per signed-in device, so access can be revoked per person rather than
+// by changing one passcode for everyone.
+
+const newSession = (personId, role) => {
+  const token = crypto.randomBytes(32).toString('hex');
+  db.prepare('INSERT INTO sessions (token, person_id, role) VALUES (?, ?, ?)')
+    .run(token, personId, role);
+  return token;
+};
+
+const sessionCookie = (req, res, token) => {
+  const secure = req.secure ? ' Secure;' : '';
+  res.setHeader('Set-Cookie',
+    `el_sess=${token}; Path=/; HttpOnly; SameSite=Lax;${secure} Max-Age=31536000`);
+};
+
+/** Who is this request? null when not signed in. */
+function currentUser(req) {
+  const tok = readCookie(req, 'el_sess');
+  if (tok) {
+    const row = db.prepare(`SELECT s.person_id, s.role, p.name, p.archived
+      FROM sessions s LEFT JOIN people p ON p.id = s.person_id
+      WHERE s.token = ?`).get(tok);
+    if (row && !row.archived) return { person_id: row.person_id, role: row.role, name: row.name };
+  }
+  // legacy shared-passcode cookie, so nobody is kicked out by this upgrade
+  if (readCookie(req, 'el_auth') === sessionToken()) return { person_id: null, role: 'admin', name: 'Admin' };
+  return null;
+}
+
 const loginFails = new Map();
 app.post('/login', (req, res) => {
-  if (!gateOn()) return res.json({ ok: true });
+  if (!gateOn()) return res.json({ ok: true, role: 'admin' });
   const ip = clientIp(req);
   const fails = loginFails.get(ip) || 0;
+
   setTimeout(() => {
+    const email = String(req.body.email || '').trim().toLowerCase();
+
+    // per-person sign-in
+    if (email) {
+      const p = db.prepare(`SELECT * FROM people
+        WHERE lower(email) = ? AND archived = 0 AND password_hash != ''`).get(email);
+      if (p && verifyAgainst(String(req.body.password || ''), p.password_hash)) {
+        loginFails.delete(ip);
+        sessionCookie(req, res, newSession(p.id, p.role || 'member'));
+        return res.json({ ok: true, role: p.role || 'member', name: p.name });
+      }
+      loginFails.set(ip, fails + 1);
+      return res.status(401).json({ ok: false });
+    }
+
+    // shared passcode — always admin
     if (passcodeMatches(req.body.passcode || '')) {
       loginFails.delete(ip);
-      authCookie(req, res);
-      return res.json({ ok: true });
+      sessionCookie(req, res, newSession(null, 'admin'));
+      return res.json({ ok: true, role: 'admin' });
     }
     loginFails.set(ip, fails + 1);
     res.status(401).json({ ok: false });
   }, Math.min(5000, Math.max(0, fails - 4) * 1000));
 });
 
+app.post('/logout', (req, res) => {
+  const tok = readCookie(req, 'el_sess');
+  if (tok) db.prepare('DELETE FROM sessions WHERE token = ?').run(tok);
+  res.setHeader('Set-Cookie', 'el_sess=; Path=/; HttpOnly; Max-Age=0');
+  res.json({ ok: true });
+});
+
+// ---- gate + role enforcement -------------------------------------------
+
 app.use((req, res, next) => {
-  if (!gateOn()) return next();
-  if (ALLOWED_IPS.includes(clientIp(req))) return next();
-  if (readCookie(req, 'el_auth') === sessionToken()) return next();
+  if (!gateOn()) { req.user = { person_id: null, role: 'admin', name: 'Admin' }; return next(); }
+  if (ALLOWED_IPS.includes(clientIp(req))) { req.user = { person_id: null, role: 'admin' }; return next(); }
+
+  const user = currentUser(req);
+  if (user) { req.user = user; return next(); }
+
   if (req.path === '/login.html' || req.path.startsWith('/style.css')) return next();
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'not signed in' });
   return res.redirect('/login.html');
 });
 
-// Cache-bust the front end. BUILD changes on every container start, so a
-// deploy always invalidates style.css and app.js in the browser; the HTML
-// itself is never cached, so the new URLs are always picked up.
-const BUILD = require('crypto').createHash('sha1')
-  .update(String(Date.now())).digest('hex').slice(0, 8);
+const isAdmin = (req) => req.user?.role === 'admin';
 
-app.get(['/', '/index.html', '/login.html'], (req, res, next) => {
-  const file = req.path === '/' ? 'index.html' : req.path.slice(1);
-  require('fs').readFile(path.join(__dirname, 'public', file), 'utf8', (err, html) => {
-    if (err) return next();
-    res.set('Cache-Control', 'no-store');
-    res.type('html').send(html.replace(/(href|src)="(style\.css|app\.js)"/g, `$1="$2?v=${BUILD}"`));
-  });
+/** Admin-only routes: everything that reveals rates or changes the agency. */
+app.use((req, res, next) => {
+  if (isAdmin(req) || !req.path.startsWith('/api/')) return next();
+
+  // a member may read their own person view and their own schedule
+  const own = String(req.user?.person_id ?? '');
+  const mineRe = new RegExp(`^/api/(person|schedule)/${own}(/|$)`);
+  const allowed = req.path === '/api/bootstrap'
+    || req.path === '/api/me'
+    || req.path === '/api/workdays'
+    || req.path === '/api/months'
+    || (own && mineRe.test(req.path));
+
+  if (!allowed) return res.status(403).json({ error: 'Not available on your account.' });
+
+  // and may not write anything except their own schedule blocks
+  if (req.method !== 'GET' && !/^\/api\/schedule\//.test(req.path)) {
+    return res.status(403).json({ error: 'Read-only on your account.' });
+  }
+  next();
 });
+
+app.get('/api/me', (req, res) => res.json({
+  person_id: req.user?.person_id ?? null,
+  role: req.user?.role || 'member',
+  name: req.user?.name || 'Admin',
+}));
 
 app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders: (res, p) => {
@@ -135,7 +225,11 @@ const okAsync = (fn) => async (req, res) => {
 };
 
 const listPeople = (withArchived) => db.prepare(
-  `SELECT * FROM people ${withArchived ? '' : 'WHERE archived = 0'} ORDER BY archived, active = 0, sort_order, name`).all();
+  `SELECT id, harvest_user_id, name, initials, weekly_hours, rate, utilisation, colour,
+          active, sort_order, archived, email, role,
+          password_hash != '' AS has_login
+     FROM people ${withArchived ? '' : 'WHERE archived = 0'}
+    ORDER BY archived, active = 0, sort_order, name`).all();
 const listDeliverables = () => db.prepare('SELECT * FROM deliverables WHERE active = 1 ORDER BY internal, sort_order').all();
 const listThirdParties = () => db.prepare('SELECT * FROM third_parties WHERE active = 1 ORDER BY sort_order, name').all();
 const listContracts = (withArchived) => db.prepare(
@@ -145,11 +239,31 @@ const listContracts = (withArchived) => db.prepare(
 // read
 // ---------------------------------------------------------------------------
 
+/** Units divided by hours gives the rate away, so a member gets neither. */
+function stripMoney(payload) {
+  const scrub = (o) => {
+    if (Array.isArray(o)) return o.map(scrub);
+    if (o && typeof o === 'object') {
+      const out = {};
+      for (const [k, v] of Object.entries(o)) {
+        if (/rate|_units$|^units$/.test(k)) continue;
+        out[k] = scrub(v);
+      }
+      return out;
+    }
+    return o;
+  };
+  return scrub(payload);
+}
+
+const send = (req, res, payload) =>
+  res.json(req.user?.role === 'admin' ? payload : stripMoney(payload));
+
 app.get('/api/bootstrap', ok((req, res) => {
   const p = period(req);
   const withArchived = req.query.archived === '1';
   const months = db.prepare('SELECT period FROM months ORDER BY period').all().map((m) => m.period);
-  res.json({
+  const payload = {
     period: p,
     // only months that actually exist — new ones are created deliberately
     periods: months,
@@ -158,6 +272,7 @@ app.get('/api/bootstrap', ok((req, res) => {
     deliverables: listDeliverables(),
     third_parties: listThirdParties(),
     channels: db.prepare('SELECT * FROM channels ORDER BY sort_order, name').all(),
+    me: { person_id: req.user?.person_id ?? null, role: req.user?.role || 'member', name: req.user?.name },
     contracts: listContracts(withArchived),
     settings: {
       standard_rate: cap.standardRate(),
@@ -173,7 +288,8 @@ app.get('/api/bootstrap', ok((req, res) => {
       passcode_set: Boolean(get('passcode_hash')),
       gate_on: gateOn(),
     },
-  });
+  };
+  send(req, res, payload);
 }));
 
 app.get('/api/agency', ok((req, res) => res.json(cap.agencySummary(period(req)))));
@@ -181,7 +297,7 @@ app.get('/api/agency', ok((req, res) => res.json(cap.agencySummary(period(req)))
 app.get('/api/person/:id', ok((req, res) => {
   const v = cap.personView(Number(req.params.id), period(req));
   if (!v) return res.status(404).json({ error: 'no such person' });
-  res.json(v);
+  send(req, res, v);
 }));
 
 app.get('/api/contract/:id', ok((req, res) => {
@@ -378,6 +494,34 @@ app.post('/api/people', ok((req, res) => {
 }));
 
 /** Archive by default; ?hard=1 deletes outright, taking their allocations. */
+/** Give someone a sign-in, change their role, or revoke access. */
+app.post('/api/people/:id/login', ok((req, res) => {
+  const id = Number(req.params.id);
+  const p = db.prepare('SELECT * FROM people WHERE id = ?').get(id);
+  if (!p) return res.status(404).json({ error: 'no such person' });
+  const b = req.body;
+
+  if (b.email !== undefined) {
+    const email = String(b.email).trim().toLowerCase();
+    if (email) {
+      const clash = db.prepare('SELECT id FROM people WHERE lower(email) = ? AND id != ?').get(email, id);
+      if (clash) throw new Error('Another person already uses that email.');
+    }
+    db.prepare('UPDATE people SET email = ? WHERE id = ?').run(email, id);
+  }
+  if (b.role) db.prepare('UPDATE people SET role = ? WHERE id = ?')
+    .run(b.role === 'admin' ? 'admin' : 'member', id);
+  if (b.password) {
+    if (String(b.password).length < 8) throw new Error('Use at least 8 characters.');
+    db.prepare('UPDATE people SET password_hash = ? WHERE id = ?').run(hashSecret(String(b.password)), id);
+  }
+  if (b.revoke) {
+    db.prepare("UPDATE people SET password_hash = '' WHERE id = ?").run(id);
+    db.prepare('DELETE FROM sessions WHERE person_id = ?').run(id);
+  }
+  res.json(listPeople(req.query.archived === '1'));
+}));
+
 app.delete('/api/people/:id', ok((req, res) => {
   const id = Number(req.params.id);
   if (req.query.hard === '1') db.prepare('DELETE FROM people WHERE id = ?').run(id);

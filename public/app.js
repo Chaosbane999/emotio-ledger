@@ -9,7 +9,7 @@
    meaningless as a measure of value, so the balance rule stays units-only. */
 
 const S = { period: null, boot: null, view: 'agency', personId: null, contractId: null, plan: null,
-  showArchived: false, showRecipes: false };
+  showArchived: false, showRecipes: false, me: null };
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const view = () => $('#view');
@@ -24,7 +24,8 @@ const NB = '\u00a0';                                                 // keeps "1
 // displayed 16.75. Allocations and schedule blocks are already on quarters, so
 // they still read cleanly.
 const hrs = (n) => `${h(n)}${NB}h`;
-const units = (n) => `${h(n)}${NB}u`;
+// A member never sees units: units divided by hours would give the rate away.
+const units = (n) => (S.me && S.me.role !== 'admin') ? '' : `${h(n)}${NB}u`;
 const pct = (n) => `${Math.round(Number(n) || 0)}%`;
 const DOW_NAMES = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
@@ -64,6 +65,19 @@ const monthName = (p) => {
 async function boot() {
   S.boot = await api(`/api/bootstrap${S.period ? P() : ''}`);
   S.period = S.boot.period;
+  S.me = S.boot.me || { role: 'admin', person_id: null };
+
+  // A member sees only their own month, so the agency-wide tabs are removed
+  // rather than shown and refused.
+  const memberViews = ['people', 'schedule'];
+  $('#tabs').querySelectorAll('button').forEach((b) => {
+    b.classList.toggle('hidden', S.me.role !== 'admin' && !memberViews.includes(b.dataset.view));
+  });
+  if (S.me.role !== 'admin') {
+    S.personId = S.me.person_id;
+    if (!memberViews.includes(S.view)) S.view = 'people';
+  }
+  $('#whoami').textContent = S.me.name ? `${S.me.name}${S.me.role === 'admin' ? '' : ''}` : '';
 
   const sel = $('#period');
   const size = new Map((S.boot.months || []).map((m) => [m.period, m]));
@@ -95,6 +109,11 @@ $('#tabs').addEventListener('click', (e) => {
   if (!b) return;
   S.view = b.dataset.view;
   render();
+});
+
+$('#signOut').addEventListener('click', async () => {
+  await fetch('/logout', { method: 'POST' });
+  location.href = '/login.html';
 });
 
 $('#period').addEventListener('change', async (e) => {
@@ -362,7 +381,8 @@ async function renderAgency() {
 // ---------------------------------------------------------------------------
 
 async function renderPerson() {
-  const people = S.boot.people.filter((p) => p.active);
+  const all = S.boot.people.filter((p) => p.active);
+  const people = S.me?.role === 'admin' ? all : all.filter((p) => p.id === S.me.person_id);
   if (!S.personId || !people.some((p) => p.id === S.personId)) S.personId = people[0]?.id;
   if (!S.personId) { view().innerHTML = '<p class="muted">No active people yet — add some in Settings.</p>'; return; }
 
@@ -968,7 +988,8 @@ const cap2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 // ---------------------------------------------------------------------------
 
 async function renderSchedule() {
-  const people = S.boot.people.filter((p) => p.active && !p.archived);
+  const everyone = S.boot.people.filter((p) => p.active && !p.archived);
+  const people = S.me?.role === 'admin' ? everyone : everyone.filter((p) => p.id === S.me.person_id);
   if (!S.personId || !people.some((p) => p.id === S.personId)) S.personId = people[0]?.id;
   if (!S.personId) { view().innerHTML = '<p class="muted">No active people.</p>'; return; }
 
@@ -1283,6 +1304,37 @@ async function renderSettings() {
         </div>
       </div>
 
+      <div class="card" style="grid-column:1/-1">
+        <header><h2>Who can sign in</h2>
+          <p>A member sees only their own month, in hours. Rates and units never reach them</p></header>
+        <div class="scroll"><table>
+          <thead><tr><th>Person</th><th>Email</th><th>Role</th><th>Sign-in</th><th></th></tr></thead>
+          <tbody>${S.boot.people.filter((p) => !p.archived).map((p) => `<tr data-l="${p.id}">
+            <td class="name">${esc(p.name)}</td>
+            <td><input type="email" class="lgEmail" value="${esc(p.email || '')}"
+              placeholder="none set" style="width:190px"></td>
+            <td><select class="lgRole">
+              <option value="member"${p.role !== 'admin' ? ' selected' : ''}>Member</option>
+              <option value="admin"${p.role === 'admin' ? ' selected' : ''}>Admin</option>
+            </select></td>
+            <td>${p.has_login
+              ? '<span class="pill ok">Can sign in</span>'
+              : '<span class="pill mute">No password</span>'}</td>
+            <td class="num" style="white-space:nowrap">
+              <input type="password" class="lgPass" placeholder="Set a password" style="width:150px">
+              <button class="btn small primary lgSave">Save</button>
+              ${p.has_login ? '<button class="btn small danger lgRevoke">Revoke</button>' : ''}
+            </td>
+          </tr>`).join('')}</tbody>
+        </table></div>
+        <div class="body" style="border-top:1px solid var(--rule)">
+          <p class="muted">Give someone an email and a password and they can sign in as themselves.
+          <b>Admin</b> sees everything you see. <b>Member</b> sees their own month and schedule only —
+          no agency view, no contracts, no settings, and no money of any kind. Revoking clears their
+          password and signs out every device they are on.</p>
+        </div>
+      </div>
+
       <div class="card">
         <header><h2>Access</h2>
           <p>${st.gate_on
@@ -1434,6 +1486,30 @@ function wireSettings() {
     S.boot = await api(`/api/bootstrap${P()}`);
     toast('Settings saved.'); renderSettings();
   });
+
+  const loginAction = async (btn, body) => {
+    const tr = btn.closest('tr');
+    try {
+      S.boot.people = await api(`/api/people/${tr.dataset.l}/login`, { body });
+      toast('Sign-in updated.');
+      renderSettings();
+    } catch (e) { toast(e.message, true); }
+  };
+
+  view().querySelectorAll('.lgSave').forEach((b) => b.addEventListener('click', () => {
+    const tr = b.closest('tr');
+    const body = { email: $('.lgEmail', tr).value, role: $('.lgRole', tr).value };
+    const pw = $('.lgPass', tr).value;
+    if (pw) body.password = pw;
+    if (!body.email && pw) return toast('Give them an email address to sign in with.', true);
+    loginAction(b, body);
+  }));
+
+  view().querySelectorAll('.lgRevoke').forEach((b) => b.addEventListener('click', () => {
+    const tr = b.closest('tr');
+    if (!confirm(`Revoke sign-in for ${$('.name', tr).textContent}?\n\nTheir password is cleared and every device they are signed in on is signed out.`)) return;
+    loginAction(b, { revoke: true });
+  }));
 
   $('#pcSave').addEventListener('click', async () => {
     const body = {
