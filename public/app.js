@@ -8,7 +8,8 @@
    Summing hours across people is legitimate as a capacity figure; it is only
    meaningless as a measure of value, so the balance rule stays units-only. */
 
-const S = { period: null, boot: null, view: 'agency', personId: null, contractId: null, plan: null, showArchived: false };
+const S = { period: null, boot: null, view: 'agency', personId: null, contractId: null, plan: null,
+  showArchived: false, showRecipes: false };
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const view = () => $('#view');
@@ -974,7 +975,7 @@ async function renderSchedule() {
   const plan = await api(`/api/schedule/${S.personId}${P()}`);
   const pv = await api(`/api/person/${S.personId}${P()}`);
   const dates = await api(`/api/workdays${P()}`);
-  const recipes = await api(`/api/person-recipes/${S.personId}`);
+  const recipes = S.showRecipes ? await api(`/api/person-recipes/${S.personId}`) : [];
 
   const byDate = new Map();
   for (const b of plan.blocks) {
@@ -999,6 +1000,8 @@ async function renderSchedule() {
         `<option value="${p.id}"${p.id === S.personId ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
       <span class="pill ${plan.committed ? 'ok' : 'warn'}">${plan.committed ? 'Saved plan' : 'Draft'}</span>
       <span class="spacer"></span>
+      <button class="btn small" id="toggleRecipes">${
+        S.showRecipes ? 'Hide how work is shaped' : 'How this person\'s work is shaped'}</button>
       <button class="btn small ${plan.committed ? '' : 'primary'}" id="genPlan">
         ${plan.committed ? 'Rebuild from allocations' : 'Edit this plan'}</button>
       ${plan.committed ? '<button class="btn small danger" id="clearPlan">Discard plan</button>' : ''}
@@ -1027,7 +1030,7 @@ async function renderSchedule() {
         : 'This is a draft from the scheduling recipes. Save it to start moving blocks around by hand.'}
     </div></div>
 
-    <div class="card">
+    ${S.showRecipes ? `<div class="card">
       <header><h2>How this person's work is shaped</h2>
         <p>Their own recipes. Blank rows follow the agency default in Settings</p></header>
       <div class="scroll"><table>
@@ -1062,7 +1065,7 @@ async function renderSchedule() {
         <b>Anchor</b> only applies when Distribution is <span class="mono">anchored</span>; it is
         greyed out otherwise because it has no effect.</p>
       </div>
-    </div>
+    </div>` : ''}
 
     ${plan.committed ? `<div class="card">
       <header><h2>Add a block</h2><p>Work the recipes knew nothing about</p></header>
@@ -1098,6 +1101,11 @@ async function renderSchedule() {
       </div>`).join('') || '<p class="muted">Nothing scheduled this month.</p>'}</div>`;
 
   $('#schedPick').addEventListener('change', (e) => { S.personId = Number(e.target.value); renderSchedule(); });
+
+  $('#toggleRecipes').addEventListener('click', () => {
+    S.showRecipes = !S.showRecipes;
+    renderSchedule();
+  });
 
   // anchor controls follow the distribution, so they never look live when idle
   view().querySelectorAll('.prd').forEach((el) => el.addEventListener('change', () => {
