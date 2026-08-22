@@ -1284,6 +1284,31 @@ async function renderSettings() {
       </div>
 
       <div class="card">
+        <header><h2>Access</h2>
+          <p>${st.gate_on
+            ? (st.passcode_set ? '<span class="pill ok">Passcode set here</span>'
+                               : '<span class="pill warn">Still using the deploy setting</span>')
+            : '<span class="pill bad">No passcode — anyone with the link is in</span>'}</p></header>
+        <div class="body">
+          ${st.gate_on ? `<div class="rowline">
+            <label>Current</label>
+            <input type="password" id="pcCur" autocomplete="current-password" style="flex:1;min-width:150px">
+          </div>` : ''}
+          <div class="rowline"><label>New passcode</label>
+            <input type="password" id="pcNew" autocomplete="new-password" style="flex:1;min-width:150px"></div>
+          <div class="rowline"><label>Repeat it</label>
+            <input type="password" id="pcConf" autocomplete="new-password" style="flex:1;min-width:150px"></div>
+          <div class="rowline"><span class="spacer"></span>
+            <button class="btn primary small" id="pcSave">Change passcode</button></div>
+          <p class="muted">At least 8 characters. Everyone shares this one passcode, so changing it
+          signs out every other device — you will stay signed in here. It is stored hashed, never in
+          plain text, and it takes effect immediately without a redeploy.</p>
+          ${st.passcode_set ? '' : `<p class="muted">Right now the passcode still comes from the
+          <span class="mono">APP_PASSCODE</span> deploy setting. Setting one here takes over from it.</p>`}
+        </div>
+      </div>
+
+      <div class="card">
         <header><h2>Harvest</h2>
           <p>${st.harvest_connected ? '<span class="pill ok">Connected</span>' : '<span class="pill warn">Not connected</span>'}</p></header>
         <div class="body">
@@ -1408,6 +1433,21 @@ function wireSettings() {
       holidays: $('#sHols').value } });
     S.boot = await api(`/api/bootstrap${P()}`);
     toast('Settings saved.'); renderSettings();
+  });
+
+  $('#pcSave').addEventListener('click', async () => {
+    const body = {
+      current: $('#pcCur') ? $('#pcCur').value : '',
+      next: $('#pcNew').value,
+      confirm: $('#pcConf').value,
+    };
+    if (!body.next) return toast('Enter a new passcode.', true);
+    try {
+      await api('/api/passcode', { body });
+      toast('Passcode changed. Other devices will need to sign in again.');
+      S.boot = await api(`/api/bootstrap${P()}`);
+      renderSettings();
+    } catch (e) { toast(e.message, true); }
   });
 
   $('#saveHarvest').addEventListener('click', async () => {

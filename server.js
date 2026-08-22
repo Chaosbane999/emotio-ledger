@@ -10,14 +10,53 @@ const seed = require('./seed');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const PASSCODE = process.env.APP_PASSCODE || '';
-const ALLOWED_IPS = (process.env.ALLOWED_IPS || '').split(',').map((s) => s.trim()).filter(Boolean);
 
 app.set('trust proxy', true);
 app.use(express.json({ limit: '1mb' }));
 
-// ---- passcode gate, same shape as EmotioGantt ----
-const authToken = PASSCODE ? crypto.createHash('sha256').update(PASSCODE).digest('hex') : null;
+// ---- passcode gate ----------------------------------------------------
+// The passcode lives in the database so it can be changed in Settings without
+// a redeploy; APP_PASSCODE is the fallback for a fresh instance that has never
+// had one set. Stored as scrypt with a per-install salt, never in plain text.
+// The session cookie carries a value derived from that hash rather than the
+// passcode itself, so a stolen cookie never reveals it — and changing the
+// passcode changes the derived value, which signs every other device out.
+
+const ENV_PASSCODE = process.env.APP_PASSCODE || '';
+const ALLOWED_IPS = (process.env.ALLOWED_IPS || '').split(',').map((s) => s.trim()).filter(Boolean);
+
+const scrypt = (pass, salt) => crypto.scryptSync(String(pass), salt, 32).toString('hex');
+
+const storedRecord = () => get('passcode_hash') || '';
+
+/** Is the app protected at all? */
+const gateOn = () => Boolean(storedRecord() || ENV_PASSCODE);
+
+/** The value a valid session cookie must hold right now. */
+function sessionToken() {
+  const rec = storedRecord();
+  if (rec) return crypto.createHash('sha256').update(`v2:${rec}`).digest('hex');
+  return ENV_PASSCODE ? crypto.createHash('sha256').update(ENV_PASSCODE).digest('hex') : null;
+}
+
+function passcodeMatches(candidate) {
+  const rec = storedRecord();
+  if (rec) {
+    const [salt, want] = rec.split(':');
+    if (!salt || !want) return false;
+    const got = scrypt(candidate, salt);
+    const a = Buffer.from(got, 'hex'), b = Buffer.from(want, 'hex');
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  }
+  if (!ENV_PASSCODE) return true;
+  const a = Buffer.from(String(candidate)), b = Buffer.from(ENV_PASSCODE);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function setPasscode(next) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  set('passcode_hash', `${salt}:${scrypt(next, salt)}`);
+}
 
 function readCookie(req, name) {
   for (const part of (req.headers.cookie || '').split(';')) {
@@ -28,16 +67,21 @@ function readCookie(req, name) {
 }
 const clientIp = (req) => (req.ip || '').replace(/^::ffff:/, '');
 
+const authCookie = (req, res) => {
+  const secure = req.secure ? ' Secure;' : '';
+  res.setHeader('Set-Cookie',
+    `el_auth=${sessionToken()}; Path=/; HttpOnly; SameSite=Lax;${secure} Max-Age=31536000`);
+};
+
 const loginFails = new Map();
 app.post('/login', (req, res) => {
-  if (!authToken) return res.json({ ok: true });
+  if (!gateOn()) return res.json({ ok: true });
   const ip = clientIp(req);
   const fails = loginFails.get(ip) || 0;
   setTimeout(() => {
-    if ((req.body.passcode || '') === PASSCODE) {
+    if (passcodeMatches(req.body.passcode || '')) {
       loginFails.delete(ip);
-      res.setHeader('Set-Cookie',
-        `el_auth=${authToken}; Path=/; HttpOnly; SameSite=Lax;${req.secure ? ' Secure;' : ''} Max-Age=31536000`);
+      authCookie(req, res);
       return res.json({ ok: true });
     }
     loginFails.set(ip, fails + 1);
@@ -46,9 +90,9 @@ app.post('/login', (req, res) => {
 });
 
 app.use((req, res, next) => {
-  if (!authToken) return next();
+  if (!gateOn()) return next();
   if (ALLOWED_IPS.includes(clientIp(req))) return next();
-  if (readCookie(req, 'el_auth') === authToken) return next();
+  if (readCookie(req, 'el_auth') === sessionToken()) return next();
   if (req.path === '/login.html' || req.path.startsWith('/style.css')) return next();
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'not signed in' });
   return res.redirect('/login.html');
@@ -126,6 +170,8 @@ app.get('/api/bootstrap', ok((req, res) => {
       harvest_connected: harvest.configured(),
       harvest_account_id: get('harvest_account_id') || '',
       last_sync: get('last_sync') || '',
+      passcode_set: Boolean(get('passcode_hash')),
+      gate_on: gateOn(),
     },
   });
 }));
@@ -483,6 +529,24 @@ app.post('/api/anchors', ok((req, res) => {
 
 app.delete('/api/anchors/:id', ok((req, res) => {
   db.prepare('DELETE FROM anchors WHERE id = ?').run(Number(req.params.id));
+  res.json({ ok: true });
+}));
+
+/**
+ * Change the passcode. Requires the current one, so an unattended open session
+ * cannot be used to lock the owner out. Every other device is signed out,
+ * because the session token derives from the stored hash.
+ */
+app.post('/api/passcode', ok((req, res) => {
+  const next = String(req.body.next || '');
+  if (gateOn() && !passcodeMatches(String(req.body.current || ''))) {
+    return res.status(403).json({ error: 'That is not the current passcode.' });
+  }
+  if (next.length < 8) throw new Error('Use at least 8 characters.');
+  if (next !== String(req.body.confirm || '')) throw new Error('The two new passcodes do not match.');
+
+  setPasscode(next);
+  authCookie(req, res);            // keep whoever changed it signed in
   res.json({ ok: true });
 }));
 
