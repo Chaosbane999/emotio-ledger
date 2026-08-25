@@ -38,8 +38,12 @@ for (const P of periods) {
     ok(near(p.client_hours + p.internal_hours, p.available_hours, 0.02),
       `${P} ${p.name}: client + unsold = available`);
     ok(p.available_hours >= -0.001, `${P} ${p.name}: available not negative`);
-    ok(near(p.spare_hours, p.client_hours - p.allocated_client_hours, 0.02),
-      `${P} ${p.name}: spare = client capacity - allocated`);
+    ok(near(p.spare_hours,
+      p.available_hours - p.allocated_client_hours
+        - Math.max(p.allocated_internal_hours, p.internal_hours), 0.02),
+      `${P} ${p.name}: spare = available - client - internal`);
+    ok(p.spare_hours <= p.client_hours - p.allocated_client_hours + 0.02,
+      `${P} ${p.name}: spare never flatters the old figure`);
     ok(onQuarter(p.allocated_client_units), `${P} ${p.name}: allocated units on a quarter`);
     ok(near(p.allocated_client_units,
       Math.round(p.allocated_client_hours * row.rate / STD / 0.25) * 0.25, 0.01),
@@ -89,7 +93,11 @@ for (const P of periods) {
   ok(near(t.allocated_units, allU, 0.02), `${P} totals: allocated_units = sum per person`);
   ok(near(t.allocated_hours, allH, 0.02), `${P} totals: allocated_hours = sum per person`);
   ok(near(t.headroom_units, t.capacity_units - t.allocated_units, 0.02), `${P} totals: headroom units identity`);
-  ok(near(t.headroom_hours, t.capacity_hours - t.allocated_hours, 0.02), `${P} totals: headroom hours identity`);
+  ok(near(t.headroom_hours, a.staff.reduce((s, p) => s + p.spare_hours, 0), 0.02),
+    `${P} totals: headroom hours = sum of everyone's spare`);
+  ok(near(t.headroom_hours,
+    t.capacity_hours - t.allocated_hours - t.internal_overspend_hours, 0.02),
+    `${P} totals: headroom hours = capacity - allocated - internal overspend`);
 
   const live = a.contracts.filter((c) => c.type !== 'internal' && c.status === 'live');
   const retainers = live.filter((c) => c.type !== 'pot');

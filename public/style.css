@@ -329,3 +329,7 @@ td.indent { padding-left: 26px; color: var(--ink-2); font-size: .84rem; }
   header.top { padding: 10px 14px; }
   .stat .v { font-size: 1.35rem; }
 }
+
+/* an internal booking that exceeds the utilisation allowance — it eats into
+   sellable time, so it is called out where the hours are shown */
+.sub.warn { color: var(--warn); }

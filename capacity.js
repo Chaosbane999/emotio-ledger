@@ -143,6 +143,21 @@ function personCapacity(person, period) {
   };
 }
 
+/**
+ * Hours genuinely left in someone's day: what they have, less client work, less
+ * internal time.
+ *
+ * Internal is counted at whatever is larger — what they have actually booked,
+ * or the allowance their utilisation target sets aside. Taking the booked
+ * figure alone would hand back the training allowance as sellable room in any
+ * month where the internal hours had not been entered yet, and taking the
+ * allowance alone hides an overspend: 132 sellable + 19.5 booked internal is
+ * 151.5 against a 150 h month, and the old figure reported 11 h over when the
+ * real position was 12.5 h.
+ */
+const spareHours = (available, allocatedClient, allocatedInternal, allowance) =>
+  round2(available - allocatedClient - Math.max(allocatedInternal, allowance));
+
 const activePeople = () =>
   db.prepare('SELECT * FROM people WHERE active = 1 AND archived = 0 ORDER BY sort_order, name').all();
 
@@ -313,7 +328,8 @@ function agencySummary(period) {
       allocated_internal_hours: round2(e.allocated_internal_hours),
       allocated_client_units: round2(toUnits(clientHours, p.rate)),
       // clock headroom — is this person physically overbooked?
-      spare_hours: round2(e.client_hours - clientHours),
+      spare_hours: spareHours(e.available_hours, clientHours,
+        e.allocated_internal_hours, e.internal_hours),
       load_pct: e.client_hours > 0 ? Math.round((clientHours / e.client_hours) * 100) : 0,
       internal_spare_hours: round2(e.internal_hours - e.allocated_internal_hours),
     };
@@ -334,6 +350,11 @@ function agencySummary(period) {
   const allocatedUnits = staff.reduce((s, p) => s + p.allocated_client_units, 0);
   const capacityHours = staff.reduce((s, p) => s + p.client_hours, 0);
   const allocatedHours = staff.reduce((s, p) => s + p.allocated_client_hours, 0);
+  // The headline answers "has anyone got room in their diary", so it has to be
+  // the same room the Spare column reports — internal overspend included.
+  const headroomHours = staff.reduce((s, p) => s + p.spare_hours, 0);
+  const internalOverspend = staff.reduce(
+    (s, p) => s + Math.max(0, p.allocated_internal_hours - p.internal_hours), 0);
 
   const constrained = staff.filter((p) => p.spare_hours < 0)
     .sort((a, b) => a.spare_hours - b.spare_hours);
@@ -349,7 +370,8 @@ function agencySummary(period) {
       headroom_units: round2(capacityUnits - allocatedUnits),
       capacity_hours: round2(capacityHours),
       allocated_hours: round2(allocatedHours),
-      headroom_hours: round2(capacityHours - allocatedHours),
+      headroom_hours: round2(headroomHours),
+      internal_overspend_hours: round2(internalOverspend),
       // What clients have committed for this month. A pot has no monthly figure
       // — its value lives in pot_units — so what it commits this month is
       // whatever has been drawn against it.
@@ -433,7 +455,8 @@ function personView(personId, period) {
       client_units: round2(toUnits(clientHours, person.rate)),
       internal_hours: round2(internalHours),
       internal_budget_hours: cap.internal_hours,
-      spare_hours: round2(cap.client_hours - clientHours),
+      spare_hours: spareHours(cap.available_hours, clientHours,
+        internalHours, cap.internal_hours),
       load_pct: cap.client_hours > 0 ? Math.round((clientHours / cap.client_hours) * 100) : 0,
       actual_hours: round2(actualTotal),
       actual_vs_allocated: round2(actualTotal - (clientHours + internalHours)),

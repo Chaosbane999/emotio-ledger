@@ -328,8 +328,9 @@ async function renderAgency() {
           <th class="num" title="Working hours this month, after leave and sick">Available</th>
           <th class="num" title="The share of available hours we sell to clients — available hours x their utilisation target. The rest is internal and training time.">Sellable hours</th>
           <th class="num">Allocated</th>
-          <th class="num" title="Sellable hours not yet allocated to a contract">Spare</th>
-          <th style="width:140px">Load</th><th class="num">Internal</th>
+          <th class="num" title="Hours booked to internal work and training">Internal</th>
+          <th class="num" title="Hours genuinely left: available less client work less internal. Internal counts at whichever is larger — booked, or the allowance the utilisation target sets aside.">Spare</th>
+          <th style="width:140px">Load</th>
         </tr></thead>
         <tbody>${a.staff.map((p) => `<tr>
           <td><button class="linky" data-person="${p.person_id}">${esc(p.name)}</button>
@@ -338,9 +339,11 @@ async function renderAgency() {
           <td class="num">${hrs(p.available_hours)}</td>
           <td class="num">${hrs(p.client_hours)}</td>
           <td class="num">${hrs(p.allocated_client_hours)}<span class="sub">${units(p.allocated_client_units)}</span></td>
+          <td class="num">${p.allocated_internal_hours ? hrs(p.allocated_internal_hours) : '<span class="nil">—</span>'}${
+            p.allocated_internal_hours > p.internal_hours + 0.005
+              ? `<span class="sub warn">${hrs(p.allocated_internal_hours - p.internal_hours)} over allowance</span>` : ''}</td>
           <td class="num spare ${p.spare_hours < 0 ? 'neg' : 'pos'}">${hrs(p.spare_hours)}</td>
           <td>${capBar(p.allocated_client_hours, p.client_hours)}<span class="sub">${pct(p.load_pct)}</span></td>
-          <td class="num">${p.allocated_internal_hours ? hrs(p.allocated_internal_hours) : '<span class="nil">—</span>'}</td>
         </tr>`).join('')}</tbody>
       </table></div>
     </div>
@@ -469,7 +472,7 @@ async function renderPerson() {
       <div class="stat"><span class="k">Allocated</span>
         <span class="v">${pairH(t.client_hours)}</span>
         <span class="s">${pct(t.load_pct)} of their sellable hours</span></div>
-      <div class="stat ${t.spare_hours < 0 ? 'bad' : 'good'}"><span class="k">Spare</span>
+      <div class="stat ${t.spare_hours < 0 ? 'bad' : 'good'}" title="Available less client work less internal — the hours genuinely left."><span class="k">Spare</span>
         <span class="v">${pairH(t.spare_hours)}</span>
         <span class="s">${t.spare_hours < 0 ? 'overbooked' : 'room for more work'}</span></div>
       <div class="stat"><span class="k">Logged in Harvest</span>
