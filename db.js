@@ -225,6 +225,23 @@ CREATE TABLE IF NOT EXISTS settings (
 try { db.exec('ALTER TABLE people ADD COLUMN archived INTEGER NOT NULL DEFAULT 0'); }
 catch (e) { /* already there */ }
 
+// migration: backfill bank holidays for instances created before they existed
+try {
+  const cur = db.prepare("SELECT value FROM settings WHERE key = 'holidays'").get();
+  if (!cur || !cur.value.trim()) {
+    db.prepare("INSERT INTO settings (key, value) VALUES ('holidays', ?) "
+      + 'ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(UK_BANK_HOLIDAYS);
+  }
+} catch (e) { /* settings not ready */ }
+
+// migration: anchoring belongs on a contract, not on an agency-wide default —
+// every contract's reporting cannot land Thursday at 2pm. Existing anchored
+// recipes become deadline work; per-contract Fixed commitments do the pinning.
+try { db.exec("UPDATE recipes SET distribution = 'deadline' WHERE distribution = 'anchored'"); }
+catch (e) { /* no recipes yet */ }
+try { db.exec("UPDATE person_recipes SET distribution = 'deadline' WHERE distribution = 'anchored'"); }
+catch (e) { /* table not there yet */ }
+
 // migration: per-person sign-in. A member sees only their own month, in hours;
 // an admin sees the whole agency. Rates never reach a member, because units
 // divided by hours would give them away.
@@ -247,7 +264,21 @@ try {
 } catch (e) { /* nothing to backfill */ }
 
 // ---- defaults ----
+// England & Wales bank holidays. Without these a month is over-counted by a
+// day — August 2026 reads 21 working days when the Summer holiday makes it 20.
+// Editable in Settings; substitute days are the ones actually taken.
+const UK_BANK_HOLIDAYS = [
+  '2026-01-01', '2026-04-03', '2026-04-06', '2026-05-04',
+  '2026-05-25', '2026-08-31', '2026-12-25', '2026-12-28',
+  '2027-01-01', '2027-03-26', '2027-03-29', '2027-05-03',
+  '2027-05-31', '2027-08-30', '2027-12-27', '2027-12-28',
+  '2028-01-03', '2028-04-14', '2028-04-17', '2028-05-01',
+  '2028-05-29', '2028-08-28', '2028-12-25', '2028-12-26',
+].join(', ');
+
 const defaults = {
+  holidays: UK_BANK_HOLIDAYS,
+  standard_week: '37.5',      // hours a full-time week, for the month picker
   standard_rate: '100',       // £ that defines one unit
   work_start: '09:00',
   work_end: '17:30',

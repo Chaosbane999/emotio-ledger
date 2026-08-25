@@ -62,9 +62,24 @@ const monthName = (p) => {
 // shell
 // ---------------------------------------------------------------------------
 
+// Which month you are looking at is a personal preference, not agency config:
+// storing it per browser means a refresh keeps you where you were, and one
+// person changing month never moves anybody else.
+const REMEMBERED = 'emotiohours.period';
+const rememberPeriod = (p) => { try { localStorage.setItem(REMEMBERED, p); } catch (e) { /* private mode */ } };
+const recallPeriod = () => { try { return localStorage.getItem(REMEMBERED); } catch (e) { return null; } };
+
 async function boot() {
+  if (!S.period) S.period = recallPeriod();
   S.boot = await api(`/api/bootstrap${S.period ? P() : ''}`);
+
+  // the remembered month may have been deleted since
+  if (S.period && !S.boot.periods.includes(S.period)) {
+    S.period = null;
+    S.boot = await api('/api/bootstrap');
+  }
   S.period = S.boot.period;
+  rememberPeriod(S.period);
   S.me = S.boot.me || { role: 'admin', person_id: null };
 
   // A member sees only their own month, so the agency-wide tabs are removed
@@ -108,6 +123,7 @@ $('#tabs').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-view]');
   if (!b) return;
   S.view = b.dataset.view;
+  S.showRecipes = false;      // the recipes panel is a detour, not a mode
   render();
 });
 
@@ -118,6 +134,7 @@ $('#signOut').addEventListener('click', async () => {
 
 $('#period').addEventListener('change', async (e) => {
   S.period = e.target.value;
+  rememberPeriod(S.period);
   S.boot = await api(`/api/bootstrap${P()}`);
   render();
 });
@@ -130,6 +147,7 @@ $('#addMonth').addEventListener('click', async () => {
     const r = await api('/api/months', { body: { period: next, copy_from: last } });
     toast(`${monthName(next)} added — ${r.copied.allocations} allocations copied forward.`);
     S.period = next;
+    rememberPeriod(next);
     S.boot = await api(`/api/bootstrap${P()}`);
     await boot();
   } catch (e) { toast(e.message, true); }
@@ -142,6 +160,7 @@ $('#delMonth').addEventListener('click', async () => {
     const r = await api(`/api/months/${S.period}`, { method: 'DELETE' });
     toast(`${monthName(S.period)} deleted.`);
     S.period = r.months[r.months.length - 1];
+    rememberPeriod(S.period);
     await boot();
   } catch (e) { toast(e.message, true); }
 });
@@ -605,8 +624,9 @@ async function renderContractDetail(id) {
       ${isPot
         ? `<div class="item"><span class="k">Remaining</span>
              <span class="v ${s.pot_remaining < 0 ? 'bad' : 'ok'}">${units(s.pot_remaining)}</span></div>
-           <div class="item"><span class="k">Projected</span>
-             <span class="v ${s.pot_overrun ? 'bad' : 'ok'}">${units(s.pot_projected)}</span></div>`
+           <div class="item"><span class="k">On pace to use by ${esc(s.pot_end)}</span>
+             <span class="v ${s.pot_overrun ? 'bad' : 'ok'}">${units(s.pot_projected)}</span>
+             <span class="sub">${s.months_left} month${s.months_left === 1 ? '' : 's'} left at the current rate</span></div>`
         : `<div class="item"><span class="k">Balance</span>
              <span class="v ${s.balanced ? 'ok' : 'bad'}">${s.balanced ? 'balanced' : (s.variance > 0 ? `${h(s.variance)} under` : `${h(-s.variance)} over`)}</span></div>`}
       <div class="item"><span class="k">Clock hours</span><span class="v">${hrs(s.people_hours)}</span></div>
@@ -616,9 +636,14 @@ async function renderContractDetail(id) {
     ${!isPot && !s.balanced && s.variance < 0 ? `<div class="banner bad"><div>
       <b>Allocated ${units(-s.variance)} beyond contract.</b> Reduce hours, or declare the excess as carry-over below
       if you under-delivered last month.</div></div>` : ''}
-    ${isPot && s.pot_overrun ? `<div class="banner bad"><div>
-      <b>On pace to overrun this pot.</b> ${units(s.pot_drawn)} drawn with ${s.months_left} month(s) left —
-      projected ${units(s.pot_projected)} against ${units(s.pot_units)}.</div></div>` : ''}
+    ${isPot ? `<div class="banner ${s.pot_overrun ? 'bad' : 'info'}"><div>
+      <b>${s.pot_overrun ? 'On pace to overrun this pot.' : 'Pot drawdown.'}</b>
+      ${units(s.pot_drawn)} of ${units(s.pot_units)} used with ${s.months_left}
+      month${s.months_left === 1 ? '' : 's'} to go. Carrying on at this rate would reach
+      ${units(s.pot_projected)} by ${esc(s.pot_end)}${s.pot_overrun
+        ? ` — ${units(s.pot_projected - s.pot_units)} past the pot.`
+        : ', which fits.'}
+      It is a forecast from the pace so far, not a commitment.</div></div>` : ''}
 
     <div class="grid2">
       <div class="card">
@@ -1056,23 +1081,18 @@ async function renderSchedule() {
         <p>Their own recipes. Blank rows follow the agency default in Settings</p></header>
       <div class="scroll"><table>
         <thead><tr><th>Deliverable</th><th>Cadence</th><th>Distribution</th><th class="num">Block (min)</th>
-          <th>Splittable</th><th class="num">Max sittings</th><th>Anchor</th><th></th></tr></thead>
+          <th>Splittable</th><th class="num">Max sittings</th><th></th></tr></thead>
         <tbody>${recipes.map((r) => `<tr data-d="${r.id}" class="${r.overridden ? 'own' : ''}">
           <td>${esc(r.name)}${r.internal ? ' <span class="pill mute">internal</span>' : ''}
             ${r.overridden ? ' <span class="pill info">theirs</span>' : ''}</td>
-          <td><select class="prc">${['weekly', 'fortnightly', 'monthly', 'oneoff'].map((x) =>
+          <td><select class="prc">${['daily', 'weekly', 'fortnightly', 'monthly', 'oneoff'].map((x) =>
             `<option${r.cadence === x ? ' selected' : ''}>${x}</option>`).join('')}</select></td>
-          <td><select class="prd">${['spread', 'frontload', 'deadline', 'anchored'].map((x) =>
+          <td><select class="prd">${['spread', 'frontload', 'deadline'].map((x) =>
             `<option${r.distribution === x ? ' selected' : ''}>${x}</option>`).join('')}</select></td>
           <td class="num"><input type="number" class="prb" step="15" min="15" value="${r.block_minutes ?? 60}"></td>
           <td><input type="checkbox" class="prs"${r.splittable ? ' checked' : ''}></td>
           <td class="num"><input type="number" class="prm" step="1" min="0" value="${r.max_sittings ?? 0}"
             title="0 = let the block size decide. A daily ceiling overrides this either way."></td>
-          <td class="anchorCell">
-            <select class="pra"${r.distribution === 'anchored' ? '' : ' disabled'}>${[1, 2, 3, 4, 5].map((dd) =>
-              `<option value="${dd}"${r.anchor_dow === dd ? ' selected' : ''}>${DOW_NAMES[dd]}</option>`).join('')}</select>
-            <input type="time" class="prt" value="${esc(r.anchor_time || '10:00')}" style="width:100px"
-              ${r.distribution === 'anchored' ? '' : 'disabled'}></td>
           <td class="num" style="white-space:nowrap">
             <button class="btn small primary prSave">Save</button>
             ${r.overridden ? '<button class="btn small prReset">Default</button>' : ''}</td>
@@ -1083,8 +1103,9 @@ async function renderSchedule() {
         into. Leave it 0 and the block size decides. It is a preference either way: if a block would
         not physically fit a day, the daily ceiling wins and it splits further — which is why a 12h
         build lands as 3 x 4h however this is set.
-        <b>Anchor</b> only applies when Distribution is <span class="mono">anchored</span>; it is
-        greyed out otherwise because it has no effect.</p>
+        To pin something to a fixed day and time — a weekly call, a standing review — add it as a
+        <b>Fixed commitment</b> on the contract. That is per contract, so two clients' calls never
+        collide; a recipe default could only ever put everyone on the same slot.</p>
       </div>
     </div>` : ''}
 
@@ -1129,12 +1150,6 @@ async function renderSchedule() {
   });
 
   // anchor controls follow the distribution, so they never look live when idle
-  view().querySelectorAll('.prd').forEach((el) => el.addEventListener('change', () => {
-    const tr = el.closest('tr'), on = el.value === 'anchored';
-    $('.pra', tr).disabled = !on;
-    $('.prt', tr).disabled = !on;
-  }));
-
   view().querySelectorAll('.prSave').forEach((btn) => btn.addEventListener('click', async () => {
     const tr = btn.closest('tr');
     await api(`/api/person-recipes/${S.personId}`, { body: {
@@ -1142,7 +1157,7 @@ async function renderSchedule() {
       cadence: $('.prc', tr).value, distribution: $('.prd', tr).value,
       block_minutes: Number($('.prb', tr).value), splittable: $('.prs', tr).checked,
       max_sittings: Number($('.prm', tr).value),
-      anchor_dow: Number($('.pra', tr).value), anchor_time: $('.prt', tr).value } });
+      anchor_dow: 2, anchor_time: '10:00' } });
     toast('Recipe saved for this person.');
     renderSchedule();
   }));
@@ -1265,22 +1280,27 @@ async function renderSettings() {
     <div class="card">
       <header><h2>Scheduling recipes</h2>
         <p>Agency defaults · a person can override these on their Schedule tab</p></header>
+      <div class="body" style="border-bottom:1px solid var(--rule)">
+        <p class="muted"><b>Cadence</b> is how often the work recurs — daily, weekly, fortnightly,
+        monthly, or a one-off. <b>Distribution</b> is where in the month it lands: spread evenly,
+        front-loaded, or against the deadline. <b>Block</b> is how long one sitting runs and
+        <b>Max sittings</b> caps how many sittings one allocation becomes — leave it 0 and the block
+        size decides. Both are preferences: if a block would not fit a day, the per-client daily
+        ceiling splits it further regardless, which is why a 12h build always lands as 3 x 4h.
+        To pin work to a fixed day and time, use <b>Fixed commitments</b> on the contract itself.</p>
+      </div>
       <div class="scroll"><table>
         <thead><tr><th>Deliverable</th><th>Cadence</th><th>Distribution</th><th class="num">Block (min)</th>
-          <th>Splittable</th><th class="num">Max sittings</th><th>Anchor</th><th></th></tr></thead>
+          <th>Splittable</th><th class="num">Max sittings</th><th></th></tr></thead>
         <tbody>${recipes.map((r) => `<tr data-d="${r.id}">
           <td>${esc(r.name)}${r.internal ? ' <span class="pill mute">internal</span>' : ''}</td>
-          <td><select class="rc">${['weekly', 'fortnightly', 'monthly', 'oneoff'].map((x) =>
+          <td><select class="rc">${['daily', 'weekly', 'fortnightly', 'monthly', 'oneoff'].map((x) =>
             `<option${r.cadence === x ? ' selected' : ''}>${x}</option>`).join('')}</select></td>
-          <td><select class="rd">${['spread', 'frontload', 'deadline', 'anchored'].map((x) =>
+          <td><select class="rd">${['spread', 'frontload', 'deadline'].map((x) =>
             `<option${r.distribution === x ? ' selected' : ''}>${x}</option>`).join('')}</select></td>
           <td class="num"><input type="number" class="rb" step="15" min="15" value="${r.block_minutes ?? 60}"></td>
           <td><input type="checkbox" class="rs"${r.splittable ? ' checked' : ''}></td>
           <td class="num"><input type="number" class="rm" step="1" min="0" value="${r.max_sittings ?? 0}"></td>
-          <td><select class="ra"${r.distribution === 'anchored' ? '' : ' disabled'}>${[1, 2, 3, 4, 5].map((d) =>
-            `<option value="${d}"${r.anchor_dow === d ? ' selected' : ''}>${DOW[d]}</option>`).join('')}</select>
-            <input type="time" class="rt" value="${esc(r.anchor_time || '10:00')}" style="width:96px"
-              ${r.distribution === 'anchored' ? '' : 'disabled'}></td>
           <td class="num"><button class="btn small primary saver">Save</button></td>
         </tr>`).join('')}</tbody>
       </table></div>
@@ -1459,12 +1479,6 @@ function wireSettings() {
     toast('Service added.'); renderSettings();
   });
 
-  view().querySelectorAll('.rd').forEach((el) => el.addEventListener('change', () => {
-    const tr = el.closest('tr'), on = el.value === 'anchored';
-    $('.ra', tr).disabled = !on;
-    $('.rt', tr).disabled = !on;
-  }));
-
   view().querySelectorAll('.saver').forEach((btn) => btn.addEventListener('click', async () => {
     const tr = btn.closest('tr');
     await api('/api/deliverables', { body: {
@@ -1473,7 +1487,7 @@ function wireSettings() {
         cadence: $('.rc', tr).value, distribution: $('.rd', tr).value,
         block_minutes: Number($('.rb', tr).value), splittable: $('.rs', tr).checked,
         max_sittings: Number($('.rm', tr).value),
-        anchor_dow: Number($('.ra', tr).value), anchor_time: $('.rt', tr).value } } });
+        anchor_dow: 2, anchor_time: '10:00' } } });
     toast('Recipe saved.');
   }));
 

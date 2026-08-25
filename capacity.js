@@ -43,9 +43,19 @@ function workingDates(period) {
 
 const workingDays = (period) => workingDates(period).length;
 
-/** Total client-facing hours the whole team has in a period — shown in the
- *  month picker so you can see at a glance how big a month is. */
+/**
+ * A normal working month for one full-time person — working days x a standard
+ * day. This is what the month picker shows, because "how long is this month" is
+ * a question about the calendar, not about how many people happen to be on the
+ * team.
+ */
 function monthHours(period) {
+  const week = Number(get('standard_week') || 37.5);
+  return round2(workingDays(period) * (week / 5));
+}
+
+/** Total client-facing hours the whole team has, across everyone. */
+function teamHours(period) {
   const days = workingDays(period);
   return round2(activePeople().reduce((s, p) => s + days * (p.weekly_hours / 5), 0));
 }
@@ -434,7 +444,7 @@ function personView(personId, period) {
 
 module.exports = {
   periodOf, thisPeriod, parsePeriod, shiftPeriod,
-  workingDates, workingDays, weekBuckets, monthHours,
+  workingDates, workingDays, weekBuckets, monthHours, teamHours,
   standardRate, toUnits, toHours, round2,
   personCapacity, activePeople,
   contractSummary,

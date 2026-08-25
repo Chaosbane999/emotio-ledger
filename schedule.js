@@ -103,6 +103,20 @@ function expand(alloc, recipe, buckets, ceiling) {
   };
 
   switch (recipe.cadence) {
+    // one sitting every working day, the month's hours shared across them
+    case 'daily': {
+      const allDays = buckets.flat().length;
+      if (!allDays) break;
+      const perDay = shareExact(totalMin, buckets.map((b) => b.length));
+      buckets.forEach((bk, w) => {
+        if (perDay[w] < GRAIN) return;
+        for (const m of shareExact(perDay[w], bk.map(() => 1))) {
+          if (m >= GRAIN) sessions.push({ minutes: m, week: w });
+        }
+      });
+      break;
+    }
+
     case 'weekly':
     case 'fortnightly': {
       const step = recipe.cadence === 'fortnightly' ? 2 : 1;
