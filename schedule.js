@@ -335,7 +335,13 @@ function planPerson(personId, period) {
     .flatMap(feasible)
     .sort((a, b) => b.minutes - a.minutes);
 
-  /** Place an item, halving it as a last resort before giving up. */
+  /**
+   * Place an item, halving it as a last resort. Each leaf either lands or is
+   * recorded unplaced exactly once — an earlier version returned all-or-nothing
+   * from the recursion, so when one half landed and the other did not the whole
+   * item was reported unplaced while half of it was already on the calendar,
+   * and scheduled + unplaced came out larger than what was allocated.
+   */
   const place = (item) => {
     const home = Math.min(item.week, weeks - 1);
     const order = [home];                       // nearest week first, then out
@@ -343,20 +349,21 @@ function planPerson(personId, period) {
       if (home - d >= 0) order.push(home - d);
       if (home + d < weeks) order.push(home + d);
     }
-    if (order.some((w) => tryWeek(item, w))) return true;
+    if (order.some((w) => tryWeek(item, w))) return;
 
-    // nothing took it whole — split and try again rather than dropping work
+    // nothing took it whole — split and try each half on its own merits
     if (item.splittable && item.minutes >= GRAIN * 2) {
       const half = snap(item.minutes / 2);
       const rest = item.minutes - half;
-      const a = place({ ...item, minutes: half, subdivided: true });
-      const b = rest >= GRAIN ? place({ ...item, minutes: rest, subdivided: true }) : true;
-      return a && b;
+      place({ ...item, minutes: half, subdivided: true });
+      if (rest >= GRAIN) place({ ...item, minutes: rest, subdivided: true });
+      else if (rest > 0) unplaced.push({ ...item, minutes: rest });
+      return;
     }
-    return false;
+    unplaced.push(item);
   };
 
-  for (const item of flexible) if (!place(item)) unplaced.push(item);
+  for (const item of flexible) place(item);
 
   placed.sort((a, b) => (a.date === b.date ? a.start.localeCompare(b.start) : a.date.localeCompare(b.date)));
 
