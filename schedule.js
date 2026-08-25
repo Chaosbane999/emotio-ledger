@@ -62,11 +62,17 @@ function shareExact(total, weights) {
 }
 
 function splitExact(total, n) {
-  const base = Math.max(GRAIN, Math.floor(total / n / GRAIN) * GRAIN);
-  const out = Array.from({ length: n }, () => base);
-  let rem = total - base * n;
-  for (let i = 0; rem >= GRAIN; i++, rem -= GRAIN) out[i % n] += GRAIN;
-  return out;
+  if (total <= 0) return [];
+  // Never ask for more pieces than the total can fill at a quarter each. A
+  // floor of one grain per piece silently invents time: 30 minutes cut three
+  // ways became 3 x 15 = 45, and that inflation accumulated across a month.
+  const pieces = Math.max(1, Math.min(n, Math.floor(total / GRAIN) || 1));
+  const base = Math.floor(total / pieces / GRAIN) * GRAIN;
+  const out = Array.from({ length: pieces }, () => base);
+  let rem = total - base * pieces;
+  for (let i = 0; rem >= GRAIN; i++, rem -= GRAIN) out[i % pieces] += GRAIN;
+  if (rem > 0) out[0] += rem;          // sub-grain tail, kept so the sum is exact
+  return out.filter((m) => m > 0);
 }
 
 /**

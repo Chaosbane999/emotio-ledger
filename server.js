@@ -335,7 +335,8 @@ app.get('/api/leave', ok((req, res) => {
 app.post('/api/allocation', ok((req, res) => {
   const { contract_id, person_id, deliverable_id } = req.body;
   const p = req.body.period || period(req);
-  const hours = Math.max(0, num(req.body.hours));
+  // quarter-hour grain, the same grain the schedule is built on
+  const hours = Math.max(0, Math.round(num(req.body.hours) * 4) / 4);
   if (!contract_id || !person_id || !deliverable_id) throw new Error('contract, person and deliverable are all required');
 
   if (hours === 0) {
