@@ -1,6 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs');
 
 const { db, get, set } = require('./db');
 const cap = require('./capacity');
@@ -179,19 +180,19 @@ const isAdmin = (req) => req.user?.role === 'admin';
 app.use((req, res, next) => {
   if (isAdmin(req) || !req.path.startsWith('/api/')) return next();
 
-  // a member may read their own person view and their own schedule
+  // A member may read their own person view, their own leave, their own
+  // schedule and the recipes that shape it. Every one of these is scoped to
+  // their own id — none of them carries a rate or a unit.
   const own = String(req.user?.person_id ?? '');
-  const mineRe = new RegExp(`^/api/(person|schedule)/${own}(/|$)`);
-  const allowed = req.path === '/api/bootstrap'
-    || req.path === '/api/me'
-    || req.path === '/api/workdays'
-    || req.path === '/api/months'
-    || (own && mineRe.test(req.path));
+  const mineRe = own && new RegExp(`^/api/(person|schedule|person-recipes)/${own}(/|$)`);
+  const shared = ['/api/bootstrap', '/api/me', '/api/workdays', '/api/months', '/api/leave'];
+  const allowed = shared.includes(req.path) || (mineRe && mineRe.test(req.path));
 
   if (!allowed) return res.status(403).json({ error: 'Not available on your account.' });
 
-  // and may not write anything except their own schedule blocks
-  if (req.method !== 'GET' && !/^\/api\/schedule\//.test(req.path)) {
+  // and may write only their own schedule and their own recipes
+  const writable = own && new RegExp(`^/api/(schedule|person-recipes)/${own}(/|$)`);
+  if (req.method !== 'GET' && !(writable && writable.test(req.path))) {
     return res.status(403).json({ error: 'Read-only on your account.' });
   }
   next();
@@ -203,9 +204,38 @@ app.get('/api/me', (req, res) => res.json({
   name: req.user?.name || 'Admin',
 }));
 
-app.use(express.static(path.join(__dirname, 'public'), {
+/**
+ * Assets are served immutable for a year, so the HTML must name a version or a
+ * browser will keep its first copy forever. Without this a deploy simply did
+ * not reach anyone already signed in — a fixed stylesheet stayed broken on
+ * their screen and looked like the fix had never been made.
+ */
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const BUILD = crypto.createHash('sha1')
+  .update(['app.js', 'style.css'].map((f) => {
+    try { return fs.readFileSync(path.join(PUBLIC_DIR, f)); } catch { return ''; }
+  }).join('|'))
+  .digest('hex').slice(0, 10);
+
+const pageCache = new Map();
+const sendPage = (file) => (req, res) => {
+  if (!pageCache.has(file)) {
+    pageCache.set(file, fs.readFileSync(path.join(PUBLIC_DIR, file), 'utf8')
+      .replace(/(src|href)="((?:app|style)\.(?:js|css))"/g, `$1="$2?v=${BUILD}"`));
+  }
+  res.set('Cache-Control', 'no-store');
+  res.type('html').send(pageCache.get(file));
+};
+
+for (const [route, file] of [['/', 'index.html'], ['/index.html', 'index.html'],
+  ['/login', 'login.html'], ['/login.html', 'login.html']]) {
+  app.get(route, sendPage(file));
+}
+
+app.use(express.static(PUBLIC_DIR, {
   setHeaders: (res, p) => {
     if (/\.(css|js)$/.test(p)) res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    else if (/\.html$/.test(p)) res.set('Cache-Control', 'no-store');
   },
 }));
 
@@ -325,6 +355,13 @@ app.get('/api/contract/:id', ok((req, res) => {
 }));
 
 app.get('/api/leave', ok((req, res) => {
+  // A member may see their own leave — it carries no rate or unit — but not
+  // the team's. The person view reads this, so refusing it outright left them
+  // staring at an error with nothing on the page.
+  if (req.user?.role !== 'admin') {
+    return res.json(db.prepare('SELECT * FROM leave WHERE period = ? AND person_id = ?')
+      .all(period(req), req.user?.person_id ?? -1));
+  }
   res.json(db.prepare('SELECT * FROM leave WHERE period = ?').all(period(req)));
 }));
 
@@ -532,16 +569,26 @@ app.delete('/api/people/:id', ok((req, res) => {
 
 app.post('/api/contracts', ok((req, res) => {
   const b = req.body;
+  // Shape alone would let '2026-13-01' through. It could not crash anything —
+  // these are only ever compared as strings — but it would silently sit outside
+  // every window, so reject it at the door instead.
+  const date = (v) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v || '')) return null;
+    const d = new Date(`${v}T00:00:00Z`);
+    return Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== v ? null : v;
+  };
+  const month = (v) => (/^\d{4}-(0[1-9]|1[0-2])$/.test(v || '') ? v : null);
   const fields = [b.name, b.exec_person_id || null, b.type || 'retainer', b.status || 'live',
-    num(b.monthly_units), num(b.pot_units), b.pot_start || null, b.pot_end || null,
-    b.harvest_ids || '', b.notes || ''];
+    num(b.monthly_units), num(b.pot_units), month(b.pot_start), month(b.pot_end),
+    date(b.starts_on), date(b.ends_on), b.harvest_ids || '', b.notes || ''];
   if (b.id) {
     db.prepare(`UPDATE contracts SET name=?, exec_person_id=?, type=?, status=?, monthly_units=?,
-      pot_units=?, pot_start=?, pot_end=?, harvest_ids=?, notes=? WHERE id=?`).run(...fields, b.id);
+      pot_units=?, pot_start=?, pot_end=?, starts_on=?, ends_on=?, harvest_ids=?, notes=?
+      WHERE id=?`).run(...fields, b.id);
   } else {
     db.prepare(`INSERT INTO contracts (name, exec_person_id, type, status, monthly_units,
-      pot_units, pot_start, pot_end, harvest_ids, notes, sort_order)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 50)`).run(...fields);
+      pot_units, pot_start, pot_end, starts_on, ends_on, harvest_ids, notes, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 50)`).run(...fields);
   }
   res.json(listContracts(req.query.archived === '1'));
 }));

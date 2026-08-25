@@ -180,6 +180,35 @@ const DEFAULT_RECIPE = {
   splittable: 1, max_sittings: 0, anchor_dow: 2, anchor_time: '10:00',
 };
 
+const lastDayOf = (ym) => {
+  const [y, m] = ym.split('-').map(Number);
+  return `${ym}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0')}`;
+};
+
+/**
+ * The stretch of THIS period a contract is actually live for, as ISO dates.
+ * Returns null when the contract is not live in this period at all.
+ *
+ * Without this the packer treated every month as an open field and would keep
+ * laying work down past the day a contract ended — it had no way to know the
+ * end existed. A pot narrows the window too: its months are the only ones its
+ * allowance may be drawn in.
+ */
+function contractWindow(contract, from, to) {
+  let start = from;
+  let end = to;
+  if (contract.starts_on && contract.starts_on > start) start = contract.starts_on;
+  if (contract.ends_on   && contract.ends_on   < end)   end   = contract.ends_on;
+  if (contract.type === 'pot') {
+    if (contract.pot_start && `${contract.pot_start}-01` > start) start = `${contract.pot_start}-01`;
+    if (contract.pot_end) {
+      const potEnd = lastDayOf(contract.pot_end);
+      if (potEnd < end) end = potEnd;
+    }
+  }
+  return start > end ? null : { start, end };
+}
+
 /**
  * Build a month of calendar blocks for one person.
  * Anchored sessions are placed first and never moved; everything else is
@@ -215,17 +244,47 @@ function planPerson(personId, period) {
   const ownRecipe = db.prepare('SELECT * FROM person_recipes WHERE person_id = ? AND deliverable_id = ?');
   const recipeFor = db.prepare('SELECT * FROM recipes WHERE deliverable_id = ?');
 
+  const allDates = buckets.flat();
+  const periodFrom = allDates[0];
+  const periodTo = allDates[allDates.length - 1];
+  const contractRow = db.prepare('SELECT * FROM contracts WHERE id = ?');
+
   const wanted = [];
+  const offWindow = [];
   for (const r of rows) {
     const recipe = ownRecipe.get(personId, r.deliverable_id)
       || recipeFor.get(r.deliverable_id) || DEFAULT_RECIPE;
     const ceiling = r.contract_type === 'internal'
       ? perDayCapMin : Math.min(maxClientMin, perDayCapMin);
-    for (const s of expand(r, recipe, buckets, ceiling)) {
-      const label = r.contract_type === 'internal'
-        ? r.deliverable_name
-        : `${r.contract_name} — ${r.deliverable_name}`;
-      wanted.push({ ...s, ...r, label });
+    const label = r.contract_type === 'internal'
+      ? r.deliverable_name
+      : `${r.contract_name} — ${r.deliverable_name}`;
+
+    // Only the days this contract is live for. Expanding against the whole
+    // month and hoping the packer stays inside the window does not work —
+    // a weekly task would put a session in every week of the month, including
+    // the weeks after the contract had finished.
+    const win = contractWindow(contractRow.get(r.contract_id) || {}, periodFrom, periodTo);
+    if (!win) {
+      offWindow.push({ label, minutes: Math.round(r.hours * 60), reason: 'outside the contract dates' });
+      continue;
+    }
+    const live = [];
+    buckets.forEach((bk, w) => {
+      const days = bk.filter((iso) => iso >= win.start && iso <= win.end);
+      if (days.length) live.push({ days, w });
+    });
+    if (!live.length) {
+      offWindow.push({ label, minutes: Math.round(r.hours * 60), reason: 'no working days inside the contract dates' });
+      continue;
+    }
+
+    const allowed = new Set(live.flatMap((l) => l.days));
+    const liveWeeks = live.map((l) => l.w);
+    for (const s of expand(r, recipe, live.map((l) => l.days), ceiling)) {
+      // expand() counted weeks within the window; map back to the real month
+      const week = live[Math.min(s.week, live.length - 1)].w;
+      wanted.push({ ...s, ...r, label, week, allowed, liveWeeks });
     }
   }
 
@@ -235,11 +294,18 @@ function planPerson(personId, period) {
       LEFT JOIN contracts c ON c.id = an.contract_id
      WHERE an.person_id = ?`).all(personId);
   for (const a of anchorRows) {
+    // a weekly call stops when the contract does
+    const win = a.contract_id
+      ? contractWindow(contractRow.get(a.contract_id) || {}, periodFrom, periodTo)
+      : { start: periodFrom, end: periodTo };
+    if (!win) continue;
+    const allowed = new Set(allDates.filter((iso) => iso >= win.start && iso <= win.end));
     for (let w = 0; w < weeks; w++) {
+      if (!buckets[w].some((iso) => allowed.has(iso))) continue;
       wanted.push({
         minutes: a.minutes, week: w, anchored: true, dow: a.dow, time: a.time,
         contract_id: a.contract_id, contract_name: a.contract_name || '',
-        deliverable_name: a.label, contract_type: 'retainer',
+        deliverable_name: a.label, contract_type: 'retainer', allowed,
         label: a.contract_name ? `${a.contract_name} — ${a.label}` : a.label,
       });
     }
@@ -304,7 +370,8 @@ function planPerson(personId, period) {
 
   // 1) anchored first — they own their slot
   for (const item of wanted.filter((w) => w.anchored)) {
-    const week = buckets[Math.min(item.week, weeks - 1)] || [];
+    const week = (buckets[Math.min(item.week, weeks - 1)] || [])
+      .filter((d) => !item.allowed || item.allowed.has(d));
     const iso = week.find((d) => new Date(`${d}T00:00:00Z`).getUTCDay() === item.dow) || week[0];
     const day = iso && dayOf.get(iso);
     if (!day) { unplaced.push(item); continue; }
@@ -317,7 +384,7 @@ function planPerson(personId, period) {
   //    If its own week is full, slide to the nearest week that has room —
   //    a weekly task landing a week late beats it disappearing.
   const tryWeek = (item, w) => {
-    const week = buckets[w] || [];
+    const week = (buckets[w] || []).filter((iso) => !item.allowed || item.allowed.has(iso));
     const candidates = week.map((iso) => dayOf.get(iso)).filter(Boolean)
       .sort((a, b) => a.used - b.used);
     for (const day of candidates) {
@@ -349,7 +416,10 @@ function planPerson(personId, period) {
       if (home - d >= 0) order.push(home - d);
       if (home + d < weeks) order.push(home + d);
     }
-    if (order.some((w) => tryWeek(item, w))) return;
+    // a full week is a reason to slide, never a reason to leave the window
+    const open = item.liveWeeks && new Set(item.liveWeeks);
+    const reach = open ? order.filter((w) => open.has(w)) : order;
+    if (reach.some((w) => tryWeek(item, w))) return;
 
     // nothing took it whole — split and try each half on its own merits
     if (item.splittable && item.minutes >= GRAIN * 2) {
@@ -371,10 +441,14 @@ function planPerson(personId, period) {
     person: { id: person.id, name: person.name },
     period,
     blocks: placed,
-    unplaced: unplaced.map((u) => ({ label: u.label, minutes: Math.round(u.minutes), week: u.week + 1 })),
+    unplaced: [
+      ...unplaced.map((u) => ({ label: u.label, minutes: Math.round(u.minutes), week: u.week + 1, reason: 'no room left that week' })),
+      ...offWindow,
+    ],
     totals: {
       scheduled_hours: cap.round2(placed.reduce((s, b) => s + b.minutes, 0) / 60),
-      unplaced_hours: cap.round2(unplaced.reduce((s, b) => s + b.minutes, 0) / 60),
+      unplaced_hours: cap.round2(
+        [...unplaced, ...offWindow].reduce((s, b) => s + b.minutes, 0) / 60),
       blocks: placed.length,
     },
   };

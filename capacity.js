@@ -202,6 +202,8 @@ function contractSummary(contract, period) {
     name: contract.name,
     type: contract.type,
     status: contract.status,
+    starts_on: contract.starts_on || null,
+    ends_on: contract.ends_on || null,
     period,
     lines,
     third_parties: tpRows.map((t) => ({ id: t.id, name: t.name, units: round2(t.units) })),
@@ -241,16 +243,16 @@ function potPosition(contract, period, thisPeriodUnits) {
   const drawn = drawnPeople + drawnTp;
   const remaining = contract.pot_units - drawn;
 
-  // months in the window, and how many are done including this one
+  // How many months of the window remain. Deliberately no burn-rate forecast:
+  // projecting the pace so far assumes nothing changes — no contract ending, no
+  // allocation moving — when drawing a pot as the work demands is its whole
+  // point. A forecast built on that assumption is worse than no forecast.
   let total = 0, elapsed = 0, cur = start;
   while (cur <= end && total < 120) {
     total += 1;
     if (cur <= period) elapsed += 1;
     cur = shiftPeriod(cur, 1);
   }
-  const monthsLeft = Math.max(0, total - elapsed);
-  const pace = elapsed > 0 ? drawn / elapsed : 0;
-  const projected = drawn + pace * monthsLeft;
 
   return {
     pot_units: round2(contract.pot_units),
@@ -260,10 +262,7 @@ function potPosition(contract, period, thisPeriodUnits) {
     pot_remaining: round2(remaining),
     pot_this_period: round2(thisPeriodUnits),
     months_total: total,
-    months_left: monthsLeft,
-    pot_projected: round2(projected),
-    // will the current pace overrun the pot before the period ends?
-    pot_overrun: projected > contract.pot_units + 0.005,
+    months_left: Math.max(0, total - elapsed),
     pot_exhausted: remaining <= 0.005,
   };
 }

@@ -17,7 +17,13 @@ const view = () => $('#view');
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const h = (n, d = 2) => (Number(n) || 0).toFixed(d).replace(/\.?0+$/, '');
+// Trim only the fractional tail. The strip used to run on the whole string, so
+// h(150, 0) -> '15': with no decimal point the regex ate a significant zero,
+// and every round number in the month picker was rendered a digit short.
+const h = (n, d = 2) => {
+  const s = (Number(n) || 0).toFixed(d);
+  return s.includes('.') ? s.replace(/\.?0+$/, '') : s;
+};
 const NB = '\u00a0';                                                 // keeps "12.5 h" unbreakable
 // Show hours as they really are. Forcing derived capacity onto a quarter grain
 // understated it — 4 h/week across 21 working days is 16.8 h, and snapping
@@ -25,7 +31,13 @@ const NB = '\u00a0';                                                 // keeps "1
 // they still read cleanly.
 const hrs = (n) => `${h(n)}${NB}h`;
 // A member never sees units: units divided by hours would give the rate away.
-const units = (n) => (S.me && S.me.role !== 'admin') ? '' : `${h(n)}${NB}u`;
+// A member is never shown a rate or a unit: units divided by hours would give
+// them everyone's charge-out rate. Blanking the cells left an empty column and
+// a "£0/h" chip, so drop the column and the chip outright instead.
+const showsMoney = () => !S.me || S.me.role === 'admin';
+const units = (n) => (showsMoney() ? `${h(n)}${NB}u` : '');
+const uTh = (label = 'Units') => (showsMoney() ? `<th class="num">${label}</th>` : '');
+const uTd = (n) => (showsMoney() ? `<td class="num">${units(n)}</td>` : '');
 const pct = (n) => `${Math.round(Number(n) || 0)}%`;
 const DOW_NAMES = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
@@ -91,6 +103,9 @@ async function boot() {
   if (S.me.role !== 'admin') {
     S.personId = S.me.person_id;
     if (!memberViews.includes(S.view)) S.view = 'people';
+    // adding and deleting months is an agency-wide act; the buttons were on
+    // show for members and every click came back refused
+    ['#addMonth', '#delMonth'].forEach((sel) => $(sel)?.classList.add('hidden'));
   }
   $('#whoami').textContent = S.me.name ? `${S.me.name}${S.me.role === 'admin' ? '' : ''}` : '';
 
@@ -185,7 +200,11 @@ function capBar(usedH, capH) {
 }
 
 /** Hours lead on every headline figure; units ride alongside. */
-const pairHU = (hh, u) => `${hrs(hh)}<span class="sep">/</span><span class="alt">${units(u)}</span>`;
+// Hours with their unit value alongside. A member sees no units, so the
+// separator goes too — otherwise every headline figure trailed a bare slash.
+const pairHU = (hh, u) => (showsMoney()
+  ? `${hrs(hh)}<span class="sep">/</span><span class="alt">${units(u)}</span>`
+  : hrs(hh));
 
 async function renderAgency() {
   const a = await api(`/api/agency${P()}`);
@@ -305,8 +324,11 @@ async function renderAgency() {
       <header><h2>Capacity by person</h2><p>Clock hours each, with what those hours are worth</p></header>
       <div class="scroll"><table class="big">
         <thead><tr>
-          <th>Person</th><th class="num">Rate</th><th class="num">Available</th>
-          <th class="num">Client capacity</th><th class="num">Allocated</th><th class="num">Spare</th>
+          <th>Person</th><th class="num">Rate</th>
+          <th class="num" title="Working hours this month, after leave and sick">Available</th>
+          <th class="num" title="The share of available hours we sell to clients — available hours x their utilisation target. The rest is internal and training time.">Sellable hours</th>
+          <th class="num">Allocated</th>
+          <th class="num" title="Sellable hours not yet allocated to a contract">Spare</th>
           <th style="width:140px">Load</th><th class="num">Internal</th>
         </tr></thead>
         <tbody>${a.staff.map((p) => `<tr>
@@ -414,7 +436,9 @@ async function renderPerson() {
   // Convert from the same 0.25-rounded figure the hours display uses, or a
   // £100 person reads "148.50 h / 148.51 u" and looks broken.
   const asUnits = (hh) => (Number(hh) || 0) * v.person.rate / S.boot.settings.standard_rate;
-  const pairH = (hh) => `${hrs(hh)}<span class="sep">/</span><span class="alt">${units(asUnits(hh))}</span>`;
+  const pairH = (hh) => (showsMoney()
+    ? `${hrs(hh)}<span class="sep">/</span><span class="alt">${units(asUnits(hh))}</span>`
+    : hrs(hh));
   const clientLines = v.lines.filter((l) => l.type !== 'internal');
   const internalLines = v.lines.filter((l) => l.type === 'internal');
   const internalDeliverables = S.boot.deliverables.filter((d) => d.internal);
@@ -432,18 +456,19 @@ async function renderPerson() {
       <label for="personPick">Person</label>
       <select id="personPick">${people.map((p) =>
         `<option value="${p.id}"${p.id === S.personId ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
-      <span class="pill mute">£${h(v.person.rate)}/h · ${pct(v.person.utilisation * 100)} target</span>
+      <span class="pill mute">${showsMoney() ? `£${h(v.person.rate)}/h · ` : ''}${pct(v.person.utilisation * 100)} target</span>
       <span class="spacer"></span>
       <button class="btn small" data-goto-schedule="${S.personId}">View schedule</button>
     </div>
 
     <div class="stats">
-      <div class="stat"><span class="k">Client capacity</span>
+      <div class="stat" title="The share of available hours we sell to clients — available hours x their utilisation target. The rest is internal and training time.">
+        <span class="k">Sellable hours</span>
         <span class="v">${pairH(c.client_hours)}</span>
-        <span class="s">of ${hrs(c.available_hours)} available after leave</span></div>
+        <span class="s">${pct(c.utilisation * 100)} of ${hrs(c.available_hours)} available after leave</span></div>
       <div class="stat"><span class="k">Allocated</span>
         <span class="v">${pairH(t.client_hours)}</span>
-        <span class="s">${pct(t.load_pct)} of their client capacity</span></div>
+        <span class="s">${pct(t.load_pct)} of their sellable hours</span></div>
       <div class="stat ${t.spare_hours < 0 ? 'bad' : 'good'}"><span class="k">Spare</span>
         <span class="v">${pairH(t.spare_hours)}</span>
         <span class="s">${t.spare_hours < 0 ? 'overbooked' : 'room for more work'}</span></div>
@@ -458,22 +483,22 @@ async function renderPerson() {
     <div class="card">
       <header><h2>Client work</h2><p>One row per contract — click to see the deliverables inside</p></header>
       <div class="scroll"><table>
-        <thead><tr><th></th><th>Contract</th><th class="num">Hours</th><th class="num">Units</th><th class="num">Deliverables</th></tr></thead>
+        <thead><tr><th></th><th>Contract</th><th class="num">Hours</th>${uTh()}<th class="num">Deliverables</th></tr></thead>
         <tbody>${byContract.length ? byContract.map((g) => `
           <tr class="ct" data-grp="${g.contract_id}">
             <td class="tw"><span class="caret">▸</span></td>
             <td><button class="linky" data-contract="${g.contract_id}">${esc(g.name)}</button></td>
             <td class="num"><b>${hrs(g.hours)}</b></td>
-            <td class="num">${units(g.units)}</td>
+            ${uTd(g.units)}
             <td class="num">${g.lines.length}</td>
           </tr>
           ${g.lines.map((l) => `<tr class="sub-row hidden" data-of="${g.contract_id}">
             <td></td><td class="indent">${esc(l.deliverable_name)}</td>
-            <td class="num">${hrs(l.hours)}</td><td class="num">${units(l.units)}</td><td></td>
+            <td class="num">${hrs(l.hours)}</td>${uTd(l.units)}<td></td>
           </tr>`).join('')}`).join('')
-          : '<tr><td colspan="5" class="muted">Nothing allocated this month.</td></tr>'}
+          : `<tr><td colspan="${showsMoney() ? 5 : 4}" class="muted">Nothing allocated this month.</td></tr>`}
         <tr class="total"><td></td><td>Total</td><td class="num">${hrs(t.client_hours)}</td>
-          <td class="num">${units(t.client_units)}</td><td></td></tr></tbody>
+          ${uTd(t.client_units)}<td></td></tr></tbody>
       </table></div>
     </div>
 
@@ -624,9 +649,9 @@ async function renderContractDetail(id) {
       ${isPot
         ? `<div class="item"><span class="k">Remaining</span>
              <span class="v ${s.pot_remaining < 0 ? 'bad' : 'ok'}">${units(s.pot_remaining)}</span></div>
-           <div class="item"><span class="k">On pace to use by ${esc(s.pot_end)}</span>
-             <span class="v ${s.pot_overrun ? 'bad' : 'ok'}">${units(s.pot_projected)}</span>
-             <span class="sub">${s.months_left} month${s.months_left === 1 ? '' : 's'} left at the current rate</span></div>`
+           <div class="item"><span class="k">Time left</span>
+             <span class="v">${s.months_left} month${s.months_left === 1 ? '' : 's'}</span>
+             <span class="sub">runs to ${esc(s.pot_end)}</span></div>`
         : `<div class="item"><span class="k">Balance</span>
              <span class="v ${s.balanced ? 'ok' : 'bad'}">${s.balanced ? 'balanced' : (s.variance > 0 ? `${h(s.variance)} under` : `${h(-s.variance)} over`)}</span></div>`}
       <div class="item"><span class="k">Clock hours</span><span class="v">${hrs(s.people_hours)}</span></div>
@@ -636,14 +661,12 @@ async function renderContractDetail(id) {
     ${!isPot && !s.balanced && s.variance < 0 ? `<div class="banner bad"><div>
       <b>Allocated ${units(-s.variance)} beyond contract.</b> Reduce hours, or declare the excess as carry-over below
       if you under-delivered last month.</div></div>` : ''}
-    ${isPot ? `<div class="banner ${s.pot_overrun ? 'bad' : 'info'}"><div>
-      <b>${s.pot_overrun ? 'On pace to overrun this pot.' : 'Pot drawdown.'}</b>
-      ${units(s.pot_drawn)} of ${units(s.pot_units)} used with ${s.months_left}
-      month${s.months_left === 1 ? '' : 's'} to go. Carrying on at this rate would reach
-      ${units(s.pot_projected)} by ${esc(s.pot_end)}${s.pot_overrun
-        ? ` — ${units(s.pot_projected - s.pot_units)} past the pot.`
-        : ', which fits.'}
-      It is a forecast from the pace so far, not a commitment.</div></div>` : ''}
+    ${isPot ? `<div class="banner ${s.pot_remaining < 0 ? 'bad' : 'info'}"><div>
+      <b>${s.pot_remaining < 0 ? 'This pot is overdrawn.' : 'Pot drawdown.'}</b>
+      ${units(s.pot_drawn)} of ${units(s.pot_units)} drawn, ${units(Math.abs(s.pot_remaining))}
+      ${s.pot_remaining < 0 ? 'past the pot' : 'left'}, with ${s.months_left}
+      month${s.months_left === 1 ? '' : 's'} to go (to ${esc(s.pot_end)}).
+      A pot is drawn as the work demands, so there is no monthly target to hit.</div></div>` : ''}
 
     <div class="grid2">
       <div class="card">
@@ -888,8 +911,15 @@ function openContractEditor(c) {
         <span class="muted">1 unit = £${h(S.boot.settings.standard_rate)} of contract value</span></div>
       <div class="rowline"><label>Pot units</label>
         <input type="number" id="cPot" step="0.5" min="0" value="${f('pot_units', 0)}">
-        <label style="min-width:auto">from</label><input type="text" id="cPotS" value="${f('pot_start')}" placeholder="YYYY-MM" style="width:100px">
-        <label style="min-width:auto">to</label><input type="text" id="cPotE" value="${f('pot_end')}" placeholder="YYYY-MM" style="width:100px"></div>
+        <label style="min-width:auto">from</label>
+        <input type="month" id="cPotS" value="${f('pot_start')}" style="width:150px">
+        <label style="min-width:auto">to</label>
+        <input type="month" id="cPotE" value="${f('pot_end')}" style="width:150px"></div>
+      <div class="rowline"><label>Runs from</label>
+        <input type="date" id="cFrom" value="${f('starts_on')}" style="width:160px">
+        <label style="min-width:auto">to</label>
+        <input type="date" id="cTo" value="${f('ends_on')}" style="width:160px">
+        <span class="muted">Optional. Work is only scheduled between these dates.</span></div>
       <div class="rowline"><label>Harvest projects</label>
         <input type="text" id="cHarvest" value="${f('harvest_ids')}" placeholder="comma-separated project ids" style="flex:1;min-width:220px"></div>
       <div class="rowline"><span class="spacer"></span>
@@ -903,10 +933,17 @@ function openContractEditor(c) {
       id: c?.id, name: $('#cName').value.trim(), exec_person_id: Number($('#cExec').value) || null,
       type: $('#cType').value, status: $('#cStatus').value,
       monthly_units: Number($('#cUnits').value), pot_units: Number($('#cPot').value),
-      pot_start: $('#cPotS').value.trim() || null, pot_end: $('#cPotE').value.trim() || null,
+      pot_start: $('#cPotS').value || null, pot_end: $('#cPotE').value || null,
+      starts_on: $('#cFrom').value || null, ends_on: $('#cTo').value || null,
       harvest_ids: $('#cHarvest').value.trim(),
     };
     if (!body.name) return toast('Give the contract a name.', true);
+    if (body.starts_on && body.ends_on && body.ends_on < body.starts_on) {
+      return toast('The end date is before the start date.', true);
+    }
+    if (body.pot_start && body.pot_end && body.pot_end < body.pot_start) {
+      return toast('The pot ends before it starts.', true);
+    }
     S.boot.contracts = await api('/api/contracts', { body });
     toast('Contract saved.');
     S.contractId = c?.id || S.boot.contracts.find((x) => x.name === body.name)?.id || null;
@@ -994,7 +1031,7 @@ async function renderInternal() {
         <p class="muted">Internal time is not sold, so it has no contracted value and nothing to
         balance against — these are simply the hours booked.
         ${busiest && busiest.alloc ? `${esc(busiest.name)} carries the most at ${hrs(busiest.alloc)}.` : ''}
-        Client capacity is governed separately by each person's utilisation target on the Settings page.</p>
+        Sellable hours are governed separately by each person's utilisation target on the Settings page.</p>
       </div>
     </div>`;
 
@@ -1059,7 +1096,7 @@ async function renderSchedule() {
         <span class="s">${plan.totals.blocks} blocks across ${byDate.size} days</span></div>
       <div class="stat ${pv.totals.spare_hours < 0 ? 'bad' : 'good'}">
         <span class="k">Headroom</span><span class="v">${hrs(pv.totals.spare_hours)}</span>
-        <span class="s">of ${hrs(pv.capacity.client_hours)} client capacity · ${pct(pv.totals.load_pct)} loaded</span></div>
+        <span class="s">of ${hrs(pv.capacity.client_hours)} sellable · ${pct(pv.totals.load_pct)} loaded</span></div>
       <div class="stat ${plan.totals.unplaced_hours > 0 ? 'warn' : 'good'}">
         <span class="k">Couldn't place</span><span class="v">${hrs(plan.totals.unplaced_hours)}</span>
         <span class="s">${plan.totals.unplaced_hours > 0 ? 'no room left in the month' : 'everything fits'}</span></div>

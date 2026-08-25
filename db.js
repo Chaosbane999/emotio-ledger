@@ -225,6 +225,14 @@ CREATE TABLE IF NOT EXISTS settings (
 try { db.exec('ALTER TABLE people ADD COLUMN archived INTEGER NOT NULL DEFAULT 0'); }
 catch (e) { /* already there */ }
 
+// migration: a contract can start or finish mid-month. Without dates the
+// scheduler spread work across the whole month regardless, booking time after
+// a contract had already ended.
+for (const [col, def] of [['starts_on', 'TEXT'], ['ends_on', 'TEXT']]) {
+  try { db.exec(`ALTER TABLE contracts ADD COLUMN ${col} ${def}`); }
+  catch (e) { /* already there */ }
+}
+
 // migration: backfill bank holidays for instances created before they existed
 try {
   const cur = db.prepare("SELECT value FROM settings WHERE key = 'holidays'").get();
