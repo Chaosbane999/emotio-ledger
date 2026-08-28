@@ -1698,6 +1698,7 @@ async function renderTime() {
       <button class="btn small" id="tNext">›</button>
       <b>${mode === 'day' ? niceDay(S.timeDate) : `${niceDay(v.start)} – ${niceDay(v.days[6])}`}</b>
       <span class="spacer"></span>
+      <button class="btn small" id="tCal" title="Send this schedule to your calendar">📅 Calendar</button>
       <span class="pill mute">planned ${hm(v.totals.planned_minutes)}</span>
       <span class="pill ${v.totals.logged_minutes ? '' : 'mute'}">logged ${hm(v.totals.logged_minutes)}</span>
       ${v.totals.pending ? `<span class="pill warn">${v.totals.pending} to confirm</span>` : ''}
@@ -1714,6 +1715,7 @@ async function renderTime() {
   $('#tPrev').addEventListener('click', () => { S.timeDate = timeShiftDay(S.timeDate, -step); renderTime(); });
   $('#tNext').addEventListener('click', () => { S.timeDate = timeShiftDay(S.timeDate, step); renderTime(); });
   $('#tToday').addEventListener('click', () => { S.timeDate = todayIso(); renderTime(); });
+  $('#tCal').addEventListener('click', openCalendarPanel);
 
   renderTimerBar(v.timer);
   if (mode === 'day') renderTimeDay(v); else renderTimeWeek(v);
@@ -1845,7 +1847,11 @@ function renderTimeDay(v) {
     toast('Logged.'); renderTime();
   }));
   view().querySelectorAll('.tDel').forEach((b) => b.addEventListener('click', async () => {
-    await timeApi(`/entries/${b.dataset.e}`, { method: 'DELETE' }); renderTime();
+    const e = v.entries.find((x) => x.id === Number(b.dataset.e));
+    const locked = e && e.date < todayIso() && e.source !== 'skip';
+    if (locked && !confirm('This day has passed — its time is fixed. Delete anyway?')) return;
+    await timeApi(`/entries/${b.dataset.e}${locked ? '?override=1' : ''}`, { method: 'DELETE' });
+    renderTime();
   }));
   view().querySelectorAll('.tEdit').forEach((b) => b.addEventListener('click', () => {
     const e = v.entries.find((x) => x.id === Number(b.dataset.e));
@@ -1867,23 +1873,37 @@ function renderTimeDay(v) {
 
 function openEntryEditor(e) {
   document.querySelector('.tpanel')?.remove();
+  // a passed day's committed time is fixed; the editor opens read-only and
+  // only an explicit override unlocks it (unskipping is always allowed)
+  let locked = e.date < todayIso() && e.source !== 'skip';
   const p = document.createElement('div');
   p.className = 'tpanel card';
   p.innerHTML = `
-    <header><h2>${e.source === 'skip' ? 'Skipped block' : 'Edit entry'}</h2>
+    <header><h2>${e.source === 'skip' ? 'Skipped block' : locked ? '🔒 Committed time' : 'Edit entry'}</h2>
       <button class="btn small" id="tpX">✕</button></header>
-    <div class="rowline"><label>Date</label><input type="date" id="tpDate" value="${e.date}"></div>
+    ${locked ? `<p class="muted" style="padding:0 16px">This day has passed, so its time is part
+      of the record. Override only to correct a mistake.</p>` : ''}
+    <div class="rowline"><label>Date</label><input type="date" id="tpDate" value="${e.date}"${locked ? ' disabled' : ''}></div>
     ${e.source !== 'skip' ? `
-    <div class="rowline"><label>Start</label><input type="time" id="tpStart" value="${e.start || ''}"></div>
-    <div class="rowline"><label>Minutes</label><input type="number" id="tpMins" value="${e.minutes}" min="1" step="15"></div>` : ''}
-    <div class="rowline"><label>Note</label><input type="text" id="tpNote" value="${esc(e.note || '')}" style="flex:1"></div>
+    <div class="rowline"><label>Start</label><input type="time" id="tpStart" value="${e.start || ''}"${locked ? ' disabled' : ''}></div>
+    <div class="rowline"><label>Minutes</label><input type="number" id="tpMins" value="${e.minutes}" min="1" step="15"${locked ? ' disabled' : ''}></div>` : ''}
+    <div class="rowline"><label>Note</label><input type="text" id="tpNote" value="${esc(e.note || '')}" style="flex:1"${locked ? ' disabled' : ''}></div>
     <div class="rowline"><span class="spacer"></span>
-      <button class="btn danger small" id="tpDel">${e.source === 'skip' ? 'Unskip' : 'Delete'}</button>
-      <button class="btn primary small" id="tpSave">Save</button></div>`;
+      ${locked ? '<button class="btn small" id="tpUnlock">Override…</button>' : ''}
+      <button class="btn danger small hideable${locked ? ' hidden' : ''}" id="tpDel">${e.source === 'skip' ? 'Unskip' : 'Delete'}</button>
+      <button class="btn primary small hideable${locked ? ' hidden' : ''}" id="tpSave">Save</button></div>`;
   view().appendChild(p);
+  const wasLocked = locked;
   $('#tpX').addEventListener('click', () => p.remove());
+  $('#tpUnlock')?.addEventListener('click', () => {
+    locked = false;
+    p.querySelectorAll('input').forEach((i) => { i.disabled = false; });
+    p.querySelectorAll('.hideable').forEach((b) => b.classList.remove('hidden'));
+    $('#tpUnlock').remove();
+  });
   $('#tpDel').addEventListener('click', async () => {
-    await timeApi(`/entries/${e.id}`, { method: 'DELETE' }); p.remove(); renderTime();
+    await timeApi(`/entries/${e.id}${wasLocked ? '?override=1' : ''}`, { method: 'DELETE' });
+    p.remove(); renderTime();
   });
   $('#tpSave').addEventListener('click', async () => {
     const body = { date: $('#tpDate').value, note: $('#tpNote').value.trim() };
@@ -1891,8 +1911,34 @@ function openEntryEditor(e) {
       body.start = $('#tpStart').value || null;
       body.minutes = Number($('#tpMins').value);
     }
+    if (wasLocked) body.override = true;
     await timeApi(`/entries/${e.id}`, { method: 'PATCH', body });
     p.remove(); toast('Saved.'); renderTime();
+  });
+}
+
+// --- send the schedule to a calendar -----------------------------------------
+
+async function openCalendarPanel() {
+  document.querySelector('.tpanel')?.remove();
+  const link = await timeApi('/calendar-link');
+  const p = document.createElement('div');
+  p.className = 'tpanel card';
+  p.innerHTML = `
+    <header><h2>📅 Send to calendar</h2><button class="btn small" id="tpX">✕</button></header>
+    <p class="muted" style="padding:0 16px">Subscribe once and the plan stays in step —
+      re-planned blocks move in your calendar on its next refresh. Skipped work disappears.</p>
+    <div class="rowline">
+      <a class="btn primary small" href="${esc(link.webcal)}">Subscribe (Apple / Outlook)</a>
+      <button class="btn small" id="tcCopy">Copy link for Google</button></div>
+    <div class="rowline"><input type="text" id="tcUrl" readonly value="${esc(link.https)}" style="flex:1;font-size:11px"></div>
+    <div class="rowline"><span class="muted" style="font-size:12px">Google Calendar: Settings → Add calendar → From URL, paste the link.</span></div>
+    <div class="rowline"><a class="btn small" href="/api/schedule/${S.personId}/ics${P()}" download>Download ${esc(monthName(S.period))} (.ics) instead</a></div>`;
+  view().appendChild(p);
+  $('#tpX').addEventListener('click', () => p.remove());
+  $('#tcCopy').addEventListener('click', () => {
+    $('#tcUrl').select();
+    navigator.clipboard.writeText(link.https).then(() => toast('Link copied.'));
   });
 }
 
@@ -1935,15 +1981,16 @@ function renderTimeWeek(v) {
       <div class="tw-grid" style="height:${height}px">
         ${hours.slice(0, -1).map((m) => `<div class="tw-hour" style="top:${(m - lo) * T_PPM}px"></div>`).join('')}
         ${ghosts.map((b) => `<div class="tw-ghost ${b.status}" data-kind="ghost" data-id="${b.id}"
-            style="${pos(b.start, b.minutes)}" title="planned: ${esc(b.label)} (${hm(b.minutes)})">
+            style="${pos(b.start, b.minutes)}" title="planned: ${esc(b.label)} (${hm(b.minutes)}) — drag to re-plan, tick to commit">
+          ${b.status === 'pending' ? `<button class="tw-tick" data-kind="tick" data-id="${b.id}" title="Commit: this happened as planned here">✓</button>` : ''}
           <span>${esc(b.label)}</span><em>${hm(b.minutes)}${b.status === 'done' ? ' ✓' : b.status === 'skipped' ? ' ✗' : ''}</em>
         </div>`).join('')}
-        ${solids.map((e) => `<div class="tw-entry ${e.source}" data-kind="entry" data-id="${e.id}"
-            style="${pos(e.start, e.minutes)}">
-          <span>${esc(e.contract_name || '')}${e.deliverable_name ? ` — ${esc(e.deliverable_name)}` : ''}</span>
+        ${solids.map((e) => { const locked = e.date < todayIso(); return `<div class="tw-entry ${e.source}${locked ? ' locked' : ''}" data-kind="entry" data-id="${e.id}"
+            style="${pos(e.start, e.minutes)}" ${locked ? 'title="This day has passed — its time is fixed. Click to override a mistake."' : ''}>
+          <span>${locked ? '🔒 ' : ''}${esc(e.contract_name || '')}${e.deliverable_name ? ` — ${esc(e.deliverable_name)}` : ''}</span>
           <em>${hm(e.minutes)}</em>${e.note ? `<i>“${esc(e.note)}”</i>` : ''}
-          <div class="tw-resize" data-kind="resize" data-id="${e.id}"></div>
-        </div>`).join('')}
+          ${locked ? '' : `<div class="tw-resize" data-kind="resize" data-id="${e.id}"></div>`}
+        </div>`; }).join('')}
       </div>
     </div>`;
   };
@@ -1988,6 +2035,22 @@ function wireWeekDrag(v, lo) {
     const t = ev.target.closest('[data-kind]');
     if (!t) return;
     const kind = t.dataset.kind;
+    if (kind === 'tick') {
+      // the tick IS the commit — one tap, exactly where the block sits now
+      ev.preventDefault();
+      timeApi('/confirm', { body: { block_id: Number(t.dataset.id) } })
+        .then(() => renderTime()).catch((err) => toast(err.message, true));
+      return;
+    }
+    if (kind === 'entry') {
+      const e = v.entries.find((x) => x.id === Number(t.dataset.id));
+      if (e && e.date < todayIso()) {
+        // the past doesn't drag — it opens, locked, for a deliberate override
+        drag = { kind: 'locked', entry: e, startY: ev.clientY, moved: false };
+        ev.preventDefault();
+        return;
+      }
+    }
     if (kind === 'resize') {
       const e = v.entries.find((x) => x.id === Number(t.dataset.id));
       drag = { kind, id: e.id, entry: e, el: t.closest('.tw-entry'), startY: ev.clientY, moved: false };
@@ -2001,7 +2064,7 @@ function wireWeekDrag(v, lo) {
   });
 
   body.addEventListener('pointermove', (ev) => {
-    if (!drag) return;
+    if (!drag || drag.kind === 'locked') return;
     if (Math.abs(ev.clientX - (drag.startX ?? ev.clientX)) + Math.abs(ev.clientY - drag.startY) > 4) drag.moved = true;
     if (!drag.moved) return;
     if (drag.kind === 'resize') {
@@ -2024,6 +2087,7 @@ function wireWeekDrag(v, lo) {
     const d = drag; drag = null;
     if (!d) return;
     try {
+      if (d.kind === 'locked') { openEntryEditor(d.entry); return; }
       if (!d.moved) {
         // a click, not a drag
         if (d.kind === 'entry') {
@@ -2051,11 +2115,11 @@ function wireWeekDrag(v, lo) {
       } else if (d.kind === 'ghost' && d.slot) {
         const b = v.blocks.find((x) => x.id === d.id);
         if (b.status !== 'pending') { renderTime(); return; }
-        await timeApi('/entries', { body: {
+        // a drag only re-plans — nothing is committed until the tick
+        await timeApi('/move-block', { body: {
           block_id: b.id, date: d.slot.date, start: fromMinOfDay(d.slot.min),
-          minutes: b.minutes, source: 'adjust',
         } });
-        toast('Logged where it actually happened.');
+        toast('Plan moved — tick it when it\'s done.');
         renderTime();
       }
     } catch (err) { toast(err.message, true); renderTime(); }

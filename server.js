@@ -171,6 +171,7 @@ app.use((req, res, next) => {
   if (user) { req.user = user; return next(); }
 
   if (req.path === '/login.html' || req.path.startsWith('/style.css')) return next();
+  if (req.path.startsWith('/calendar/')) return next();   // the token IS the auth
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'not signed in' });
   return res.redirect('/login.html');
 });
@@ -204,6 +205,29 @@ app.get('/api/me', (req, res) => res.json({
   role: req.user?.role || 'member',
   name: req.user?.name || 'Admin',
 }));
+
+/**
+ * The calendar subscription. No session — the long random token is the
+ * credential, scoped to one person's schedule and nothing else. Serves the
+ * plan as it stands, so a rearranged week flows into their calendar app on
+ * its next refresh.
+ */
+app.get('/calendar/:token.ics', (req, res) => {
+  const person = time.personByToken(String(req.params.token || ''));
+  if (!person) return res.status(404).type('text').send('not found');
+  const ics = schedule.toIcs({
+    person,
+    period: 'live',
+    blocks: time.feedBlocks(person.id).map((b) => ({
+      ...b,
+      // subscriptions match events by UID: keyed to the block id, an update
+      // replaces the event instead of duplicating it
+      uid: `ledger-block-${b.id}@emotio`,
+    })),
+  });
+  res.setHeader('Cache-Control', 'no-store');
+  res.type('text/calendar').send(ics);
+});
 
 /**
  * Assets are served immutable for a year, so the HTML must name a version or a
@@ -315,7 +339,23 @@ app.patch('/api/time/:id/entries/:entryId', ok((req, res) => {
   res.json(time.updateEntry(personParam(req), Number(req.params.entryId), req.body || {}));
 }));
 app.delete('/api/time/:id/entries/:entryId', ok((req, res) => {
-  res.json(time.deleteEntry(personParam(req), Number(req.params.entryId)));
+  res.json(time.deleteEntry(personParam(req), Number(req.params.entryId),
+    req.query.override === '1'));
+}));
+app.post('/api/time/:id/move-block', ok((req, res) => {
+  res.json(time.moveBlock(personParam(req), Number(req.body.block_id),
+    String(req.body.date || ''), String(req.body.start || '')));
+}));
+app.get('/api/time/:id/calendar-link', ok((req, res) => {
+  const id = personParam(req);
+  const token = time.calendarToken(id);
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  // behind Traefik the forwarded proto is https; plain http only in local dev
+  const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  res.json({
+    https: `${proto}://${host}/calendar/${token}.ics`,
+    webcal: `webcal://${host}/calendar/${token}.ics`,
+  });
 }));
 app.post('/api/time/:id/confirm', ok((req, res) => {
   res.json(time.confirmBlock(personParam(req), Number(req.body.block_id), req.body.note));

@@ -60,8 +60,12 @@ throws(() => T.confirmBlock(1, 1), 'double-confirm refused');
 throws(() => T.confirmBlock(1, 5), "someone else's block refused");
 throws(() => T.confirmBlock(2, 1), 'cross-person confirm refused');
 
+// --- the past is fixed: a passed day's committed time needs an override -----
+throws(() => T.updateEntry(1, e1.id, { minutes: 150 }), 'past-day edit without override refused');
+throws(() => T.deleteEntry(1, e1.id), 'past-day delete without override refused');
+
 // --- adjust: resize becomes an adjustment, totals follow --------------------
-const e1b = T.updateEntry(1, e1.id, { minutes: 150 });
+const e1b = T.updateEntry(1, e1.id, { minutes: 150, override: true });
 eq(e1b.minutes, 150, 'resize applied');
 eq(e1b.source, 'adjust', 'confirm becomes adjust when changed');
 day = T.dayView(1, '2026-08-03');
@@ -79,7 +83,7 @@ throws(() => T.confirmBlock(1, 2), 'confirm on skipped block refused');
 throws(() => T.addEntry(1, { block_id: 2, date: '2026-08-03', minutes: 30 }), 'work on skipped block refused');
 throws(() => T.skipBlock(1, 2, 'again'), 'double skip refused');
 throws(() => T.skipBlock(1, 1), 'skip on worked block refused');
-throws(() => T.updateEntry(1, sk.id, { minutes: 30 }), 'skip cannot gain minutes');
+throws(() => T.updateEntry(1, sk.id, { minutes: 30, override: true }), 'skip cannot gain minutes');
 // unskip = delete the skip entry; block returns to pending
 T.deleteEntry(1, sk.id);
 eq(T.dayView(1, '2026-08-03').blocks.find((b) => b.id === 2).status, 'pending', 'unskip restores pending');
@@ -120,8 +124,48 @@ eq(wk.totals.logged_minutes, wkLogged, 'week total equals sum of days');
 eq(wk.totals.logged_minutes, 150 + 45 + 45 + 30 + 120, 'week logged exact');
 
 // --- entry security ---------------------------------------------------------
-throws(() => T.updateEntry(2, e1.id, { minutes: 1 }), "cannot edit someone else's entry");
+throws(() => T.updateEntry(2, e1.id, { minutes: 1, override: true }), "cannot edit someone else's entry");
 throws(() => T.deleteEntry(2, e1.id), "cannot delete someone else's entry");
+
+// --- drag arranges the plan; only the tick commits ---------------------------
+const FUT = T.addDays(T.todayLondon(), 3);          // a future working slot
+const FUT_PERIOD = FUT.slice(0, 7);
+db.prepare(`INSERT INTO schedule_blocks (id, person_id, period, contract_id, deliverable_id, label, date, start, minutes)
+  VALUES (20, 1, ?, 10, 100, 'Client A — SEO', ?, '09:00', 60),
+         (21, 1, ?, 10, 100, 'Client A — SEO', ?, '10:30', 90)`)
+  .run(FUT_PERIOD, FUT, FUT_PERIOD, FUT);
+const moved = T.moveBlock(1, 20, FUT, '14:00');
+eq(moved.start, '14:00', 'moveBlock repositions the plan');
+eq(T.dayView(1, FUT).totals.logged_minutes, 0, 'moving commits nothing');
+eq(T.dayView(1, FUT).blocks.find((b) => b.id === 20).status, 'pending', 'moved block still pending');
+throws(() => T.moveBlock(2, 20, FUT, '15:00'), "cannot move someone else's block");
+throws(() => T.moveBlock(1, 20, '2030-01-05', '09:00'), 'cannot leave its month');
+throws(() => T.moveBlock(1, 20, FUT, '10:00'), 'cannot land on another block (10:00–11:00 hits 10:30–12:00)');
+throws(() => T.moveBlock(1, 20, FUT, 'nonsense'), 'bad time refused');
+const cfM = T.confirmBlock(1, 20, '');
+eq(cfM.start, '14:00', 'tick commits at the moved position');
+eq(cfM.date, FUT, 'tick commits on the moved day');
+throws(() => T.moveBlock(1, 20, FUT, '16:00'), 'an accounted block cannot be re-planned');
+// future entries stay freely editable — the lock is only about the past
+const eFut = T.updateEntry(1, cfM.id, { minutes: 75 });
+eq(eFut.minutes, 75, 'future entry edits without override');
+T.deleteEntry(1, eFut.id);
+eq(T.dayView(1, FUT).blocks.find((b) => b.id === 20).status, 'pending', 'delete restores pending, no override needed');
+
+// --- calendar feed -----------------------------------------------------------
+const tok = T.calendarToken(1);
+ok(tok.length >= 24, 'token is long and random');
+eq(T.calendarToken(1), tok, 'token is stable across calls');
+eq(T.personByToken(tok).id, 1, 'token resolves to its person');
+eq(T.personByToken('short'), null, 'short token rejected');
+eq(T.personByToken('x'.repeat(32)), null, 'wrong token rejected');
+const feed = T.feedBlocks(1);
+ok(feed.some((b) => b.id === 20), 'feed carries the upcoming block');
+ok(feed.every((b) => b.status !== 'skipped'), 'skipped blocks never reach the calendar');
+const fb = feed.find((b) => b.id === 20);
+eq(fb.end, '15:00', 'feed computes the end time (14:00 + 60m)');
+T.skipBlock(1, 21, 'not needed');
+ok(!T.feedBlocks(1).some((b) => b.id === 21), 'a skip vanishes from the feed');
 
 // --- timer ------------------------------------------------------------------
 throws(() => T.startTimer(1, {}), 'timer needs contract+deliverable');
@@ -139,8 +183,9 @@ eq(T.currentTimer(1), null, 'cancel clears timer');
 
 // --- variance: every identity ----------------------------------------------
 const v = T.variance('2026-08');
-// planned across the period = all person-1 blocks + person-2 block
-const plannedAll = 120 + 90 + 60 + 240 + 60 + 75 + 45;
+// planned across the period = whatever the table holds for it (the moveBlock
+// fixtures land in this month or the next depending on today's date)
+const plannedAll = db.prepare("SELECT COALESCE(SUM(minutes),0) m FROM schedule_blocks WHERE date LIKE '2026-08-%'").get().m;
 eq(v.totals.planned_minutes, plannedAll, 'variance planned = all blocks');
 const dbLogged = db.prepare("SELECT COALESCE(SUM(minutes),0) m FROM time_entries WHERE source != 'skip' AND date LIKE '2026-08-%'").get().m;
 eq(v.totals.logged_minutes, dbLogged, 'variance logged = table sum');

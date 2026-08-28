@@ -500,7 +500,9 @@ function toIcs(plan, stamp) {
   ];
 
   plan.blocks.forEach((b, i) => {
-    const uid = `ledger-${plan.person.id}-${plan.period}-${i}@emotio`;
+    // a block that carries its own uid keeps it — subscriptions rely on
+    // stable uids so a refresh updates events rather than duplicating them
+    const uid = b.uid || `ledger-${plan.person.id}-${plan.period}-${i}@emotio`;
     lines.push(
       'BEGIN:VEVENT',
       `UID:${uid}`,

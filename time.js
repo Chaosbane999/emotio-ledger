@@ -32,6 +32,7 @@ function londonParts(d) {
 }
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const todayLondon = () => londonParts(new Date()).date;
 const toHours = (mins) => round2(mins / 60);
 
 // ---------------------------------------------------------------------------
@@ -257,9 +258,21 @@ function skipBlock(personId, blockId, note) {
   return getEntry(Number(r.lastInsertRowid));
 }
 
+/**
+ * A day that has passed is settled: its committed time is part of the record
+ * the variance numbers stand on. Editing it is still possible — mistakes are
+ * real — but only as a deliberate override, never as a casual drag.
+ */
+function assertUnlocked(e, override) {
+  if (e.date < todayLondon() && !override) {
+    throw new Error('That day has passed — its time is fixed. Use override to correct a mistake.');
+  }
+}
+
 function updateEntry(personId, entryId, body) {
   const e = getEntry(entryId);
   if (!e || e.person_id !== personId) throw new Error('no such entry');
+  assertUnlocked(e, body.override === true);
   const next = {
     date: body.date !== undefined ? body.date : e.date,
     start: body.start !== undefined ? (body.start ? String(body.start).slice(0, 5) : null) : e.start,
@@ -282,12 +295,44 @@ function updateEntry(personId, entryId, body) {
   return getEntry(entryId);
 }
 
-function deleteEntry(personId, entryId) {
+function deleteEntry(personId, entryId, override) {
   const e = getEntry(entryId);
   if (!e || e.person_id !== personId) throw new Error('no such entry');
+  // deleting a skip is just unskipping tomorrow's question — never locked
+  if (e.source !== 'skip') assertUnlocked(e, override === true);
   db.prepare('DELETE FROM time_entries WHERE id = ?').run(entryId);
   return { deleted: entryId };
 }
+
+/**
+ * Dragging on the calendar arranges the PLAN — it commits nothing. The block
+ * moves; the tick is still the only thing that turns plan into record.
+ */
+function moveBlock(personId, blockId, date, start) {
+  const b = blockGuard(personId, blockId);
+  const state = entryStateOf(b.id);
+  if (state.hasWork || state.hasSkip) {
+    throw new Error('This block is already accounted for — move the logged entry instead.');
+  }
+  if (!isDate(date)) throw new Error('bad date');
+  if (!isTime(start)) throw new Error('bad start time');
+  if (date.slice(0, 7) !== b.period) {
+    throw new Error('A plan lives inside its month — move it within ' + b.period + '.');
+  }
+  // the schedule audit promises blocks never overlap; a drag must keep that true
+  const startMin = toMinOfDayLocal(start);
+  const endMin = startMin + b.minutes;
+  const clash = db.prepare(`SELECT id, start, minutes, label FROM schedule_blocks
+    WHERE person_id = ? AND date = ? AND id != ? AND start IS NOT NULL`).all(personId, date, b.id)
+    .find((o) => {
+      const os = toMinOfDayLocal(o.start);
+      return startMin < os + o.minutes && os < endMin;
+    });
+  if (clash) throw new Error(`That slot overlaps “${clash.label}” at ${clash.start}.`);
+  db.prepare('UPDATE schedule_blocks SET date = ?, start = ? WHERE id = ?').run(date, start, b.id);
+  return getBlock(b.id);
+}
+const toMinOfDayLocal = (t) => { const [h, m] = String(t).split(':').map(Number); return h * 60 + m; };
 
 // ---------------------------------------------------------------------------
 // Timer
@@ -451,10 +496,54 @@ function loggedHours(personId, period) {
   return toHours(r.m);
 }
 
+const crypto = require('node:crypto');
+
+/** The person's private feed token, created on first use, revocable by null-ing. */
+function calendarToken(personId) {
+  const p = db.prepare('SELECT calendar_token FROM people WHERE id = ?').get(personId);
+  if (!p) throw new Error('no such person');
+  if (p.calendar_token) return p.calendar_token;
+  const token = crypto.randomBytes(24).toString('base64url');
+  db.prepare('UPDATE people SET calendar_token = ? WHERE id = ?').run(token, personId);
+  return token;
+}
+
+const personByToken = (token) => (token && token.length >= 20
+  ? db.prepare('SELECT id, name FROM people WHERE calendar_token = ?').get(token)
+  : undefined) || null;
+
+/**
+ * What the subscription serves: the current plan from a week back to the end
+ * of next month. Skipped blocks vanish (they are not happening); everything
+ * else is the schedule as it stands right now, so a drag that rearranges the
+ * plan flows into the calendar on its next refresh.
+ */
+function feedBlocks(personId) {
+  const today = todayLondon();
+  const from = addDays(today, -7);
+  const to = `${cap.shiftPeriod(today.slice(0, 7), 2)}-01`;
+  const blocks = decorate(blocksFor(personId, from, to))
+    .filter((b) => b.status !== 'skipped' && b.start);
+  return blocks.map((b) => ({
+    id: b.id,
+    date: b.date,
+    start: b.start,
+    end: fromMinOfDayLocal(toMinOfDayLocal(b.start) + b.minutes),
+    minutes: b.minutes,
+    label: b.label,
+    deliverable: b.deliverable_name || '',
+    contract_name: b.contract_name || '',
+    anchored: b.anchored,
+    status: b.status,
+  }));
+}
+const fromMinOfDayLocal = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+
 module.exports = {
-  dayView, weekView, mondayOf, addDays,
-  addEntry, confirmBlock, confirmDay, skipBlock, updateEntry, deleteEntry,
+  dayView, weekView, mondayOf, addDays, todayLondon,
+  addEntry, confirmBlock, confirmDay, skipBlock, updateEntry, deleteEntry, moveBlock,
   startTimer, stopTimer, cancelTimer, currentTimer,
   variance, loggedHours,
+  calendarToken, personByToken, feedBlocks,
   _internal: { isDate, isTime, parseUtc, londonParts },
 };

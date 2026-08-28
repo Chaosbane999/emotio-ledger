@@ -260,6 +260,12 @@ CREATE TABLE IF NOT EXISTS settings (
 try { db.exec('ALTER TABLE people ADD COLUMN archived INTEGER NOT NULL DEFAULT 0'); }
 catch (e) { /* already there */ }
 
+// migration: a private token per person lets their calendar app subscribe to
+// their schedule without a login — the token IS the credential, so it is
+// random, revocable, and never derived from anything guessable.
+try { db.exec('ALTER TABLE people ADD COLUMN calendar_token TEXT'); }
+catch (e) { /* already there */ }
+
 // migration: a contract can start or finish mid-month. Without dates the
 // scheduler spread work across the whole month regardless, booking time after
 // a contract had already ended.
