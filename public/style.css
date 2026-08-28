@@ -383,3 +383,10 @@ tr.tentry.skip td { opacity: 0.5; }
 .tw-entry.dragging, .tw-ghost.dragging { opacity: 0.85; z-index: 10; cursor: grabbing;
   box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
 .tw-resize { position: absolute; left: 0; right: 0; bottom: 0; height: 8px; cursor: ns-resize; }
+
+/* The Time view's control row. Not ".bar" — that is the 7px load meter, and
+   borrowing its name squashed every control into a 7px strip. */
+.tbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 0 14px; position: sticky; top: 0; z-index: 15;
+  background: var(--ground); }
+.tbar b { white-space: nowrap; }

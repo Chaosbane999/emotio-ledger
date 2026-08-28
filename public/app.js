@@ -1686,7 +1686,7 @@ async function renderTime() {
   const v = await timeApi(`/${mode === 'day' ? 'day' : 'week'}?date=${S.timeDate}`);
 
   view().innerHTML = `
-    <div class="bar">
+    <div class="tbar">
       ${people.length > 1 ? `<select id="tPick">${people.map((p) =>
         `<option value="${p.id}"${p.id === S.personId ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : `<b>${esc(people[0].name)}</b>`}
       <div class="seg">
