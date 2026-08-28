@@ -343,6 +343,16 @@ app.post('/api/time/:id/move-block', ok((req, res) => {
   res.json(time.moveBlock(personParam(req), Number(req.body.block_id),
     String(req.body.date || ''), String(req.body.start || '')));
 }));
+app.post('/api/time/:id/resize-block', ok((req, res) => {
+  res.json(time.resizeBlock(personParam(req), Number(req.body.block_id), Number(req.body.minutes)));
+}));
+app.get('/api/time/:id/rebalance', ok((req, res) => {
+  res.json(time.rebalancePlan(personParam(req), Number(req.query.contract_id),
+    String(req.query.period || ''), Number(req.query.delta), Number(req.query.exclude) || 0));
+}));
+app.post('/api/time/:id/rebalance', ok((req, res) => {
+  res.json(time.applyRebalance(personParam(req), req.body.changes));
+}));
 app.get('/api/time/:id/calendar-link', ok((req, res) => {
   const id = personParam(req);
   const token = time.calendarToken(id);

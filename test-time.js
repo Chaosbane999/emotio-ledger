@@ -188,6 +188,82 @@ ok(icsAll.includes('T140000'), 'timed entry keeps its clock time');
 T.deleteEntry(1, loose.id);
 T.deleteEntry(1, cf20.id);
 
+// --- resize a planned block; rebalance the month around the change ----------
+// fresh future blocks for a clean rebalance scenario, spread across days
+const D1 = T.addDays(T.todayLondon(), 4);
+const D2 = T.addDays(T.todayLondon(), 5);
+const D3 = T.addDays(T.todayLondon(), 6);
+const RP = D1.slice(0, 7);
+// only usable when all three land in one month (late-month runs skip this)
+if (D2.slice(0, 7) === RP && D3.slice(0, 7) === RP) {
+  db.prepare(`INSERT INTO schedule_blocks (id, person_id, period, contract_id, deliverable_id, label, date, start, minutes)
+    VALUES (30, 1, ?, 11, 101, 'Client B — Ads', ?, '09:00', 60),
+           (31, 1, ?, 11, 101, 'Client B — Ads', ?, '09:00', 90),
+           (32, 1, ?, 11, 101, 'Client B — Ads', ?, '09:00', 60),
+           (33, 1, ?, 11, 101, 'Client B — Ads', ?, '11:00', 30)`)
+    .run(RP, D1, RP, D2, RP, D3, RP, D3);
+
+  // resize rules
+  throws(() => T.resizeBlock(1, 30, 20), 'off-grain refused');
+  throws(() => T.resizeBlock(1, 30, 0), 'zero refused');
+  throws(() => T.resizeBlock(2, 30, 90), "someone else's block refused");
+  throws(() => T.resizeBlock(1, 32, 60 + 90), 'growing into the 11:00 block refused (only 60m of room)');
+  const rs = T.resizeBlock(1, 30, 120);
+  eq(rs.minutes, 120, 'resize applied');
+  eq(rs.delta, 60, 'delta reported');
+  eq(T.dayView(1, D1).totals.logged_minutes, 0, 'resizing a plan commits nothing');
+
+  // took MORE time: trim from the end of the month inwards
+  const rb = T.rebalancePlan(1, 11, RP, 60, 30);
+  eq(rb.proposal.length, 2, 'a 60m trim spans two blocks (30m + 30m)');
+  eq(rb.proposal[0].block_id, 33, 'trim starts at the latest block (11:00 beats 09:00 same day)');
+  eq(rb.proposal[0].to_minutes, 0, 'the 30m block goes entirely');
+  eq(rb.proposal[1].block_id, 32, 'remainder comes off the next-latest');
+  eq(rb.proposal[1].to_minutes, 30, '60m block trimmed to 30m');
+  const trimmed = rb.proposal.reduce((s2, p2) => s2 + (p2.from_minutes - p2.to_minutes), 0);
+  eq(trimmed + rb.unplaced_minutes, 60, 'trimmed + unplaced = delta exactly');
+
+  // apply it
+  T.applyRebalance(1, rb.proposal.map((p2) => ({ block_id: p2.block_id, minutes: p2.to_minutes })));
+  const left = db.prepare('SELECT COALESCE(SUM(minutes),0) m FROM schedule_blocks WHERE contract_id = 11 AND person_id = 1 AND period = ?').get(RP).m;
+  // 60+90+60+30 originally; resize made it 300; the trim gives the 60 back
+  eq(left, 240, 'resize +60 then rebalance -60 restores the original total');
+  ok(!db.prepare('SELECT id FROM schedule_blocks WHERE id = 33').get() || rb.proposal[0].to_minutes > 0,
+    'a block trimmed to zero is removed');
+
+  // took LESS time: freed minutes return to the plan — grown in place where
+  // there is room, or as a new block in free space on a packed day
+  const rb2 = T.rebalancePlan(1, 11, RP, -45, 30);
+  const returned = rb2.proposal.reduce((s2, p2) => s2 + (p2.to_minutes - p2.from_minutes), 0);
+  eq(returned + rb2.unplaced_minutes, 45, 'returned + unplaced = |delta| exactly');
+  for (const p2 of rb2.proposal) ok(p2.to_minutes > p2.from_minutes, 'extend only grows');
+  // pack a day wall-to-wall: the freed time must come back as a NEW block
+  const D4 = D1;
+  db.prepare(`INSERT INTO schedule_blocks (id, person_id, period, contract_id, deliverable_id, label, date, start, minutes)
+    VALUES (40, 1, ?, 11, 101, 'Client B — Ads', ?, '13:00', 60)`).run(RP, D4);
+  const rb3 = T.rebalancePlan(1, 11, RP, -60, 30);
+  const back = rb3.proposal.reduce((s2, p2) => s2 + (p2.to_minutes - p2.from_minutes), 0);
+  eq(back + rb3.unplaced_minutes, 60, 'packed-day return conserves the delta');
+  const nb = rb3.proposal.find((p2) => p2.new_block);
+  if (nb) {
+    ok(nb.start && nb.to_minutes >= 15, 'new block has a real slot and length');
+    const applied = T.applyRebalance(1, [{ new_block: true, contract_id: 11, deliverable_id: nb.deliverable_id,
+      date: nb.date, start: nb.start, label: nb.label, minutes: nb.to_minutes }]);
+    ok(applied.applied[0].created, 'new block created on apply');
+    db.prepare('DELETE FROM schedule_blocks WHERE id = ?').run(applied.applied[0].block_id);
+  }
+  db.prepare('DELETE FROM schedule_blocks WHERE id = 40').run();
+
+  // an accounted block never rebalances
+  T.confirmBlock(1, 31, '');
+  throws(() => T.applyRebalance(1, [{ block_id: 31, minutes: 15 }]), 'accounted block refused');
+  throws(() => T.resizeBlock(1, 31, 60), 'accounted block cannot resize');
+  db.prepare('DELETE FROM time_entries WHERE block_id = 31').run();
+  db.prepare('DELETE FROM schedule_blocks WHERE id IN (30,31,32,33)').run();
+} else {
+  console.log('  (rebalance scenario skipped: month boundary)');
+}
+
 // --- timer ------------------------------------------------------------------
 throws(() => T.startTimer(1, {}), 'timer needs contract+deliverable');
 T.startTimer(1, { contract_id: 10, deliverable_id: 100 });

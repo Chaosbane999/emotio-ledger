@@ -334,6 +334,197 @@ function moveBlock(personId, blockId, date, start) {
 }
 const toMinOfDayLocal = (t) => { const [h, m] = String(t).split(':').map(Number); return h * 60 + m; };
 
+/** How much a block can grow before it hits the next block that day. */
+function growthRoom(personId, block) {
+  if (!block.start) return Infinity;
+  const startMin = toMinOfDayLocal(block.start);
+  const later = db.prepare(`SELECT start FROM schedule_blocks
+    WHERE person_id = ? AND date = ? AND id != ? AND start IS NOT NULL`)
+    .all(personId, block.date, block.id)
+    .map((o) => toMinOfDayLocal(o.start))
+    .filter((m) => m >= startMin + block.minutes)
+    .sort((a, b) => a - b);
+  return later.length ? later[0] - startMin - block.minutes : Infinity;
+}
+
+/** Resize a still-pending planned block. Same rules as moving one. */
+function resizeBlock(personId, blockId, minutes) {
+  const b = blockGuard(personId, blockId);
+  const state = entryStateOf(b.id);
+  if (state.hasWork || state.hasSkip) {
+    throw new Error('This block is already accounted for — resize the logged entry instead.');
+  }
+  if (!Number.isInteger(minutes) || minutes < 15 || minutes > MAX_DAY_MINUTES || minutes % 15 !== 0) {
+    throw new Error('Block length is quarter hours, at least one.');
+  }
+  const grow = minutes - b.minutes;
+  if (grow > 0 && grow > growthRoom(personId, b)) {
+    throw new Error('That would run into the next block — move something first.');
+  }
+  db.prepare('UPDATE schedule_blocks SET minutes = ? WHERE id = ?').run(minutes, b.id);
+  return { ...getBlock(b.id), delta: minutes - b.minutes };
+}
+
+// ---------------------------------------------------------------------------
+// Rebalancing. A resize changes how much of the month one contract takes, so
+// the rest of that contract's plan no longer sums to what was allocated. The
+// proposal puts the difference back — trimming or extending upcoming blocks,
+// working from the end of the month inwards so near-term work is disturbed
+// last. It is only ever a PROPOSAL: nothing moves until it is applied.
+// ---------------------------------------------------------------------------
+
+function rebalanceCandidates(personId, contractId, period, excludeBlockId) {
+  return decorate(db.prepare(`
+    SELECT ${blockCols}, c.name AS contract_name, d.name AS deliverable_name
+      FROM schedule_blocks b
+      LEFT JOIN contracts c    ON c.id = b.contract_id
+      LEFT JOIN deliverables d ON d.id = b.deliverable_id
+     WHERE b.person_id = ? AND b.contract_id = ? AND b.period = ?
+       AND b.date >= ? AND b.id != ? AND b.anchored = 0
+     ORDER BY b.date DESC, b.start DESC`)
+    .all(personId, contractId, period, todayLondon(), excludeBlockId || 0))
+    .filter((b) => b.status === 'pending');
+}
+
+/**
+ * delta is the change in minutes the contract just consumed (+ took more,
+ * - took less). The proposal offsets it: trim upcoming blocks when time was
+ * added, extend them when time was freed. Whatever cannot be placed is
+ * reported, never silently dropped.
+ */
+function rebalancePlan(personId, contractId, period, delta, excludeBlockId) {
+  cap.parsePeriod(period);
+  const contract = db.prepare('SELECT id, name, type FROM contracts WHERE id = ?').get(contractId);
+  if (!contract) throw new Error('no such contract');
+  if (!Number.isInteger(delta) || delta === 0) throw new Error('nothing to balance');
+
+  const candidates = rebalanceCandidates(personId, contractId, period, excludeBlockId);
+  const proposal = [];
+  let remaining = Math.abs(delta);
+
+  if (delta > 0) {
+    // took more: trim upcoming blocks, latest first, a block may go entirely
+    for (const b of candidates) {
+      if (remaining < 15) break;
+      const take = Math.min(b.minutes, remaining);
+      proposal.push({
+        block_id: b.id, date: b.date, start: b.start, label: b.label,
+        from_minutes: b.minutes, to_minutes: b.minutes - take,
+      });
+      remaining -= take;
+    }
+  } else {
+    // took less: grow a block where there is room; the packer lays blocks
+    // back-to-back, so usually there is none — then the freed time comes back
+    // as its own NEW block, placed in genuinely free space like the packer
+    // would have placed it
+    for (const b of candidates) {
+      if (remaining < 15) break;
+      const room = growthRoom(personId, b);
+      const grow = Math.min(remaining, room === Infinity ? remaining : Math.floor(room / 15) * 15);
+      if (grow < 15) continue;
+      proposal.push({
+        block_id: b.id, date: b.date, start: b.start, label: b.label,
+        from_minutes: b.minutes, to_minutes: b.minutes + grow,
+      });
+      remaining -= grow;
+    }
+    if (remaining >= 15) {
+      const source = candidates[0]
+        || decorate([getBlock(excludeBlockId)].filter(Boolean))[0];
+      if (source) {
+        const tryDates = [...new Set([...candidates.map((c) => c.date), source.date])]
+          .sort().reverse();
+        for (const dte of tryDates) {
+          const slot = findFreeSlot(personId, dte, remaining);
+          if (!slot) continue;
+          proposal.push({
+            block_id: null, new_block: true,
+            contract_id: contractId,
+            deliverable_id: source.deliverable_id,
+            period,
+            date: dte, start: slot,
+            label: source.label || source.contract_name || 'Rescheduled time',
+            from_minutes: 0, to_minutes: remaining,
+          });
+          remaining = 0;
+          break;
+        }
+      }
+    }
+  }
+
+  return {
+    contract_id: contract.id,
+    contract_name: contract.name,
+    contract_type: contract.type,
+    delta,
+    proposal,
+    unplaced_minutes: remaining >= 15 ? remaining : 0,
+    upcoming_blocks: candidates.length,
+  };
+}
+
+/** First stretch of `minutes` free of blocks inside the working day, or null. */
+function findFreeSlot(personId, date, minutes) {
+  const { get } = require('./db');
+  const dayStart = toMinOfDayLocal(get('work_start') || '09:00');
+  const dayEnd = toMinOfDayLocal(get('work_end') || '17:30');
+  const busy = db.prepare(`SELECT start, minutes FROM schedule_blocks
+    WHERE person_id = ? AND date = ? AND start IS NOT NULL ORDER BY start`)
+    .all(personId, date)
+    .map((b) => [toMinOfDayLocal(b.start), toMinOfDayLocal(b.start) + b.minutes]);
+  let cursor = dayStart;
+  for (const [bs, be] of busy) {
+    if (bs - cursor >= minutes) return fromMinOfDayLocal(cursor);
+    cursor = Math.max(cursor, be);
+  }
+  return dayEnd - cursor >= minutes ? fromMinOfDayLocal(cursor) : null;
+}
+
+/** Apply chosen rebalance rows. 0 minutes removes the block outright.
+ *  A new_block row creates the block the proposal promised. */
+function applyRebalance(personId, changes) {
+  if (!Array.isArray(changes) || !changes.length) throw new Error('nothing to apply');
+  const applied = [];
+  for (const ch of changes) {
+    if (ch.new_block) {
+      const minutes = Number(ch.minutes);
+      if (!Number.isInteger(minutes) || minutes < 15 || minutes % 15 !== 0) {
+        throw new Error('minutes must be whole quarter hours');
+      }
+      if (!isDate(ch.date) || !isTime(ch.start)) throw new Error('bad slot for the new block');
+      const r = db.prepare(`INSERT INTO schedule_blocks
+        (person_id, period, contract_id, deliverable_id, label, date, start, minutes, anchored, manual)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`)
+        .run(personId, String(ch.date).slice(0, 7), Number(ch.contract_id) || null,
+          Number(ch.deliverable_id) || null, String(ch.label || '').slice(0, 200),
+          ch.date, ch.start, minutes);
+      applied.push({ block_id: Number(r.lastInsertRowid), created: true, minutes });
+      continue;
+    }
+    const b = blockGuard(personId, Number(ch.block_id));
+    const state = entryStateOf(b.id);
+    if (state.hasWork || state.hasSkip) throw new Error(`“${b.label}” is already accounted for.`);
+    const minutes = Number(ch.minutes);
+    if (!Number.isInteger(minutes) || minutes < 0 || minutes % 15 !== 0) {
+      throw new Error('minutes must be whole quarter hours');
+    }
+    if (minutes === 0) {
+      db.prepare('DELETE FROM schedule_blocks WHERE id = ?').run(b.id);
+      applied.push({ block_id: b.id, removed: true });
+      continue;
+    }
+    const grow = minutes - b.minutes;
+    if (grow > 0 && grow > growthRoom(personId, b)) {
+      throw new Error(`“${b.label}” would run into the next block.`);
+    }
+    db.prepare('UPDATE schedule_blocks SET minutes = ? WHERE id = ?').run(minutes, b.id);
+    applied.push({ block_id: b.id, minutes });
+  }
+  return { applied };
+}
+
 // ---------------------------------------------------------------------------
 // Timer
 // ---------------------------------------------------------------------------
@@ -575,6 +766,7 @@ const fromMinOfDayLocal = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, 
 module.exports = {
   dayView, weekView, mondayOf, addDays, todayLondon,
   addEntry, confirmBlock, confirmDay, skipBlock, updateEntry, deleteEntry, moveBlock,
+  resizeBlock, rebalancePlan, applyRebalance,
   startTimer, stopTimer, cancelTimer, currentTimer,
   variance, loggedHours,
   calendarToken, personByToken, feedItems,

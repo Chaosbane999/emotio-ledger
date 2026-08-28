@@ -1841,13 +1841,16 @@ function renderTimeDay(v) {
   }));
   view().querySelectorAll('.ajGo').forEach((b) => b.addEventListener('click', async () => {
     const row = b.closest('tr');
+    const block = v.blocks.find((x) => x.id === Number(b.dataset.b));
+    const minutes = Number(row.querySelector('.ajMins').value);
     await timeApi('/entries', { body: {
       block_id: Number(b.dataset.b), date: v.date,
       start: row.querySelector('.ajStart').value || null,
-      minutes: Number(row.querySelector('.ajMins').value),
+      minutes,
       note: row.querySelector('.ajNote').value.trim(), source: 'adjust',
     } });
-    toast('Logged.'); renderTime();
+    toast('Logged.'); await renderTime();
+    if (block) maybeRebalance(block.contract_id, v.date, minutes - block.minutes, block.id);
   }));
   view().querySelectorAll('.tDel').forEach((b) => b.addEventListener('click', async () => {
     const e = v.entries.find((x) => x.id === Number(b.dataset.e));
@@ -1916,7 +1919,10 @@ function openEntryEditor(e) {
     }
     if (wasLocked) body.override = true;
     await timeApi(`/entries/${e.id}`, { method: 'PATCH', body });
-    p.remove(); toast('Saved.'); renderTime();
+    p.remove(); toast('Saved.'); await renderTime();
+    if (body.minutes && body.minutes !== e.minutes) {
+      maybeRebalance(e.contract_id, e.date, body.minutes - e.minutes, e.block_id);
+    }
   });
 }
 
@@ -1990,6 +1996,7 @@ function renderTimeWeek(v) {
             style="${pos(b.start, b.minutes)}" title="planned: ${esc(b.label)} (${hm(b.minutes)}) — drag to re-plan, tick to commit">
           ${b.status === 'pending' ? `<button class="tw-tick" data-kind="tick" data-id="${b.id}" title="Commit: this happened as planned here">✓</button>` : ''}
           <span>${esc(b.label)}</span><em>${hm(b.minutes)}${b.status === 'done' ? ' ✓' : b.status === 'skipped' ? ' ✗' : ''}</em>
+          ${b.status === 'pending' ? `<div class="tw-resize" data-kind="gresize" data-id="${b.id}"></div>` : ''}
         </div>`).join('')}
         ${solids.map((e) => { const locked = e.date < todayIso(); return `<div class="tw-entry ${e.source}${locked ? ' locked' : ''}" data-kind="entry" data-id="${e.id}"
             style="${pos(e.start, e.minutes)}" ${locked ? 'title="This day has passed — its time is fixed. Click to override a mistake."' : ''}>
@@ -2059,7 +2066,12 @@ function wireWeekDrag(v, lo) {
     }
     if (kind === 'resize') {
       const e = v.entries.find((x) => x.id === Number(t.dataset.id));
-      drag = { kind, id: e.id, entry: e, el: t.closest('.tw-entry'), startY: ev.clientY, moved: false };
+      drag = { kind, id: e.id, entry: e, minutes: e.minutes,
+        el: t.closest('.tw-entry'), startY: ev.clientY, moved: false };
+    } else if (kind === 'gresize') {
+      const b = v.blocks.find((x) => x.id === Number(t.dataset.id));
+      drag = { kind, id: b.id, block: b, minutes: b.minutes,
+        el: t.closest('.tw-ghost'), startY: ev.clientY, moved: false };
     } else {
       const box = t.getBoundingClientRect();
       drag = { kind, id: Number(t.dataset.id), el: t, grabOffset: ev.clientY - box.top,
@@ -2073,9 +2085,9 @@ function wireWeekDrag(v, lo) {
     if (!drag || drag.kind === 'locked') return;
     if (Math.abs(ev.clientX - (drag.startX ?? ev.clientX)) + Math.abs(ev.clientY - drag.startY) > 4) drag.moved = true;
     if (!drag.moved) return;
-    if (drag.kind === 'resize') {
+    if (drag.kind === 'resize' || drag.kind === 'gresize') {
       const mins = Math.max(T_SNAP,
-        Math.round((drag.entry.minutes * T_PPM + ev.clientY - drag.startY) / T_PPM / T_SNAP) * T_SNAP);
+        Math.round((drag.minutes * T_PPM + ev.clientY - drag.startY) / T_PPM / T_SNAP) * T_SNAP);
       drag.el.style.height = `${Math.max(18, mins * T_PPM)}px`;
       drag.mins = mins;
     } else {
@@ -2112,8 +2124,14 @@ function wireWeekDrag(v, lo) {
         return;
       }
       if (d.kind === 'resize' && d.mins) {
+        const delta = d.mins - d.entry.minutes;
         await timeApi(`/entries/${d.id}`, { method: 'PATCH', body: { minutes: d.mins } });
-        renderTime();
+        await renderTime();
+        maybeRebalance(d.entry.contract_id, d.entry.date, delta, d.entry.block_id);
+      } else if (d.kind === 'gresize' && d.mins) {
+        const r = await timeApi('/resize-block', { body: { block_id: d.id, minutes: d.mins } });
+        await renderTime();
+        maybeRebalance(d.block.contract_id, d.block.date, r.delta, d.block.id);
       } else if (d.kind === 'entry' && d.slot) {
         await timeApi(`/entries/${d.id}`, { method: 'PATCH',
           body: { date: d.slot.date, start: fromMinOfDay(d.slot.min) } });
@@ -2182,4 +2200,69 @@ async function renderVariance() {
       <b>${v.totals.pending_blocks} past blocks still unconfirmed.</b>
       Their time is planned but nobody has said what happened yet.</div></div>` : ''}
     <div class="grid2">${table(v.by_contract, 'By contract')}${table(v.by_person, 'By person')}</div>`;
+}
+
+// --- rebalance: a resize changed what one contract takes; offer to put the
+// difference back into that contract's upcoming plan. Always a proposal with
+// the maths shown — never a silent shuffle of someone's future week.
+
+async function maybeRebalance(contractId, date, delta, excludeBlockId) {
+  if (!contractId || !delta) return;
+  const c = S.boot.contracts.find((x) => x.id === contractId);
+  if (!c || c.type === 'internal') return;      // internal time has no client budget to defend
+  let r;
+  try {
+    r = await timeApi(`/rebalance?contract_id=${contractId}&period=${date.slice(0, 7)}`
+      + `&delta=${delta}&exclude=${excludeBlockId || 0}`);
+  } catch (e) { return; }
+  if (!r.proposal.length) {
+    if (r.upcoming_blocks === 0) {
+      toast(`${delta > 0 ? '+' : '−'}${hm(Math.abs(delta))} for ${c.name} — no upcoming ${c.name} blocks this month to balance it against; the variance report will carry it.`);
+    }
+    return;
+  }
+  openRebalancePanel(r);
+}
+
+function openRebalancePanel(r) {
+  document.querySelector('.tpanel')?.remove();
+  const adding = r.delta > 0;
+  const p = document.createElement('div');
+  p.className = 'tpanel card';
+  p.innerHTML = `
+    <header><h2>Balance ${esc(r.contract_name)}?</h2><button class="btn small" id="tpX">✕</button></header>
+    <p class="muted" style="padding:0 16px">${adding
+      ? `That's <b>${hm(r.delta)} more</b> on ${esc(r.contract_name)} than planned. Take it back out of their upcoming work so the month still fits?`
+      : `That freed <b>${hm(-r.delta)}</b> from ${esc(r.contract_name)}. Add it back to their upcoming work?`}</p>
+    <div style="padding:0 16px">
+      ${r.proposal.map((x, i) => `<label class="rebrow">
+        <input type="checkbox" class="rbPick" data-i="${i}" checked>
+        <span>${niceDay(x.date)}${x.start ? ` ${x.start}` : ''} — ${esc(x.label)}${x.new_block ? ' <i>(new)</i>' : ''}</span>
+        <b>${x.new_block ? `+ ${hm(x.to_minutes)}` : `${hm(x.from_minutes)} → ${x.to_minutes === 0 ? 'removed' : hm(x.to_minutes)}`}</b>
+      </label>`).join('')}
+    </div>
+    ${r.unplaced_minutes ? `<p class="muted" style="padding:0 16px">${hm(r.unplaced_minutes)} has nowhere to go —
+      it will show in the variance report.</p>` : ''}
+    <div class="rowline"><span class="spacer"></span>
+      <button class="btn small" id="rbNo">Leave as is</button>
+      <button class="btn primary small" id="rbGo">Apply</button></div>`;
+  view().appendChild(p);
+  $('#tpX').addEventListener('click', () => p.remove());
+  $('#rbNo').addEventListener('click', () => p.remove());
+  $('#rbGo').addEventListener('click', async () => {
+    const changes = [...p.querySelectorAll('.rbPick')]
+      .filter((cb) => cb.checked)
+      .map((cb) => {
+        const x = r.proposal[Number(cb.dataset.i)];
+        return x.new_block
+          ? { new_block: true, contract_id: x.contract_id, deliverable_id: x.deliverable_id,
+              date: x.date, start: x.start, label: x.label, minutes: x.to_minutes }
+          : { block_id: x.block_id, minutes: x.to_minutes };
+      });
+    if (!changes.length) { p.remove(); return; }
+    try {
+      await timeApi('/rebalance', { body: { changes } });
+      p.remove(); toast('Plan rebalanced.'); renderTime();
+    } catch (err) { toast(err.message, true); }
+  });
 }

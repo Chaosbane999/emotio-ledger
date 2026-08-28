@@ -399,3 +399,7 @@ tr.tentry.skip td { opacity: 0.5; }
 .tw-ghost:hover .tw-tick { opacity: 1; }
 .tw-entry.locked { cursor: pointer; opacity: 0.82;
   background: color-mix(in srgb, var(--accent) 70%, #555); }
+
+.rebrow { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 13px; cursor: pointer; }
+.rebrow span { flex: 1; }
+.rebrow b { white-space: nowrap; font-variant-numeric: tabular-nums; }
