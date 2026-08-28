@@ -1,12 +1,13 @@
 {
   "name": "emotio-ledger",
   "version": "1.0.0",
-  "description": "EmotioHours — capacity and time allocation: contracted units in, team hours out",
+  "description": "EmotioHours \u2014 capacity and time allocation: contracted units in, team hours out",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
     "start": "PORT=${PORT:-3400} node server.js",
-    "seed": "node seed.js"
+    "seed": "node seed.js",
+    "test": "node test-time.js && node audit.js"
   },
   "dependencies": {
     "express": "^4.21.2"

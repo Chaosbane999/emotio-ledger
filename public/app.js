@@ -96,18 +96,24 @@ async function boot() {
 
   // A member sees only their own month, so the agency-wide tabs are removed
   // rather than shown and refused.
-  const memberViews = ['people', 'schedule'];
+  const memberViews = ['time', 'people', 'schedule'];
   $('#tabs').querySelectorAll('button').forEach((b) => {
     b.classList.toggle('hidden', S.me.role !== 'admin' && !memberViews.includes(b.dataset.view));
   });
   if (S.me.role !== 'admin') {
     S.personId = S.me.person_id;
-    if (!memberViews.includes(S.view)) S.view = 'people';
+    if (!memberViews.includes(S.view)) S.view = 'time';
     // adding and deleting months is an agency-wide act; the buttons were on
     // show for members and every click came back refused
     ['#addMonth', '#delMonth'].forEach((sel) => $(sel)?.classList.add('hidden'));
   }
   $('#whoami').textContent = S.me.name ? `${S.me.name}${S.me.role === 'admin' ? '' : ''}` : '';
+  if (S.boot.settings.staging && !document.querySelector('.staging-pill')) {
+    const pill = document.createElement('span');
+    pill.className = 'pill warn staging-pill';
+    pill.textContent = 'STAGING — not the live system';
+    document.querySelector('header.top').appendChild(pill);
+  }
 
   const sel = $('#period');
   const size = new Map((S.boot.months || []).map((m) => [m.period, m]));
@@ -128,6 +134,7 @@ async function render() {
     else if (S.view === 'contracts') await renderContracts();
     else if (S.view === 'internal') await renderInternal();
     else if (S.view === 'schedule') await renderSchedule();
+    else if (S.view === 'time') await renderTime();
     else await renderSettings();
   } catch (e) {
     view().innerHTML = `<div class="banner bad"><div><b>Something went wrong.</b><br>${esc(e.message)}</div></div>`;
@@ -475,9 +482,9 @@ async function renderPerson() {
       <div class="stat ${t.spare_hours < 0 ? 'bad' : 'good'}" title="Available less client work less internal — the hours genuinely left."><span class="k">Spare</span>
         <span class="v">${pairH(t.spare_hours)}</span>
         <span class="s">${t.spare_hours < 0 ? 'overbooked' : 'room for more work'}</span></div>
-      <div class="stat"><span class="k">Logged in Harvest</span>
-        <span class="v">${t.actual_hours ? pairH(t.actual_hours) : '—'}</span>
-        <span class="s">${t.actual_hours ? `${h(t.actual_vs_allocated)} h vs allocated` : 'not synced yet'}</span></div>
+      <div class="stat"><span class="k">Logged</span>
+        <span class="v">${t.logged_hours ? pairH(t.logged_hours) : '—'}</span>
+        <span class="s">${t.logged_hours ? `${h(t.logged_hours - t.client_hours - t.internal_hours)} h vs allocated` : 'nothing confirmed yet'}</span></div>
     </div>
 
     ${t.spare_hours < 0 ? `<div class="banner bad"><div><b>${esc(v.person.name)} is overbooked by ${hrs(-t.spare_hours)}.</b>
@@ -658,7 +665,7 @@ async function renderContractDetail(id) {
         : `<div class="item"><span class="k">Balance</span>
              <span class="v ${s.balanced ? 'ok' : 'bad'}">${s.balanced ? 'balanced' : (s.variance > 0 ? `${h(s.variance)} under` : `${h(-s.variance)} over`)}</span></div>`}
       <div class="item"><span class="k">Clock hours</span><span class="v">${hrs(s.people_hours)}</span></div>
-      <div class="item"><span class="k">Logged</span><span class="v">${d.actual_hours ? hrs(d.actual_hours) : '—'}</span></div>
+      <div class="item"><span class="k">Logged</span><span class="v">${s.logged_hours ? hrs(s.logged_hours) : '—'}</span></div>
     </div>
 
     ${!isPot && !s.balanced && s.variance < 0 ? `<div class="banner bad"><div>
@@ -1641,3 +1648,468 @@ $('#tabs').addEventListener('click', (e) => {
 }, true);
 
 boot().catch((e) => { view().innerHTML = `<div class="banner bad">${esc(e.message)}</div>`; });
+
+// ===========================================================================
+// Time — the daily loop. The plan (schedule blocks) is laid out; you confirm
+// what happened, adjust what didn't, and only ever type the exceptions.
+// All figures here are hours and minutes; there is deliberately no money on
+// this screen for anyone.
+// ===========================================================================
+
+const hm = (m) => `${Math.floor((m || 0) / 60)}:${String((m || 0) % 60).padStart(2, '0')}`;
+const todayIso = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+const timeShiftDay = (iso, n) => {
+  const d = new Date(`${iso}T00:00:00`);
+  d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+const niceDay = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString('en-GB',
+  { weekday: 'short', day: 'numeric', month: 'short' });
+const toMinOfDay = (t) => { const [h2, m2] = String(t).split(':').map(Number); return h2 * 60 + m2; };
+const fromMinOfDay = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+const SRC_LABEL = { confirm: 'as planned', adjust: 'adjusted', timer: 'timer', manual: 'added', skip: 'skipped' };
+
+const timeApi = (path, opts) => api(`/api/time/${S.personId}${path}`, opts);
+
+async function renderTime() {
+  const all = S.boot.people.filter((p) => p.active);
+  const people = S.me?.role === 'admin' ? all : all.filter((p) => p.id === S.me.person_id);
+  if (!S.personId || !people.some((p) => p.id === S.personId)) S.personId = people[0]?.id;
+  if (!S.personId) { view().innerHTML = '<p class="muted">No active people yet.</p>'; return; }
+  if (!S.timeDate) S.timeDate = todayIso();
+  S.timeMode = S.timeMode || 'day';
+
+  const mode = S.timeMode;
+  const v = await timeApi(`/${mode === 'day' ? 'day' : 'week'}?date=${S.timeDate}`);
+
+  view().innerHTML = `
+    <div class="bar">
+      ${people.length > 1 ? `<select id="tPick">${people.map((p) =>
+        `<option value="${p.id}"${p.id === S.personId ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : `<b>${esc(people[0].name)}</b>`}
+      <div class="seg">
+        <button id="tModeDay" class="btn small ${mode === 'day' ? 'primary' : ''}">Day</button>
+        <button id="tModeWeek" class="btn small ${mode === 'week' ? 'primary' : ''}">Week</button>
+      </div>
+      <button class="btn small" id="tPrev">‹</button>
+      <button class="btn small" id="tToday">Today</button>
+      <button class="btn small" id="tNext">›</button>
+      <b>${mode === 'day' ? niceDay(S.timeDate) : `${niceDay(v.start)} – ${niceDay(v.days[6])}`}</b>
+      <span class="spacer"></span>
+      <span class="pill mute">planned ${hm(v.totals.planned_minutes)}</span>
+      <span class="pill ${v.totals.logged_minutes ? '' : 'mute'}">logged ${hm(v.totals.logged_minutes)}</span>
+      ${v.totals.pending ? `<span class="pill warn">${v.totals.pending} to confirm</span>` : ''}
+    </div>
+    <div id="tTimer"></div>
+    <div id="tBody"></div>
+    ${S.me?.role === 'admin' ? '<div id="tVariance"></div>' : ''}
+  `;
+
+  $('#tPick')?.addEventListener('change', (e) => { S.personId = Number(e.target.value); renderTime(); });
+  $('#tModeDay').addEventListener('click', () => { S.timeMode = 'day'; renderTime(); });
+  $('#tModeWeek').addEventListener('click', () => { S.timeMode = 'week'; renderTime(); });
+  const step = mode === 'day' ? 1 : 7;
+  $('#tPrev').addEventListener('click', () => { S.timeDate = timeShiftDay(S.timeDate, -step); renderTime(); });
+  $('#tNext').addEventListener('click', () => { S.timeDate = timeShiftDay(S.timeDate, step); renderTime(); });
+  $('#tToday').addEventListener('click', () => { S.timeDate = todayIso(); renderTime(); });
+
+  renderTimerBar(v.timer);
+  if (mode === 'day') renderTimeDay(v); else renderTimeWeek(v);
+  if (S.me?.role === 'admin') renderVariance();
+}
+
+// --- timer ------------------------------------------------------------------
+
+function renderTimerBar(timer) {
+  const el = $('#tTimer');
+  if (timer) {
+    const what = timer.label || `${esc(timer.contract_name || '')} — ${esc(timer.deliverable_name || '')}`;
+    el.innerHTML = `<div class="card timerbar running">
+      <span class="dot"></span><b>${esc(what)}</b>
+      <span class="pill">${hm(timer.elapsed_minutes)}</span>
+      <input type="text" id="tmNote" placeholder="what was done? (optional)" style="flex:1;min-width:160px">
+      <button class="btn primary small" id="tmStop">Stop &amp; log</button>
+      <button class="btn small" id="tmCancel">Discard</button>
+    </div>`;
+    $('#tmStop').addEventListener('click', async () => {
+      await timeApi('/timer/stop', { body: { note: $('#tmNote').value.trim() } });
+      toast('Logged.'); renderTime();
+    });
+    $('#tmCancel').addEventListener('click', async () => {
+      await timeApi('/timer', { method: 'DELETE' }); renderTime();
+    });
+  } else {
+    const contracts = S.boot.contracts.filter((c) => !c.archived && c.status === 'live');
+    const delivs = S.boot.deliverables.filter((d) => d.active);
+    el.innerHTML = `<div class="card timerbar">
+      <span class="k">Timer</span>
+      <select id="tmC">${contracts.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+      <select id="tmD">${delivs.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select>
+      <button class="btn small" id="tmStart">▶ Start</button>
+    </div>`;
+    $('#tmStart').addEventListener('click', async () => {
+      await timeApi('/timer/start', { body: { contract_id: Number($('#tmC').value), deliverable_id: Number($('#tmD').value) } });
+      renderTime();
+    });
+  }
+}
+
+// --- day view: the confirm loop ---------------------------------------------
+
+function renderTimeDay(v) {
+  const chip = (b) => b.status === 'done'
+    ? `<span class="pill ok">✓ ${hm(b.logged_minutes)}</span>`
+    : b.status === 'skipped' ? '<span class="pill mute">skipped</span>'
+      : '<span class="pill warn">pending</span>';
+
+  $('#tBody').innerHTML = `
+    <div class="grid2">
+    <div class="card">
+      <header><h2>The plan</h2><p>Tick what went to plan; adjust what didn't</p>
+        ${v.totals.pending ? `<button class="btn primary small" id="tConfirmDay">✓ Confirm all ${v.totals.pending}</button>` : ''}
+      </header>
+      ${v.blocks.length ? `<table><tbody>
+        ${v.blocks.map((b) => `
+          <tr class="tblock ${b.status}" data-b="${b.id}">
+            <td class="num" style="white-space:nowrap">${b.start || ''}</td>
+            <td>${esc(b.label)}<span class="sub">${hm(b.minutes)} planned</span></td>
+            <td class="num">${chip(b)}</td>
+            <td class="num" style="white-space:nowrap">${b.status === 'pending' ? `
+              <button class="btn small tCf" data-b="${b.id}" title="Happened exactly as planned">✓</button>
+              <button class="btn small tAj" data-b="${b.id}" title="Happened, but differently">edit</button>
+              <button class="btn small tSk" data-b="${b.id}" title="Didn't happen">✗</button>` : ''}</td>
+          </tr>
+          <tr class="tadjust hidden" data-of="${b.id}"><td></td><td colspan="3">
+            <div class="rowline">
+              <input type="time" class="ajStart" value="${b.start || '09:00'}">
+              <input type="number" class="ajMins" value="${b.minutes}" min="1" step="15" style="width:80px"> min
+              <input type="text" class="ajNote" placeholder="what was done?" style="flex:1;min-width:140px">
+              <button class="btn primary small ajGo" data-b="${b.id}">Log it</button>
+            </div>
+          </td></tr>`).join('')}
+      </tbody></table>` : '<p class="muted" style="padding:0 16px 16px">Nothing planned today.</p>'}
+    </div>
+
+    <div class="card">
+      <header><h2>Logged</h2><p>What actually happened — with notes</p></header>
+      ${v.entries.length ? `<table><tbody>
+        ${v.entries.map((e) => `
+          <tr class="tentry ${e.source}" data-e="${e.id}">
+            <td class="num" style="white-space:nowrap">${e.start || '—'}</td>
+            <td>${esc(e.contract_name || '')}${e.deliverable_name ? ` — ${esc(e.deliverable_name)}` : ''}
+              ${e.note ? `<span class="sub">“${esc(e.note)}”</span>` : ''}</td>
+            <td class="num">${e.source === 'skip' ? '<span class="pill mute">skipped</span>'
+              : `<b>${hm(e.minutes)}</b>`}<span class="sub">${SRC_LABEL[e.source] || ''}</span></td>
+            <td class="num"><button class="btn small tEdit" data-e="${e.id}">edit</button>
+              <button class="btn small danger tDel" data-e="${e.id}">✕</button></td>
+          </tr>`).join('')}
+      </tbody></table>` : '<p class="muted" style="padding:0 16px 16px">Nothing logged yet.</p>'}
+      <div class="rowline" style="padding:12px 16px">
+        <select id="teC">${S.boot.contracts.filter((c) => !c.archived && c.status === 'live')
+          .map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+        <select id="teD">${S.boot.deliverables.filter((d) => d.active)
+          .map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select>
+        <input type="time" id="teStart">
+        <input type="number" id="teMins" placeholder="min" min="1" step="15" style="width:80px">
+        <input type="text" id="teNote" placeholder="note" style="flex:1;min-width:120px">
+        <button class="btn small" id="teAdd">+ Add</button>
+      </div>
+    </div>
+    </div>`;
+
+  $('#tConfirmDay')?.addEventListener('click', async () => {
+    const r = await timeApi('/confirm-day', { body: { date: v.date } });
+    toast(`${r.confirmed} confirmed.`); renderTime();
+  });
+  view().querySelectorAll('.tCf').forEach((b) => b.addEventListener('click', async () => {
+    await timeApi('/confirm', { body: { block_id: Number(b.dataset.b) } }); renderTime();
+  }));
+  view().querySelectorAll('.tSk').forEach((b) => b.addEventListener('click', async () => {
+    const note = prompt('Why didn\'t it happen? (moved / not needed / client cancelled…)') ?? null;
+    if (note === null) return;
+    await timeApi('/skip', { body: { block_id: Number(b.dataset.b), note } }); renderTime();
+  }));
+  view().querySelectorAll('.tAj').forEach((b) => b.addEventListener('click', () => {
+    view().querySelector(`.tadjust[data-of="${b.dataset.b}"]`).classList.toggle('hidden');
+  }));
+  view().querySelectorAll('.ajGo').forEach((b) => b.addEventListener('click', async () => {
+    const row = b.closest('tr');
+    await timeApi('/entries', { body: {
+      block_id: Number(b.dataset.b), date: v.date,
+      start: row.querySelector('.ajStart').value || null,
+      minutes: Number(row.querySelector('.ajMins').value),
+      note: row.querySelector('.ajNote').value.trim(), source: 'adjust',
+    } });
+    toast('Logged.'); renderTime();
+  }));
+  view().querySelectorAll('.tDel').forEach((b) => b.addEventListener('click', async () => {
+    await timeApi(`/entries/${b.dataset.e}`, { method: 'DELETE' }); renderTime();
+  }));
+  view().querySelectorAll('.tEdit').forEach((b) => b.addEventListener('click', () => {
+    const e = v.entries.find((x) => x.id === Number(b.dataset.e));
+    openEntryEditor(e);
+  }));
+  $('#teAdd').addEventListener('click', async () => {
+    const minutes = Number($('#teMins').value);
+    if (!minutes) return toast('How many minutes?', true);
+    await timeApi('/entries', { body: {
+      contract_id: Number($('#teC').value), deliverable_id: Number($('#teD').value),
+      date: v.date, start: $('#teStart').value || null, minutes,
+      note: $('#teNote').value.trim(),
+    } });
+    toast('Added.'); renderTime();
+  });
+}
+
+// --- a small shared editor for one entry -------------------------------------
+
+function openEntryEditor(e) {
+  document.querySelector('.tpanel')?.remove();
+  const p = document.createElement('div');
+  p.className = 'tpanel card';
+  p.innerHTML = `
+    <header><h2>${e.source === 'skip' ? 'Skipped block' : 'Edit entry'}</h2>
+      <button class="btn small" id="tpX">✕</button></header>
+    <div class="rowline"><label>Date</label><input type="date" id="tpDate" value="${e.date}"></div>
+    ${e.source !== 'skip' ? `
+    <div class="rowline"><label>Start</label><input type="time" id="tpStart" value="${e.start || ''}"></div>
+    <div class="rowline"><label>Minutes</label><input type="number" id="tpMins" value="${e.minutes}" min="1" step="15"></div>` : ''}
+    <div class="rowline"><label>Note</label><input type="text" id="tpNote" value="${esc(e.note || '')}" style="flex:1"></div>
+    <div class="rowline"><span class="spacer"></span>
+      <button class="btn danger small" id="tpDel">${e.source === 'skip' ? 'Unskip' : 'Delete'}</button>
+      <button class="btn primary small" id="tpSave">Save</button></div>`;
+  view().appendChild(p);
+  $('#tpX').addEventListener('click', () => p.remove());
+  $('#tpDel').addEventListener('click', async () => {
+    await timeApi(`/entries/${e.id}`, { method: 'DELETE' }); p.remove(); renderTime();
+  });
+  $('#tpSave').addEventListener('click', async () => {
+    const body = { date: $('#tpDate').value, note: $('#tpNote').value.trim() };
+    if (e.source !== 'skip') {
+      body.start = $('#tpStart').value || null;
+      body.minutes = Number($('#tpMins').value);
+    }
+    await timeApi(`/entries/${e.id}`, { method: 'PATCH', body });
+    p.remove(); toast('Saved.'); renderTime();
+  });
+}
+
+// --- week view: the calendar. Plan underneath, reality on top ---------------
+// Drag a solid entry to move it; drag its lower edge to resize; drag a pending
+// planned block to log it where it actually happened. Everything snaps to the
+// quarter hour, the same grain the schedule is built on.
+
+const T_SNAP = 15;
+const T_PPM = 1;                    // 1px per minute -> 60px per hour
+
+function renderTimeWeek(v) {
+  const hasWeekend = v.blocks.some((b) => v.days.indexOf(b.date) > 4)
+    || v.entries.some((e) => v.days.indexOf(e.date) > 4);
+  const days = hasWeekend ? v.days : v.days.slice(0, 5);
+
+  // window: 07:00–19:00, stretched to fit whatever exists
+  let lo = 7 * 60; let hi = 19 * 60;
+  const stretch = (start, minutes) => {
+    if (start == null) return;
+    const s = toMinOfDay(start);
+    lo = Math.min(lo, Math.floor(s / 60) * 60);
+    hi = Math.max(hi, Math.ceil((s + minutes) / 60) * 60);
+  };
+  v.blocks.forEach((b) => stretch(b.start, b.minutes));
+  v.entries.forEach((e) => stretch(e.start, e.minutes));
+  const height = (hi - lo) * T_PPM;
+
+  const hours = [];
+  for (let m = lo; m <= hi; m += 60) hours.push(m);
+
+  const dayCol = (d) => {
+    const ghosts = v.blocks.filter((b) => b.date === d);
+    const solids = v.entries.filter((e) => e.date === d && e.start && e.source !== 'skip');
+    const loose = v.entries.filter((e) => e.date === d && !e.start && e.source !== 'skip');
+    const pos = (start, minutes) => `top:${(toMinOfDay(start) - lo) * T_PPM}px;height:${Math.max(18, minutes * T_PPM)}px`;
+    return `<div class="tw-day" data-date="${d}">
+      ${loose.length ? `<div class="tw-loose">${loose.map((e) =>
+        `<span class="tw-chip" data-kind="entry" data-id="${e.id}">${hm(e.minutes)} ${esc(e.contract_name || '')}</span>`).join('')}</div>` : ''}
+      <div class="tw-grid" style="height:${height}px">
+        ${hours.slice(0, -1).map((m) => `<div class="tw-hour" style="top:${(m - lo) * T_PPM}px"></div>`).join('')}
+        ${ghosts.map((b) => `<div class="tw-ghost ${b.status}" data-kind="ghost" data-id="${b.id}"
+            style="${pos(b.start, b.minutes)}" title="planned: ${esc(b.label)} (${hm(b.minutes)})">
+          <span>${esc(b.label)}</span><em>${hm(b.minutes)}${b.status === 'done' ? ' ✓' : b.status === 'skipped' ? ' ✗' : ''}</em>
+        </div>`).join('')}
+        ${solids.map((e) => `<div class="tw-entry ${e.source}" data-kind="entry" data-id="${e.id}"
+            style="${pos(e.start, e.minutes)}">
+          <span>${esc(e.contract_name || '')}${e.deliverable_name ? ` — ${esc(e.deliverable_name)}` : ''}</span>
+          <em>${hm(e.minutes)}</em>${e.note ? `<i>“${esc(e.note)}”</i>` : ''}
+          <div class="tw-resize" data-kind="resize" data-id="${e.id}"></div>
+        </div>`).join('')}
+      </div>
+    </div>`;
+  };
+
+  $('#tBody').innerHTML = `<div class="card tw-card">
+    <div class="tw-head">
+      <div class="tw-gutter"></div>
+      ${days.map((d, i) => {
+        const per = v.totals.per_day[v.days.indexOf(d)];
+        return `<div class="tw-col-head ${d === todayIso() ? 'today' : ''}">
+          <b>${niceDay(d)}</b><span class="sub">${hm(per.logged_minutes)} / ${hm(per.planned_minutes)}</span>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="tw-scroll"><div class="tw-body">
+      <div class="tw-gutter" style="height:${height}px">
+        ${hours.slice(0, -1).map((m) => `<div class="tw-hlabel" style="top:${(m - lo) * T_PPM}px">${fromMinOfDay(m)}</div>`).join('')}
+      </div>
+      ${days.map(dayCol).join('')}
+    </div></div>
+    <p class="muted" style="padding:8px 16px">Drag a block to move it · drag its lower edge to change its length ·
+      click to add a note · faint outlines are the plan.</p>
+  </div>`;
+
+  wireWeekDrag(v, lo);
+}
+
+function wireWeekDrag(v, lo) {
+  const body = view().querySelector('.tw-body');
+  let drag = null;
+
+  const slotOf = (ev) => {
+    const day = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.tw-day');
+    if (!day) return null;
+    const grid = day.querySelector('.tw-grid');
+    const rect = grid.getBoundingClientRect();
+    const min = Math.round((ev.clientY - rect.top) / T_PPM / T_SNAP) * T_SNAP + lo;
+    return { date: day.dataset.date, min: Math.max(lo, min) };
+  };
+
+  body.addEventListener('pointerdown', (ev) => {
+    const t = ev.target.closest('[data-kind]');
+    if (!t) return;
+    const kind = t.dataset.kind;
+    if (kind === 'resize') {
+      const e = v.entries.find((x) => x.id === Number(t.dataset.id));
+      drag = { kind, id: e.id, entry: e, el: t.closest('.tw-entry'), startY: ev.clientY, moved: false };
+    } else {
+      const box = t.getBoundingClientRect();
+      drag = { kind, id: Number(t.dataset.id), el: t, grabOffset: ev.clientY - box.top,
+        startX: ev.clientX, startY: ev.clientY, moved: false };
+    }
+    ev.preventDefault();
+    body.setPointerCapture(ev.pointerId);
+  });
+
+  body.addEventListener('pointermove', (ev) => {
+    if (!drag) return;
+    if (Math.abs(ev.clientX - (drag.startX ?? ev.clientX)) + Math.abs(ev.clientY - drag.startY) > 4) drag.moved = true;
+    if (!drag.moved) return;
+    if (drag.kind === 'resize') {
+      const mins = Math.max(T_SNAP,
+        Math.round((drag.entry.minutes * T_PPM + ev.clientY - drag.startY) / T_PPM / T_SNAP) * T_SNAP);
+      drag.el.style.height = `${Math.max(18, mins * T_PPM)}px`;
+      drag.mins = mins;
+    } else {
+      const slot = slotOf({ clientX: ev.clientX, clientY: ev.clientY - drag.grabOffset + 1 });
+      if (!slot) return;
+      drag.slot = slot;
+      drag.el.classList.add('dragging');
+      const grid = document.querySelector(`.tw-day[data-date="${slot.date}"] .tw-grid`);
+      if (drag.el.parentElement !== grid) grid.appendChild(drag.el);
+      drag.el.style.top = `${(slot.min - lo) * T_PPM}px`;
+    }
+  });
+
+  body.addEventListener('pointerup', async () => {
+    const d = drag; drag = null;
+    if (!d) return;
+    try {
+      if (!d.moved) {
+        // a click, not a drag
+        if (d.kind === 'entry') {
+          const e = v.entries.find((x) => x.id === d.id);
+          if (e) openEntryEditor(e);
+        } else if (d.kind === 'ghost') {
+          const b = v.blocks.find((x) => x.id === d.id);
+          if (b && b.status === 'pending') openGhostMenu(b);
+          else if (b && b.status === 'skipped') {
+            const skipId = b.entry_ids[0];
+            if (skipId && confirm('Unskip this block?')) {
+              await timeApi(`/entries/${skipId}`, { method: 'DELETE' }); renderTime();
+            }
+          }
+        }
+        return;
+      }
+      if (d.kind === 'resize' && d.mins) {
+        await timeApi(`/entries/${d.id}`, { method: 'PATCH', body: { minutes: d.mins } });
+        renderTime();
+      } else if (d.kind === 'entry' && d.slot) {
+        await timeApi(`/entries/${d.id}`, { method: 'PATCH',
+          body: { date: d.slot.date, start: fromMinOfDay(d.slot.min) } });
+        renderTime();
+      } else if (d.kind === 'ghost' && d.slot) {
+        const b = v.blocks.find((x) => x.id === d.id);
+        if (b.status !== 'pending') { renderTime(); return; }
+        await timeApi('/entries', { body: {
+          block_id: b.id, date: d.slot.date, start: fromMinOfDay(d.slot.min),
+          minutes: b.minutes, source: 'adjust',
+        } });
+        toast('Logged where it actually happened.');
+        renderTime();
+      }
+    } catch (err) { toast(err.message, true); renderTime(); }
+  });
+}
+
+function openGhostMenu(b) {
+  document.querySelector('.tpanel')?.remove();
+  const p = document.createElement('div');
+  p.className = 'tpanel card';
+  p.innerHTML = `
+    <header><h2>${esc(b.label)}</h2><button class="btn small" id="tpX">✕</button></header>
+    <p class="muted">Planned ${b.start || ''} · ${hm(b.minutes)}</p>
+    <div class="rowline"><input type="text" id="tgNote" placeholder="note (optional)" style="flex:1"></div>
+    <div class="rowline">
+      <button class="btn primary small" id="tgCf">✓ As planned</button>
+      <span class="spacer"></span>
+      <button class="btn small danger" id="tgSk">✗ Didn't happen</button></div>`;
+  view().appendChild(p);
+  $('#tpX').addEventListener('click', () => p.remove());
+  $('#tgCf').addEventListener('click', async () => {
+    await timeApi('/confirm', { body: { block_id: b.id, note: $('#tgNote').value.trim() } });
+    p.remove(); renderTime();
+  });
+  $('#tgSk').addEventListener('click', async () => {
+    await timeApi('/skip', { body: { block_id: b.id, note: $('#tgNote').value.trim() } });
+    p.remove(); renderTime();
+  });
+}
+
+// --- variance: the whole point (admin only) ----------------------------------
+
+async function renderVariance() {
+  const v = await api(`/api/time-variance?period=${encodeURIComponent(S.period)}`);
+  const dev = (h2) => h2 === 0 ? '<span class="pill mute">—</span>'
+    : `<span class="pill ${h2 > 0 ? 'warn' : ''}">${h2 > 0 ? '+' : ''}${h(h2)} h</span>`;
+  const table = (rows, label) => `
+    <div class="card"><header><h2>${label}</h2><p>Planned vs logged, ${esc(monthName(S.period))}</p></header>
+    <div class="scroll"><table>
+      <thead><tr><th>${label === 'By contract' ? 'Contract' : 'Person'}</th>
+        <th class="num">Planned</th><th class="num">Logged</th><th class="num">Δ</th>
+        <th class="num">Skipped</th><th class="num">Unconfirmed</th></tr></thead>
+      <tbody>${rows.filter((r) => r.planned_minutes || r.logged_minutes).map((r) => `<tr>
+        <td>${esc(r.name)}</td>
+        <td class="num">${hrs(r.planned_hours)}</td>
+        <td class="num">${r.logged_minutes ? hrs(r.logged_hours) : '<span class="nil">—</span>'}</td>
+        <td class="num">${dev(r.variance_hours)}</td>
+        <td class="num">${r.skipped || '<span class="nil">—</span>'}</td>
+        <td class="num">${r.pending ? `<span class="pill warn">${r.pending}</span>` : '<span class="nil">—</span>'}</td>
+      </tr>`).join('')}</tbody>
+    </table></div></div>`;
+  $('#tVariance').innerHTML = `
+    ${v.totals.pending_blocks ? `<div class="banner"><div>
+      <b>${v.totals.pending_blocks} past blocks still unconfirmed.</b>
+      Their time is planned but nobody has said what happened yet.</div></div>` : ''}
+    <div class="grid2">${table(v.by_contract, 'By contract')}${table(v.by_person, 'By person')}</div>`;
+}

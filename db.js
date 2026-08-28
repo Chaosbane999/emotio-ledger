@@ -170,6 +170,41 @@ CREATE TABLE IF NOT EXISTS actuals (
 );
 CREATE INDEX IF NOT EXISTS idx_actuals_period ON actuals(period);
 
+-- What actually happened, one row per stretch of worked time. The plan stays
+-- in schedule_blocks; reality lives here, and the two are never merged --
+-- variance IS the comparison between them. block_id ties an entry back to the
+-- planned block it accounts for; NULL means unplanned work.
+--   source: confirm  - block accepted as planned
+--           adjust   - block done, but moved / resized / split
+--           timer    - captured live by the timer
+--           manual   - typed in with no planned block behind it
+--           skip     - block did not happen (minutes must be 0, note says why)
+CREATE TABLE IF NOT EXISTS time_entries (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  block_id       INTEGER REFERENCES schedule_blocks(id) ON DELETE SET NULL,
+  person_id      INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+  contract_id    INTEGER REFERENCES contracts(id)       ON DELETE SET NULL,
+  deliverable_id INTEGER REFERENCES deliverables(id)    ON DELETE SET NULL,
+  date           TEXT    NOT NULL,
+  start          TEXT,
+  minutes        INTEGER NOT NULL DEFAULT 0,
+  note           TEXT    NOT NULL DEFAULT '',
+  source         TEXT    NOT NULL DEFAULT 'manual',
+  created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_time_entries_person_date ON time_entries(person_id, date);
+CREATE INDEX IF NOT EXISTS idx_time_entries_block ON time_entries(block_id);
+
+-- One running timer per person, survives a restart because it is a row.
+CREATE TABLE IF NOT EXISTS timers (
+  person_id      INTEGER PRIMARY KEY REFERENCES people(id) ON DELETE CASCADE,
+  block_id       INTEGER REFERENCES schedule_blocks(id) ON DELETE SET NULL,
+  contract_id    INTEGER REFERENCES contracts(id)       ON DELETE SET NULL,
+  deliverable_id INTEGER REFERENCES deliverables(id)    ON DELETE SET NULL,
+  label          TEXT    NOT NULL DEFAULT '',
+  started_at     TEXT    NOT NULL
+);
+
 -- Fixed calendar commitments a person already has (weekly calls etc).
 CREATE TABLE IF NOT EXISTS anchors (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

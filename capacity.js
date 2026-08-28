@@ -198,6 +198,10 @@ function contractSummary(contract, period) {
   const co = db.prepare('SELECT units, from_period, note FROM carryover WHERE contract_id = ? AND period = ?')
     .get(contract.id, period) || { units: 0, from_period: '', note: '' };
 
+  const loggedMin = db.prepare(`SELECT COALESCE(SUM(minutes), 0) m FROM time_entries
+    WHERE contract_id = ? AND date LIKE ? AND source != 'skip'`)
+    .get(contract.id, `${period}-%`).m;
+
   const peopleUnits = lines.reduce((s, l) => s + l.units, 0);
   const peopleHours = lines.reduce((s, l) => s + l.hours, 0);
   const tpUnits = tpRows.reduce((s, t) => s + t.units, 0);
@@ -219,6 +223,7 @@ function contractSummary(contract, period) {
     status: contract.status,
     starts_on: contract.starts_on || null,
     ends_on: contract.ends_on || null,
+    logged_hours: round2(loggedMin / 60),
     period,
     lines,
     third_parties: tpRows.map((t) => ({ id: t.id, name: t.name, units: round2(t.units) })),
@@ -459,6 +464,10 @@ function personView(personId, period) {
         internalHours, cap.internal_hours),
       load_pct: cap.client_hours > 0 ? Math.round((clientHours / cap.client_hours) * 100) : 0,
       actual_hours: round2(actualTotal),
+      // reality, from the time system — replaces the Harvest figure
+      logged_hours: round2((db.prepare(`SELECT COALESCE(SUM(minutes), 0) m FROM time_entries
+        WHERE person_id = ? AND date LIKE ? AND source != 'skip'`)
+        .get(personId, `${period}-%`).m) / 60),
       actual_vs_allocated: round2(actualTotal - (clientHours + internalHours)),
     },
   };

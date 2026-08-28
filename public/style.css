@@ -333,3 +333,53 @@ td.indent { padding-left: 26px; color: var(--ink-2); font-size: .84rem; }
 /* an internal booking that exceeds the utilisation allowance — it eats into
    sellable time, so it is called out where the hours are shown */
 .sub.warn { color: var(--warn); }
+
+/* ---- Time view ---------------------------------------------------------- */
+.timerbar { display: flex; align-items: center; gap: 10px; padding: 12px 16px; margin-bottom: 16px; flex-wrap: wrap; }
+.timerbar.running { border-color: var(--accent); }
+.timerbar .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); animation: tpulse 1.6s infinite; }
+@keyframes tpulse { 50% { opacity: 0.3; } }
+.seg { display: inline-flex; gap: 4px; }
+
+tr.tblock.done td { opacity: 0.75; }
+tr.tblock.skipped td { opacity: 0.45; text-decoration: line-through; }
+tr.tentry.skip td { opacity: 0.5; }
+
+.tpanel { position: fixed; right: 24px; bottom: 24px; width: 340px; z-index: 60;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.18); padding-bottom: 8px; }
+.tpanel header { display: flex; justify-content: space-between; align-items: center; }
+.tpanel .rowline { padding: 4px 16px; }
+
+/* week calendar */
+.tw-card { overflow: hidden; }
+.tw-head { display: flex; border-bottom: 1px solid var(--rule); }
+.tw-col-head { flex: 1; padding: 8px 10px; border-left: 1px solid var(--rule); }
+.tw-col-head.today b { color: var(--accent); }
+.tw-col-head .sub { display: block; }
+.tw-scroll { max-height: 640px; overflow-y: auto; }
+.tw-body { display: flex; }
+.tw-gutter { width: 52px; flex: none; position: relative; }
+.tw-hlabel { position: absolute; right: 8px; transform: translateY(-7px);
+  font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tw-day { flex: 1; border-left: 1px solid var(--rule); min-width: 0; }
+.tw-loose { padding: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+.tw-chip { font-size: 11px; background: var(--accent-soft, #e3f4f3); color: var(--accent);
+  border-radius: 4px; padding: 2px 6px; cursor: pointer; }
+.tw-grid { position: relative; }
+.tw-hour { position: absolute; left: 0; right: 0; border-top: 1px solid var(--rule); opacity: 0.6; }
+.tw-ghost, .tw-entry { position: absolute; left: 3px; right: 3px; border-radius: 6px;
+  padding: 3px 6px; font-size: 11px; line-height: 1.25; overflow: hidden; box-sizing: border-box; }
+.tw-ghost { border: 1.5px dashed var(--muted); color: var(--muted); background: transparent; }
+.tw-ghost.pending { border-color: var(--warn); color: var(--warn); cursor: grab; }
+.tw-ghost.done, .tw-ghost.skipped { opacity: 0.35; }
+.tw-ghost.skipped { text-decoration: line-through; cursor: pointer; }
+.tw-ghost em, .tw-entry em { display: block; font-style: normal; font-weight: 600; }
+.tw-entry { background: var(--accent); color: #fff; cursor: grab; z-index: 2;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
+.tw-entry.timer { background: #4a7fb5; }
+.tw-entry.manual { background: #6f8f4f; }
+.tw-entry i { display: block; font-style: italic; opacity: 0.85;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tw-entry.dragging, .tw-ghost.dragging { opacity: 0.85; z-index: 10; cursor: grabbing;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
+.tw-resize { position: absolute; left: 0; right: 0; bottom: 0; height: 8px; cursor: ns-resize; }

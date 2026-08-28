@@ -6,6 +6,7 @@ const fs = require('fs');
 const { db, get, set } = require('./db');
 const cap = require('./capacity');
 const schedule = require('./schedule');
+const time = require('./time');
 const harvest = require('./harvest');
 const seed = require('./seed');
 
@@ -184,14 +185,14 @@ app.use((req, res, next) => {
   // schedule and the recipes that shape it. Every one of these is scoped to
   // their own id — none of them carries a rate or a unit.
   const own = String(req.user?.person_id ?? '');
-  const mineRe = own && new RegExp(`^/api/(person|schedule|person-recipes)/${own}(/|$)`);
+  const mineRe = own && new RegExp(`^/api/(person|schedule|person-recipes|time)/${own}(/|$)`);
   const shared = ['/api/bootstrap', '/api/me', '/api/workdays', '/api/months', '/api/leave'];
   const allowed = shared.includes(req.path) || (mineRe && mineRe.test(req.path));
 
   if (!allowed) return res.status(403).json({ error: 'Not available on your account.' });
 
-  // and may write only their own schedule and their own recipes
-  const writable = own && new RegExp(`^/api/(schedule|person-recipes)/${own}(/|$)`);
+  // and may write only their own schedule, recipes, and time
+  const writable = own && new RegExp(`^/api/(schedule|person-recipes|time)/${own}(/|$)`);
   if (req.method !== 'GET' && !(writable && writable.test(req.path))) {
     return res.status(403).json({ error: 'Read-only on your account.' });
   }
@@ -289,6 +290,57 @@ function stripMoney(payload) {
 const send = (req, res, payload) =>
   res.json(req.user?.role === 'admin' ? payload : stripMoney(payload));
 
+// ---------------------------------------------------------------------------
+// time tracking — the plan is schedule_blocks; these record what happened.
+// Every route is scoped to :id, and the member gate above has already refused
+// anyone reaching for an id that is not their own.
+// ---------------------------------------------------------------------------
+
+const personParam = (req) => {
+  const id = Number(req.params.id);
+  if (!db.prepare('SELECT id FROM people WHERE id = ?').get(id)) throw new Error('no such person');
+  return id;
+};
+
+app.get('/api/time/:id/day', ok((req, res) => {
+  res.json(time.dayView(personParam(req), String(req.query.date || '')));
+}));
+app.get('/api/time/:id/week', ok((req, res) => {
+  res.json(time.weekView(personParam(req), String(req.query.date || '')));
+}));
+app.post('/api/time/:id/entries', ok((req, res) => {
+  res.json(time.addEntry(personParam(req), req.body || {}));
+}));
+app.patch('/api/time/:id/entries/:entryId', ok((req, res) => {
+  res.json(time.updateEntry(personParam(req), Number(req.params.entryId), req.body || {}));
+}));
+app.delete('/api/time/:id/entries/:entryId', ok((req, res) => {
+  res.json(time.deleteEntry(personParam(req), Number(req.params.entryId)));
+}));
+app.post('/api/time/:id/confirm', ok((req, res) => {
+  res.json(time.confirmBlock(personParam(req), Number(req.body.block_id), req.body.note));
+}));
+app.post('/api/time/:id/confirm-day', ok((req, res) => {
+  res.json(time.confirmDay(personParam(req), String(req.body.date || '')));
+}));
+app.post('/api/time/:id/skip', ok((req, res) => {
+  res.json(time.skipBlock(personParam(req), Number(req.body.block_id), req.body.note));
+}));
+app.post('/api/time/:id/timer/start', ok((req, res) => {
+  res.json(time.startTimer(personParam(req), req.body || {}));
+}));
+app.post('/api/time/:id/timer/stop', ok((req, res) => {
+  res.json(time.stopTimer(personParam(req), req.body?.note));
+}));
+app.delete('/api/time/:id/timer', ok((req, res) => {
+  res.json(time.cancelTimer(personParam(req)));
+}));
+
+/** Admin only (the member gate never lets a member reach a path without their id). */
+app.get('/api/time-variance', ok((req, res) => {
+  res.json(time.variance(String(req.query.period || period(req))));
+}));
+
 app.get('/api/bootstrap', ok((req, res) => {
   const p = period(req);
   const withArchived = req.query.archived === '1';
@@ -316,6 +368,7 @@ app.get('/api/bootstrap', ok((req, res) => {
       harvest_account_id: get('harvest_account_id') || '',
       last_sync: get('last_sync') || '',
       passcode_set: Boolean(get('passcode_hash')),
+      staging: process.env.STAGING === '1',
       gate_on: gateOn(),
     },
   };

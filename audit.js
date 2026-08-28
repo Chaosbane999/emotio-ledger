@@ -185,7 +185,59 @@ if (periods.length >= 2) {
   }
 }
 
-// ---- 6. unit conversion, standalone -----------------------------------
+// ---- 6. time entries: reality accounts exactly ------------------------
+{
+  const entries = db.prepare('SELECT * FROM time_entries').all();
+  for (const e of entries) {
+    ok(Number.isInteger(e.minutes) && e.minutes >= 0, `entry ${e.id}: minutes is a whole non-negative number`);
+    if (e.source === 'skip') ok(e.minutes === 0, `entry ${e.id}: a skip carries no minutes`);
+    else ok(e.minutes > 0, `entry ${e.id}: worked time is positive`);
+    ok(/^\d{4}-\d{2}-\d{2}$/.test(e.date), `entry ${e.id}: date well-formed`);
+    if (e.block_id != null) {
+      const b = db.prepare('SELECT * FROM schedule_blocks WHERE id = ?').get(e.block_id);
+      if (b) {
+        ok(b.person_id === e.person_id, `entry ${e.id}: answers for its own person's block`);
+        ok(b.contract_id === e.contract_id, `entry ${e.id}: keeps its block's contract`);
+      }
+    }
+  }
+  // a block is one thing or the other, never both, and skipped at most once
+  const mixed = db.prepare(`
+    SELECT block_id FROM time_entries WHERE block_id IS NOT NULL GROUP BY block_id
+    HAVING SUM(source = 'skip') > 0 AND SUM(source != 'skip') > 0`).all();
+  ok(mixed.length === 0, 'no block is both skipped and worked');
+  const doubleSkip = db.prepare(`
+    SELECT block_id FROM time_entries WHERE source = 'skip' GROUP BY block_id HAVING COUNT(*) > 1`).all();
+  ok(doubleSkip.length === 0, 'no block is skipped twice');
+
+  const timeMod = require('./time');
+  for (const period of periods) {
+    const v = timeMod.variance(period);
+    const sum = (arr, k) => arr.reduce((s, r) => s + r[k], 0);
+    ok(sum(v.rows, 'planned_minutes') === v.totals.planned_minutes, `${period}: variance cells sum to planned`);
+    ok(sum(v.rows, 'logged_minutes') === v.totals.logged_minutes, `${period}: variance cells sum to logged`);
+    ok(sum(v.by_person, 'logged_minutes') === v.totals.logged_minutes, `${period}: person rollup conserves logged`);
+    ok(sum(v.by_contract, 'logged_minutes') === v.totals.logged_minutes, `${period}: contract rollup conserves logged`);
+    ok(sum(v.by_person, 'planned_minutes') === v.totals.planned_minutes, `${period}: person rollup conserves planned`);
+    ok(sum(v.by_contract, 'planned_minutes') === v.totals.planned_minutes, `${period}: contract rollup conserves planned`);
+    const tableLogged = db.prepare(`SELECT COALESCE(SUM(minutes),0) m FROM time_entries
+      WHERE date LIKE ? AND source != 'skip'`).get(`${period}-%`).m;
+    ok(v.totals.logged_minutes === tableLogged, `${period}: variance logged = table sum`);
+    const tablePlanned = db.prepare(`SELECT COALESCE(SUM(minutes),0) m FROM schedule_blocks
+      WHERE date LIKE ?`).get(`${period}-%`).m;
+    ok(v.totals.planned_minutes === tablePlanned, `${period}: variance planned = table sum`);
+    for (const r of v.rows) {
+      ok(near(r.variance_hours, r.logged_hours - r.planned_hours),
+        `${period}: variance = logged - planned (${r.person_name} / ${r.contract_name})`);
+    }
+    for (const pr of v.by_person) {
+      ok(near(timeMod.loggedHours(pr.id, period), pr.logged_minutes / 60),
+        `${period}: loggedHours agrees with variance for ${pr.name}`);
+    }
+  }
+}
+
+// ---- 7. unit conversion, standalone -----------------------------------
 for (const [hours, rate, want] of [[10, 33.30, 3.25], [2, 250, 5], [10, 100, 10], [15, 33.30, 5], [4, 250, 10]]) {
   ok(near(cap.toUnits(hours, rate), want), `toUnits(${hours}h, £${rate}) = ${want}u`);
 }
