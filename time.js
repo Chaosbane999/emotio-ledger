@@ -513,29 +513,62 @@ const personByToken = (token) => (token && token.length >= 20
   : undefined) || null;
 
 /**
- * What the subscription serves: the current plan from a week back to the end
- * of next month. Skipped blocks vanish (they are not happening); everything
- * else is the schedule as it stands right now, so a drag that rearranges the
- * plan flows into the calendar on its next refresh.
+ * What the subscription serves: the same picture as the Time calendar, from a
+ * week back to the end of next month.
+ *
+ *   - committed time appears as it actually happened — real slot, real
+ *     length, the note carried into the event
+ *   - blocks still pending appear as the plan they are
+ *   - a done block does NOT also appear at its planned slot: its entries
+ *     answer for it, and showing both would double the day
+ *   - skipped work vanishes — it is not happening
+ *
+ * An entry logged without a start time (a timerless total) becomes an
+ * all-day event rather than being pinned to an invented hour.
  */
-function feedBlocks(personId) {
+function feedItems(personId) {
   const today = todayLondon();
   const from = addDays(today, -7);
   const to = `${cap.shiftPeriod(today.slice(0, 7), 2)}-01`;
-  const blocks = decorate(blocksFor(personId, from, to))
-    .filter((b) => b.status !== 'skipped' && b.start);
-  return blocks.map((b) => ({
-    id: b.id,
-    date: b.date,
-    start: b.start,
-    end: fromMinOfDayLocal(toMinOfDayLocal(b.start) + b.minutes),
-    minutes: b.minutes,
-    label: b.label,
-    deliverable: b.deliverable_name || '',
-    contract_name: b.contract_name || '',
-    anchored: b.anchored,
-    status: b.status,
-  }));
+
+  const planned = decorate(blocksFor(personId, from, to))
+    .filter((b) => b.status === 'pending' && b.start)
+    .map((b) => ({
+      uid: `ledger-block-${b.id}@emotio`,
+      date: b.date,
+      start: b.start,
+      end: fromMinOfDayLocal(toMinOfDayLocal(b.start) + b.minutes),
+      minutes: b.minutes,
+      label: b.label,
+      deliverable: `${b.deliverable_name || ''} · planned`,
+      contract_name: b.contract_name || '',
+      anchored: b.anchored,
+    }));
+
+  const logged = entriesFor(personId, from, to)
+    .filter((e) => e.source !== 'skip')
+    .map((e) => {
+      const label = e.contract_name
+        ? `${e.contract_name}${e.deliverable_name ? ` — ${e.deliverable_name}` : ''}`
+        : (e.deliverable_name || 'Logged time');
+      return {
+        uid: `ledger-entry-${e.id}@emotio`,
+        date: e.date,
+        start: e.start,
+        end: e.start ? fromMinOfDayLocal(toMinOfDayLocal(e.start) + e.minutes) : null,
+        all_day: !e.start,
+        minutes: e.minutes,
+        label: `✓ ${label}`,
+        deliverable: [e.note, 'logged'].filter(Boolean).join(' · '),
+        contract_name: e.contract_name || '',
+        anchored: 0,
+      };
+    });
+
+  return [...logged, ...planned]
+    .sort((a, b2) => (a.date === b2.date
+      ? String(a.start || '99').localeCompare(String(b2.start || '99'))
+      : a.date.localeCompare(b2.date)));
 }
 const fromMinOfDayLocal = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
@@ -544,6 +577,6 @@ module.exports = {
   addEntry, confirmBlock, confirmDay, skipBlock, updateEntry, deleteEntry, moveBlock,
   startTimer, stopTimer, cancelTimer, currentTimer,
   variance, loggedHours,
-  calendarToken, personByToken, feedBlocks,
+  calendarToken, personByToken, feedItems,
   _internal: { isDate, isTime, parseUtc, londonParts },
 };

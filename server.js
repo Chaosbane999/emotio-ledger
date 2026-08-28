@@ -218,12 +218,9 @@ app.get('/calendar/:token.ics', (req, res) => {
   const ics = schedule.toIcs({
     person,
     period: 'live',
-    blocks: time.feedBlocks(person.id).map((b) => ({
-      ...b,
-      // subscriptions match events by UID: keyed to the block id, an update
-      // replaces the event instead of duplicating it
-      uid: `ledger-block-${b.id}@emotio`,
-    })),
+    // each item carries a uid keyed to its row (block or entry), so a
+    // subscription refresh updates events in place instead of duplicating
+    blocks: time.feedItems(person.id),
   });
   res.setHeader('Cache-Control', 'no-store');
   res.type('text/calendar').send(ics);

@@ -159,13 +159,34 @@ eq(T.calendarToken(1), tok, 'token is stable across calls');
 eq(T.personByToken(tok).id, 1, 'token resolves to its person');
 eq(T.personByToken('short'), null, 'short token rejected');
 eq(T.personByToken('x'.repeat(32)), null, 'wrong token rejected');
-const feed = T.feedBlocks(1);
-ok(feed.some((b) => b.id === 20), 'feed carries the upcoming block');
-ok(feed.every((b) => b.status !== 'skipped'), 'skipped blocks never reach the calendar');
-const fb = feed.find((b) => b.id === 20);
-eq(fb.end, '15:00', 'feed computes the end time (14:00 + 60m)');
+// block 20 is pending again here (its entry was deleted just above)
+let feed = T.feedItems(1);
+ok(feed.some((b) => b.uid === 'ledger-block-20@emotio'), 'feed carries the pending block as plan');
+eq(feed.find((b) => b.uid === 'ledger-block-20@emotio').end, '15:00', 'feed computes the end time (14:00 + 60m)');
 T.skipBlock(1, 21, 'not needed');
-ok(!T.feedBlocks(1).some((b) => b.id === 21), 'a skip vanishes from the feed');
+feed = T.feedItems(1);
+ok(!feed.some((b) => b.uid === 'ledger-block-21@emotio'), 'a skip vanishes from the feed');
+
+// committed time appears as it happened — and its block stops appearing as plan
+const cf20 = T.confirmBlock(1, 20, 'all done');
+feed = T.feedItems(1);
+ok(!feed.some((b) => b.uid === 'ledger-block-20@emotio'), 'a done block no longer appears as plan');
+const fe = feed.find((b) => b.uid === `ledger-entry-${cf20.id}@emotio`);
+ok(fe, 'the committed entry is in the feed');
+eq(fe.start, '14:00', 'entry appears at its real slot');
+ok(fe.label.startsWith('✓ '), 'committed events are marked');
+ok(fe.deliverable.includes('all done'), 'the note rides along');
+// a startless entry becomes an all-day event, never an invented hour
+const loose = T.addEntry(1, { date: FUT, contract_id: 10, deliverable_id: 100, minutes: 45, note: 'odds and ends' });
+feed = T.feedItems(1);
+const fl = feed.find((b) => b.uid === `ledger-entry-${loose.id}@emotio`);
+ok(fl && fl.all_day === true && fl.start === null, 'startless entry is all-day');
+const schedule = require('./schedule');
+const icsAll = schedule.toIcs({ person: { id: 1, name: 'T' }, period: 'live', blocks: feed });
+ok(icsAll.includes(`VALUE=DATE:${FUT.replace(/-/g, '')}`), 'all-day event uses DATE value');
+ok(icsAll.includes('T140000'), 'timed entry keeps its clock time');
+T.deleteEntry(1, loose.id);
+T.deleteEntry(1, cf20.id);
 
 // --- timer ------------------------------------------------------------------
 throws(() => T.startTimer(1, {}), 'timer needs contract+deliverable');

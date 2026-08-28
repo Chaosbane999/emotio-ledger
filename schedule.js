@@ -507,8 +507,13 @@ function toIcs(plan, stamp) {
       'BEGIN:VEVENT',
       `UID:${uid}`,
       `DTSTAMP:${stamp}`,
-      `DTSTART;TZID=Europe/London:${dt(b.date, b.start)}`,
-      `DTEND;TZID=Europe/London:${dt(b.date, b.end)}`,
+      // an entry with no clock time is honest as an all-day event; inventing
+      // a start hour for it would put a fiction in someone's calendar
+      ...(b.all_day
+        ? [`DTSTART;VALUE=DATE:${b.date.replace(/-/g, '')}`,
+           `DTEND;VALUE=DATE:${nextDay(b.date)}`]
+        : [`DTSTART;TZID=Europe/London:${dt(b.date, b.start)}`,
+           `DTEND;TZID=Europe/London:${dt(b.date, b.end)}`]),
       fold(`SUMMARY:${esc(b.label)}`),
       fold(`DESCRIPTION:${esc(`${b.deliverable} · ${(b.minutes / 60).toFixed(2)}h${b.anchored ? ' · fixed slot' : ''}`)}`),
       b.contract_name ? fold(`CATEGORIES:${esc(b.contract_name)}`) : null,
@@ -519,6 +524,12 @@ function toIcs(plan, stamp) {
 
   lines.push('END:VCALENDAR');
   return lines.filter(Boolean).join('\r\n') + '\r\n';
+}
+
+function nextDay(iso) {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10).replace(/-/g, '');
 }
 
 module.exports = { planPerson, toIcs, expand, dayWindows };
