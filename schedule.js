@@ -490,6 +490,9 @@ function fold(line) {
 }
 
 function toIcs(plan, stamp) {
+  // every VEVENT must carry a DTSTAMP — Google refuses feeds without one, so
+  // a caller that doesn't provide it gets now rather than "undefined"
+  stamp = stamp || `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}Z`;
   const dt = (date, time) => `${date.replace(/-/g, '')}T${time.replace(':', '')}00`;
   const lines = [
     'BEGIN:VCALENDAR', 'VERSION:2.0', 'CALSCALE:GREGORIAN',
