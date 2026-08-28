@@ -1098,7 +1098,9 @@ async function renderSchedule() {
       <button class="btn small ${plan.committed ? '' : 'primary'}" id="genPlan">
         ${plan.committed ? 'Rebuild from allocations' : 'Edit this plan'}</button>
       ${plan.committed ? '<button class="btn small danger" id="clearPlan">Discard plan</button>' : ''}
-      <a class="btn small primary" href="/api/schedule/${S.personId}/ics${P()}">Download .ics</a>
+      <button class="btn small primary" id="schedCal"
+        title="${plan.committed ? 'Subscribe once — the calendar follows this saved plan'
+          : 'The calendar carries the saved plan — save this draft first'}">📅 Send to calendar</button>
     </div>
 
     <div class="stats">
@@ -1190,6 +1192,7 @@ async function renderSchedule() {
       </div>`).join('') || '<p class="muted">Nothing scheduled this month.</p>'}</div>`;
 
   $('#schedPick').addEventListener('change', (e) => { S.personId = Number(e.target.value); renderSchedule(); });
+  $('#schedCal').addEventListener('click', () => openCalendarPanel(!plan.committed));
 
   $('#toggleRecipes').addEventListener('click', () => {
     S.showRecipes = !S.showRecipes;
@@ -1919,13 +1922,16 @@ function openEntryEditor(e) {
 
 // --- send the schedule to a calendar -----------------------------------------
 
-async function openCalendarPanel() {
+async function openCalendarPanel(isDraft) {
   document.querySelector('.tpanel')?.remove();
   const link = await timeApi('/calendar-link');
   const p = document.createElement('div');
   p.className = 'tpanel card';
   p.innerHTML = `
     <header><h2>📅 Send to calendar</h2><button class="btn small" id="tpX">✕</button></header>
+    ${isDraft ? `<p class="muted" style="padding:0 16px"><b>This month is still a draft.</b>
+      The calendar follows the saved plan, so press “Edit this plan” to save it first —
+      the subscription below then picks it up on its next refresh.</p>` : ''}
     <p class="muted" style="padding:0 16px">Subscribe once and the plan stays in step —
       re-planned blocks move in your calendar on its next refresh. Skipped work disappears.</p>
     <div class="rowline">
