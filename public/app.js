@@ -310,6 +310,16 @@ async function renderAgency() {
       </div>
     </div>
 
+    ${a.by_department && (a.by_department.design.contracts || a.by_department.marketing.contracts) ? `
+    <div class="stats">
+      ${['marketing', 'design'].map((d) => { const b = a.by_department[d]; return `
+        <div class="stat">
+          <span class="k">${d === 'design' ? 'Design' : 'Marketing'} department</span>
+          <span class="v">${units(b.allocated_units)}</span>
+          <span class="s">${b.contracts} live contract${b.contracts === 1 ? '' : 's'} · ${hrs(b.logged_hours)} logged</span>
+        </div>`; }).join('')}
+    </div>` : ''}
+
     ${overrun.length ? `<div class="banner bad"><div>
       <b>${overrun.length} contracts are allocated beyond what they're contracted for — ${units(overrunUnits)} in total.</b><br>
       Trim the allocation, or declare the extra as carry-over on the contract.
@@ -703,7 +713,15 @@ async function renderContractDetail(id) {
   const tpUsed = new Map(s.third_parties.map((t) => [t.id, t.units]));
   const isPot = c.type === 'pot';
 
-  const lineRow = (l) => `<tr data-line="${l.deliverable_id}:${l.person_id}">
+  const lineRow = (l) => l.anchor ? `<tr class="anchor-line">
+    <td>${esc(l.deliverable_name)}</td>
+    <td>${esc(l.person_name)}</td>
+    <td class="num">${hrs(l.hours)}</td>
+    <td class="progress-cell"><span class="muted" style="font-size:12px">from Fixed commitments</span></td>
+    <td class="num">£${h(l.rate)}</td>
+    <td class="num">${units(l.units)}</td>
+    <td class="num"></td>
+  </tr>` : `<tr data-line="${l.deliverable_id}:${l.person_id}">
     <td>${esc(l.deliverable_name)}</td>
     <td><select class="lp" data-d="${l.deliverable_id}" data-old="${l.person_id}">
       ${people.map((p) => `<option value="${p.id}"${p.id === l.person_id ? ' selected' : ''}>${esc(p.name)}${p.active ? '' : ' (inactive)'}</option>`).join('')}

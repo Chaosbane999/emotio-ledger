@@ -162,6 +162,73 @@ const activePeople = () =>
   db.prepare('SELECT * FROM people WHERE active = 1 AND archived = 0 ORDER BY sort_order, name').all();
 
 // ---------------------------------------------------------------------------
+// Fixed commitments (anchors) as consumed time. A commitment is real client
+// work with a cadence, so it draws down the contract like any allocation. The
+// minutes it consumes in a month must match what the scheduler actually places
+// — same cadence, same contract window — or the plan and the budget disagree.
+// ---------------------------------------------------------------------------
+
+function anchorWindowDates(contract, period) {
+  const dates = workingDates(period);
+  if (!contract) return dates;
+  let lo = dates[0]; let hi = dates[dates.length - 1];
+  if (contract.starts_on && contract.starts_on > lo) lo = contract.starts_on;
+  if (contract.ends_on && contract.ends_on < hi) hi = contract.ends_on;
+  if (contract.type === 'pot') {
+    if (contract.pot_start && `${contract.pot_start}-01` > lo) lo = `${contract.pot_start}-01`;
+    if (contract.pot_end) {
+      const [y, m] = contract.pot_end.split('-').map(Number);
+      const potEnd = `${contract.pot_end}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0')}`;
+      if (potEnd < hi) hi = potEnd;
+    }
+  }
+  return dates.filter((d) => d >= lo && d <= hi);
+}
+
+/** Minutes one anchor consumes in a period, mirroring the scheduler. */
+function anchorMinutes(anchor, contract, period) {
+  const allowed = new Set(anchorWindowDates(contract, period));
+  if (!allowed.size) return 0;
+  const buckets = weekBuckets(period);
+  const cadence = anchor.cadence || 'weekly';
+  const dow = (iso) => new Date(`${iso}T00:00:00Z`).getUTCDay();
+  let hits = 0;
+  if (cadence === 'daily') {
+    hits = buckets.flat().filter((iso) => allowed.has(iso)).length;
+  } else if (cadence === 'monthly') {
+    hits = buckets.some((wk) => wk.some((iso) => allowed.has(iso) && dow(iso) === anchor.dow)) ? 1 : 0;
+  } else {
+    const step = cadence === 'fortnightly' ? 2 : 1;
+    for (let w = 0; w < buckets.length; w += step) {
+      if (buckets[w].some((iso) => allowed.has(iso))) hits += 1;
+    }
+  }
+  return hits * anchor.minutes;
+}
+
+/** Anchor-derived allocation lines for one contract, per person. */
+function anchorLines(contract, period) {
+  const rows = db.prepare(`SELECT an.*, p.name AS person_name, p.rate
+      FROM anchors an JOIN people p ON p.id = an.person_id
+     WHERE an.contract_id = ?`).all(contract.id);
+  return rows.map((an) => {
+    const mins = anchorMinutes(an, contract, period);
+    const hours = round2(mins / 60);
+    return {
+      person_id: an.person_id,
+      person_name: an.person_name,
+      deliverable_id: null,
+      deliverable_name: `${an.label} (fixed)`,
+      hours,
+      logged_hours: 0,
+      rate: an.rate,
+      units: round2(toUnits(hours, an.rate)),
+      anchor: true,
+    };
+  }).filter((l) => l.hours > 0);
+}
+
+// ---------------------------------------------------------------------------
 // Contract reconciliation.
 // ---------------------------------------------------------------------------
 
@@ -194,6 +261,8 @@ function contractSummary(contract, period) {
     rate: r.rate,
     units: round2(toUnits(r.hours, r.rate)),
   }));
+  // fixed commitments draw down the contract too — as their own lines
+  lines.push(...anchorLines(contract, period));
 
   const tpRows = db.prepare(`
     SELECT t.id, t.name, ta.units
@@ -333,6 +402,17 @@ function agencySummary(period) {
     if (r.type === 'internal') e.allocated_internal_hours += r.hours;
     else e.allocated_client_hours += r.hours;
   }
+  // fixed commitments load a person too — client work unless the contract is internal
+  const anchorRows = db.prepare(`SELECT an.person_id, an.minutes, an.dow, an.cadence, c.*
+      FROM anchors an JOIN contracts c ON c.id = an.contract_id
+     WHERE c.archived = 0 AND c.status = 'live'`).all();
+  for (const an of anchorRows) {
+    const e = perPerson.get(an.person_id);
+    if (!e) continue;
+    const h = round2(anchorMinutes(an, an, period) / 60);
+    if (an.type === 'internal') e.allocated_internal_hours += h;
+    else e.allocated_client_hours += h;
+  }
 
   const actRows = db.prepare(
     'SELECT person_id, SUM(hours) AS hours FROM actuals WHERE period = ? GROUP BY person_id').all(period);
@@ -381,10 +461,22 @@ function agencySummary(period) {
   const constrained = staff.filter((p) => p.spare_hours < 0)
     .sort((a, b) => a.spare_hours - b.spare_hours);
 
+  // by department, for the agency KPI split
+  const byDept = { marketing: { contracts: 0, allocated_units: 0, logged_hours: 0 },
+    design: { contracts: 0, allocated_units: 0, logged_hours: 0 } };
+  for (const { contract, summary } of summaries) {
+    if (contract.status !== 'live' || contract.type === 'internal') continue;
+    const d = contract.department === 'design' ? 'design' : 'marketing';
+    byDept[d].contracts += 1;
+    byDept[d].allocated_units = round2(byDept[d].allocated_units + summary.allocated_units);
+    byDept[d].logged_hours = round2(byDept[d].logged_hours + (summary.logged_hours || 0));
+  }
+
   return {
     period,
     working_days: workingDays(period),
     staff,
+    by_department: byDept,
     contracts: summaries.map((s) => s.summary),
     totals: {
       capacity_units: round2(capacityUnits),
@@ -515,4 +607,5 @@ module.exports = {
   personCapacity, activePeople,
   contractSummary,
   agencySummary, personView,
+  anchorMinutes, anchorLines,
 };

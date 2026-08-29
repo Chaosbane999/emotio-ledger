@@ -158,8 +158,10 @@ for (const P of periods) {
     const keptMin = db.prepare(`SELECT COALESCE(SUM(b.minutes),0) m FROM schedule_blocks b
       WHERE b.person_id = ? AND b.period = ?
         AND EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = b.id)`).get(p.id, P).m;
-    const anchors = db.prepare('SELECT COALESCE(SUM(minutes),0) m FROM anchors WHERE person_id = ?')
-      .get(p.id).m / 60 * cap.weekBuckets(P).length;
+    const anchorRows = db.prepare(`SELECT an.*, c.* FROM anchors an
+      LEFT JOIN contracts c ON c.id = an.contract_id WHERE an.person_id = ?`).all(p.id);
+    const anchors = anchorRows.reduce((s2, an) =>
+      s2 + cap.anchorMinutes(an, an.id ? an : null, P) / 60, 0);
     const expect = remainMin / 60 + keptMin / 60 + anchors;
     const accounted = plan.totals.scheduled_hours + plan.totals.unplaced_hours;
     ok(near(accounted, expect, 0.02),

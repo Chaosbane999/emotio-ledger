@@ -237,6 +237,35 @@ eq(T.dayView(1, FUT).blocks.find((b) => b.id === 20).status, 'pending', 'delete 
   db.prepare('DELETE FROM allocations WHERE contract_id = 11 AND period = ?').run(PP);
 }
 
+// --- fixed commitments: what is scheduled equals what is budgeted ------------
+{
+  const cap = require('./capacity');
+  db.exec('DELETE FROM anchors');
+  db.prepare("INSERT INTO people (id,name,rate) VALUES (90,'Anchor Person',100)").run();
+  db.prepare("INSERT INTO contracts (id,name,monthly_units) VALUES (90,'Anchor C',100)").run();
+  const ins = db.prepare("INSERT INTO anchors (person_id,contract_id,label,dow,time,minutes,cadence) VALUES (90,90,?,2,'10:00',30,?)");
+  const schedule = require('./schedule');
+  for (const cad of ['daily', 'weekly', 'fortnightly', 'monthly']) {
+    db.exec('DELETE FROM anchors WHERE person_id = 90');
+    ins.run(cad, cad);
+    const c = db.prepare('SELECT * FROM contracts WHERE id = 90').get();
+    const charged = Math.round(cap.anchorLines(c, '2026-08').reduce((s2, l) => s2 + l.hours * 60, 0));
+    const placed = schedule.planPerson(90, '2026-08').blocks
+      .filter((b) => b.label.includes(cad)).reduce((s2, b) => s2 + b.minutes, 0);
+    eq(charged, placed, `anchor ${cad}: scheduled minutes == budgeted minutes`);
+  }
+  // balance arithmetic still holds with an anchor consuming the contract
+  db.exec("DELETE FROM anchors WHERE person_id = 90"); ins.run('weekly', 'weekly');
+  const c = db.prepare('SELECT * FROM contracts WHERE id = 90').get();
+  const sum = cap.contractSummary(c, '2026-08');
+  ok(sum.lines.some((l) => l.anchor), 'anchor shows as a contract line');
+  ok(Math.abs(sum.variance - (sum.available_units - sum.allocated_units)) < 0.01,
+    'balance arithmetic holds with an anchor');
+  db.exec('DELETE FROM anchors WHERE person_id = 90');
+  db.prepare('DELETE FROM contracts WHERE id = 90').run();
+  db.prepare('DELETE FROM people WHERE id = 90').run();
+}
+
 // --- calendar feed -----------------------------------------------------------
 const tok = T.calendarToken(1);
 ok(tok.length >= 24, 'token is long and random');
