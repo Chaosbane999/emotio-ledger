@@ -415,7 +415,7 @@ function rebalanceCandidates(personId, contractId, period, excludeBlockId) {
       LEFT JOIN contracts c    ON c.id = b.contract_id
       LEFT JOIN deliverables d ON d.id = b.deliverable_id
      WHERE b.person_id = ? AND b.contract_id = ? AND b.period = ?
-       AND b.date >= ? AND b.id != ? AND b.anchored = 0 AND b.draft = 0
+       AND b.date >= ? AND b.id != ? AND b.anchored = 0
      ORDER BY b.date DESC, b.start DESC`)
     .all(personId, contractId, period, todayLondon(), excludeBlockId || 0))
     .filter((b) => b.status === 'pending');
@@ -544,6 +544,35 @@ function bumpBlock(personId, blockId) {
     }
   }
   throw new Error('No free slot left this month — trim something or leave it pending.');
+}
+
+/**
+ * Is this person's plan for a contract still inside their allocation? Called
+ * after anything that grows the plan by hand — adding blocks, resizing them —
+ * because a plan that quietly exceeds the budget is exactly the drift this
+ * system exists to catch. Returns the overage and a trim proposal (excluding
+ * the block just touched: it is wanted; the question is what makes room).
+ */
+function planCheck(personId, contractId, period, excludeBlockId) {
+  cap.parsePeriod(period);
+  const contract = db.prepare('SELECT id, name, type FROM contracts WHERE id = ?').get(contractId);
+  if (!contract) throw new Error('no such contract');
+  const allocatedMin = Math.round(db.prepare(`SELECT COALESCE(SUM(hours), 0) h FROM allocations
+    WHERE person_id = ? AND contract_id = ? AND period = ?`).get(personId, contractId, period).h * 60);
+  const plannedMin = db.prepare(`SELECT COALESCE(SUM(minutes), 0) m FROM schedule_blocks
+    WHERE person_id = ? AND contract_id = ? AND period = ?`).get(personId, contractId, period).m;
+  const overMin = plannedMin - allocatedMin;
+  return {
+    contract_id: contract.id,
+    contract_name: contract.name,
+    contract_type: contract.type,
+    allocated_hours: toHours(allocatedMin),
+    planned_hours: toHours(plannedMin),
+    over_minutes: Math.max(0, overMin),
+    proposal: overMin >= 15
+      ? rebalancePlan(personId, contractId, period, overMin, excludeBlockId || 0)
+      : null,
+  };
 }
 
 /** Apply chosen rebalance rows. 0 minutes removes the block outright.
@@ -1004,7 +1033,7 @@ const fromMinOfDayLocal = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, 
 module.exports = {
   dayView, weekView, mondayOf, addDays, todayLondon,
   addEntry, confirmBlock, confirmDay, skipBlock, updateEntry, deleteEntry, moveBlock,
-  resizeBlock, rebalancePlan, applyRebalance, bumpBlock,
+  resizeBlock, rebalancePlan, applyRebalance, bumpBlock, planCheck,
   startTimer, stopTimer, cancelTimer, currentTimer,
   variance, loggedHours,
   calendarToken, personByToken, feedItems,

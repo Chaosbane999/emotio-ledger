@@ -207,6 +207,36 @@ eq(T.dayView(1, FUT).blocks.find((b) => b.id === 20).status, 'pending', 'delete 
   db.prepare('DELETE FROM schedule_blocks WHERE id = 60').run();
 }
 
+// --- planCheck: the plan cannot quietly outgrow the allocation ---------------
+{
+  const TD = T.todayLondon();
+  const PP = TD.slice(0, 7);
+  // allocation: 2h. Plan: 2h existing + 10h added by hand = 10h over.
+  db.prepare(`INSERT INTO allocations (contract_id, period, person_id, deliverable_id, hours)
+    VALUES (11, ?, 1, 101, 2)`).run(PP);
+  db.prepare(`INSERT INTO schedule_blocks (id, person_id, period, contract_id, deliverable_id, label, date, start, minutes)
+    VALUES (70, 1, ?, 11, 101, 'Client B — Ads', ?, '06:00', 120),
+           (71, 1, ?, 11, 101, 'Client B — Ads', ?, '01:00', 600)`).run(PP, TD, PP, TD);
+  // earlier fixtures may already hold blocks for this contract this month —
+  // the check is about the delta arithmetic, so measure against the baseline
+  const baseMin = db.prepare(`SELECT COALESCE(SUM(minutes),0) m FROM schedule_blocks
+    WHERE person_id = 1 AND contract_id = 11 AND period = ? AND id NOT IN (70, 71)`).get(PP).m;
+  const c = T.planCheck(1, 11, PP, 71);
+  eq(c.allocated_hours, 2, 'allocation read');
+  eq(Math.round(c.planned_hours * 60), baseMin + 720, 'plan read');
+  eq(c.over_minutes, baseMin + 720 - 120, 'overage exact');
+  ok(c.proposal, 'a proposal comes with the warning');
+  const trimmed = c.proposal.proposal.reduce((s2, x) => s2 + (x.from_minutes - x.to_minutes), 0);
+  eq(trimmed + c.proposal.unplaced_minutes, c.over_minutes, 'trim + untrimmable = overage exactly');
+  ok(!c.proposal.proposal.some((x) => x.block_id === 71), 'the block just added is never on the chopping list');
+  // inside the allocation: silence
+  db.prepare('DELETE FROM schedule_blocks WHERE id = 71').run();
+  const c2 = T.planCheck(1, 11, PP, 0);
+  eq(c2.over_minutes, Math.max(0, baseMin + 120 - 120), 'overage falls with the plan');
+  db.prepare('DELETE FROM schedule_blocks WHERE id = 70').run();
+  db.prepare('DELETE FROM allocations WHERE contract_id = 11 AND period = ?').run(PP);
+}
+
 // --- calendar feed -----------------------------------------------------------
 const tok = T.calendarToken(1);
 ok(tok.length >= 24, 'token is long and random');

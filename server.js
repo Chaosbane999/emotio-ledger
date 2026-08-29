@@ -350,6 +350,10 @@ app.post('/api/time/:id/resize-block', ok((req, res) => {
 app.post('/api/time/:id/bump-block', ok((req, res) => {
   res.json(time.bumpBlock(personParam(req), Number(req.body.block_id)));
 }));
+app.get('/api/time/:id/plan-check', ok((req, res) => {
+  res.json(time.planCheck(personParam(req), Number(req.query.contract_id),
+    String(req.query.period || period(req)), Number(req.query.exclude) || 0));
+}));
 app.get('/api/time/:id/rebalance', ok((req, res) => {
   res.json(time.rebalancePlan(personParam(req), Number(req.query.contract_id),
     String(req.query.period || ''), Number(req.query.delta), Number(req.query.exclude) || 0));

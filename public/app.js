@@ -1370,16 +1370,18 @@ async function renderSchedule() {
   });
 
   $('#addBlock')?.addEventListener('click', async () => {
+    const contractId = Number($('#nbC').value) || null;
     await api('/api/schedule/block', { body: {
       person_id: S.personId, period: S.period,
-      contract_id: Number($('#nbC').value) || null,
+      contract_id: contractId,
       deliverable_id: Number($('#nbD').value) || null,
       date: $('#nbDate').value, start: $('#nbStart').value,
       minutes: Math.round(Number($('#nbH').value) * 4) * 15,
       draft: state === 'draft',
     } });
     toast('Block added.');
-    renderSchedule();
+    await renderSchedule();
+    maybePlanCheck(contractId, null);
   });
 
   if (editing) renderSchedEditor(plan, dates);
@@ -2881,6 +2883,9 @@ function wireSchedDrag(plan) {
       if (!d.moved) { openBlockEditor(d.block); return; }
       if (d.kind === 'resize' && d.mins && d.mins !== d.block.minutes) {
         await timeApi('/resize-block', { body: { block_id: d.block.id, minutes: d.mins } });
+        await renderSchedule();
+        if (d.mins > d.block.minutes) maybePlanCheck(d.block.contract_id, d.block.id);
+        return;
       } else if (d.kind === 'move' && d.slot) {
         await timeApi('/move-block', { body: { block_id: d.block.id, date: d.slot.date, start: fromMinOfDay(d.slot.min) } });
       }
@@ -2899,6 +2904,51 @@ function wireSchedDrag(plan) {
     const rect = grid.getBoundingClientRect();
     const min = Math.max(lo, Math.round((ev.clientY - rect.top) / T_PPM / T_SNAP) * T_SNAP + lo);
     openNewBlockPanel(day.dataset.date, fromMinOfDay(min), plan.state === 'draft');
+  });
+}
+
+/**
+ * After the plan grows by hand, ask whether it still fits the allocation.
+ * Over budget → a panel names the overage and offers to trim other blocks
+ * for that contract; the block just touched is never on the chopping list.
+ */
+async function maybePlanCheck(contractId, excludeBlockId) {
+  if (!contractId) return;
+  let c;
+  try {
+    c = await timeApi(`/plan-check?contract_id=${contractId}&period=${S.period}&exclude=${excludeBlockId || 0}`);
+  } catch (e) { return; }
+  if (!c.over_minutes) return;
+  document.querySelector('.tpanel')?.remove();
+  const r = c.proposal || { proposal: [], unplaced_minutes: c.over_minutes };
+  const p = document.createElement('div');
+  p.className = 'tpanel card';
+  p.innerHTML = `
+    <header><h2>Over the allocation</h2><button class="btn small" id="tpX">✕</button></header>
+    <div class="tmeta">${esc(c.contract_name)}: <b>${hm(Math.round(c.planned_hours * 60))}</b> planned
+      of ${hm(Math.round(c.allocated_hours * 60))} allocated — ${hm(c.over_minutes)} over</div>
+    ${r.proposal.length ? `<div style="padding:0 16px">
+      ${r.proposal.map((x, i) => `<label class="rebrow">
+        <input type="checkbox" class="rbPick" data-i="${i}" checked>
+        <span>${niceDay(x.date)}${x.start ? ` ${x.start}` : ''} — ${esc(x.label)}</span>
+        <b>${hm(x.from_minutes)} → ${x.to_minutes === 0 ? 'removed' : hm(x.to_minutes)}</b>
+      </label>`).join('')}</div>` : ''}
+    ${r.unplaced_minutes ? `<p class="muted" style="padding:8px 16px 0">${hm(r.unplaced_minutes)} has nothing
+      left to trim — leave the plan over, or raise the allocation on the contract page.</p>` : ''}
+    <div class="rowline"><span class="spacer"></span>
+      <button class="btn small" id="rbNo">Leave it over</button>
+      ${r.proposal.length ? '<button class="btn primary small" id="rbGo">Trim to fit</button>' : ''}</div>`;
+  view().appendChild(p);
+  $('#tpX').addEventListener('click', () => p.remove());
+  $('#rbNo').addEventListener('click', () => p.remove());
+  $('#rbGo')?.addEventListener('click', async () => {
+    const changes = [...p.querySelectorAll('.rbPick')].filter((cb) => cb.checked)
+      .map((cb) => { const x = r.proposal[Number(cb.dataset.i)]; return { block_id: x.block_id, minutes: x.to_minutes }; });
+    if (!changes.length) { p.remove(); return; }
+    try {
+      await timeApi('/rebalance', { body: { changes } });
+      p.remove(); toast('Trimmed to fit the allocation.'); renderSchedule();
+    } catch (err) { toast(err.message, true); }
   });
 }
 
@@ -2926,16 +2976,18 @@ function openNewBlockPanel(date, start, isDraft) {
   view().appendChild(p);
   $('#tpX').addEventListener('click', () => p.remove());
   $('#nwGo').addEventListener('click', async () => {
+    const contractId = Number($('#nwC').value) || null;
     try {
       await api('/api/schedule/block', { body: {
         person_id: S.personId, period: S.period,
-        contract_id: Number($('#nwC').value) || null,
+        contract_id: contractId,
         deliverable_id: Number($('#nwD').value) || null,
         date, start: $('#nwStart').value || start,
         minutes: Math.round(Number($('#nwH').value) * 4) * 15,
         draft: isDraft,
       } });
-      p.remove(); toast('Added to the plan.'); renderSchedule();
+      p.remove(); toast('Added to the plan.'); await renderSchedule();
+      maybePlanCheck(contractId, null);
     } catch (err) { toast(err.message, true); }
   });
 }
@@ -2970,7 +3022,8 @@ function openBlockEditor(b) {
         await timeApi('/move-block', { body: { block_id: b.id, date, start } });
       }
       if (minutes > b.minutes) await timeApi('/resize-block', { body: { block_id: b.id, minutes } });
-      p.remove(); toast('Saved.'); renderSchedule();
+      p.remove(); toast('Saved.'); await renderSchedule();
+      if (minutes > b.minutes) maybePlanCheck(b.contract_id, b.id);
     } catch (err) { toast(err.message, true); }
   });
 }
