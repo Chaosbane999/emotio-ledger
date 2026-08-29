@@ -206,8 +206,11 @@ if (periods.length >= 2) {
     SELECT block_id FROM time_entries WHERE block_id IS NOT NULL GROUP BY block_id
     HAVING SUM(source = 'skip') > 0 AND SUM(source != 'skip') > 0`).all();
   ok(mixed.length === 0, 'no block is both skipped and worked');
+  // orphaned skips (their block deleted by a plan rebuild) all share a NULL
+  // block_id — they are separate events, not one block skipped twice
   const doubleSkip = db.prepare(`
-    SELECT block_id FROM time_entries WHERE source = 'skip' GROUP BY block_id HAVING COUNT(*) > 1`).all();
+    SELECT block_id FROM time_entries WHERE source = 'skip' AND block_id IS NOT NULL
+     GROUP BY block_id HAVING COUNT(*) > 1`).all();
   ok(doubleSkip.length === 0, 'no block is skipped twice');
 
   const timeMod = require('./time');
