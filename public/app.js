@@ -852,7 +852,8 @@ async function renderContractDetail(id) {
         <thead><tr><th>Who</th><th>What</th><th>When</th><th class="num">Length</th><th></th></tr></thead>
         <tbody>${anchors.length ? anchors.map((x) => `<tr>
           <td>${esc(x.person_name)}</td><td>${esc(x.label)}</td>
-          <td>${DOW_NAMES[x.dow]} ${esc(x.time)}</td>
+          <td>${x.cadence === 'daily' ? 'Every day'
+            : `${x.cadence === 'fortnightly' ? 'Every other ' : x.cadence === 'monthly' ? 'Monthly, ' : ''}${DOW_NAMES[x.dow]}`} ${esc(x.time)}</td>
           <td class="num">${hrs(x.minutes / 60)}</td>
           <td class="num"><button class="btn small danger dela" data-a="${x.id}">Remove</button></td>
         </tr>`).join('') : '<tr><td colspan="5" class="muted">None on this contract.</td></tr>'}</tbody>
@@ -861,7 +862,12 @@ async function renderContractDetail(id) {
         <div class="rowline"><label>Add</label>
           <select id="naP">${people.filter((p) => p.active).map((p) =>
             `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
-          <input type="text" id="naLabel" placeholder="e.g. Weekly call" style="width:170px">
+          <input type="text" id="naLabel" placeholder="e.g. Weekly call" style="width:150px">
+          <select id="naCad">
+            <option value="daily">Daily</option>
+            <option value="weekly" selected>Weekly</option>
+            <option value="fortnightly">Fortnightly</option>
+            <option value="monthly">Monthly</option></select>
           <select id="naDow">${[1, 2, 3, 4, 5].map((x) => `<option value="${x}">${DOW_NAMES[x]}</option>`).join('')}</select>
           <input type="time" id="naTime" value="10:00" style="width:100px">
           <input type="number" id="naMin" value="60" step="15" min="15"><span class="muted">min</span>
@@ -960,6 +966,9 @@ function wireContractDetail(id, deliverables) {
     reload();
   }));
 
+  $('#naCad')?.addEventListener('change', (e) => {
+    $('#naDow').style.display = e.target.value === 'daily' ? 'none' : '';
+  });
   const addA = $('#addAnchor');
   if (addA) addA.addEventListener('click', async () => {
     const label = $('#naLabel').value.trim();
