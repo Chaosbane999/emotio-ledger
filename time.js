@@ -97,6 +97,29 @@ function decorate(blocks) {
   });
 }
 
+/**
+ * What this person can log against: only the contracts they are allocated to
+ * this period, each carrying only the deliverables allocated to them within
+ * it. The timer and log forms build from this — nobody types time against
+ * work that was never theirs.
+ */
+function assignmentsFor(personId, period) {
+  const rows = db.prepare(`
+    SELECT DISTINCT a.contract_id, c.name AS contract_name,
+           a.deliverable_id, d.name AS deliverable_name
+      FROM allocations a
+      JOIN contracts c    ON c.id = a.contract_id AND c.archived = 0
+      JOIN deliverables d ON d.id = a.deliverable_id
+     WHERE a.person_id = ? AND a.period = ? AND a.hours > 0
+     ORDER BY c.name, d.name`).all(personId, period);
+  const m = new Map();
+  for (const r of rows) {
+    if (!m.has(r.contract_id)) m.set(r.contract_id, { contract_id: r.contract_id, name: r.contract_name, deliverables: [] });
+    m.get(r.contract_id).deliverables.push({ id: r.deliverable_id, name: r.deliverable_name });
+  }
+  return [...m.values()];
+}
+
 function dayView(personId, date) {
   if (!isDate(date)) throw new Error('bad date');
   const entries = entriesFor(personId, date, date);
@@ -108,6 +131,7 @@ function dayView(personId, date) {
     blocks,
     entries,
     timer: currentTimer(personId),
+    assignments: assignmentsFor(personId, date.slice(0, 7)),
     totals: {
       planned_minutes: blocks.reduce((s, b) => s + b.minutes, 0),
       logged_minutes: worked.reduce((s, e) => s + e.minutes, 0),
@@ -147,6 +171,7 @@ function weekView(personId, date) {
   return {
     person_id: personId, start, days, blocks, entries,
     timer: currentTimer(personId),
+    assignments: assignmentsFor(personId, date.slice(0, 7)),
     totals: {
       planned_minutes: perDay.reduce((s, d) => s + d.planned_minutes, 0),
       logged_minutes: perDay.reduce((s, d) => s + d.logged_minutes, 0),
@@ -774,12 +799,16 @@ function contractTimeReport(contractId, period) {
 }
 
 /** Time entries as CSV rows. Filters combine; hours only, never money. */
-function exportEntries({ period, contractId, personId }) {
+function exportEntries({ period, from, to, contractId, personId, department, deliverableId }) {
   const where = ["e.source != 'skip'"];
   const args = [];
   if (period) { cap.parsePeriod(period); where.push('e.date LIKE ?'); args.push(`${period}-%`); }
+  if (from) { if (!isDate(from)) throw new Error('bad from date'); where.push('e.date >= ?'); args.push(from); }
+  if (to) { if (!isDate(to)) throw new Error('bad to date'); where.push('e.date <= ?'); args.push(to); }
   if (contractId) { where.push('e.contract_id = ?'); args.push(contractId); }
   if (personId) { where.push('e.person_id = ?'); args.push(personId); }
+  if (department) { where.push('c.department = ?'); args.push(department); }
+  if (deliverableId) { where.push('e.deliverable_id = ?'); args.push(deliverableId); }
   const rows = db.prepare(`
     SELECT e.date, e.start, e.minutes, e.note, e.source,
            p.name AS person, c.name AS contract, d.name AS deliverable
@@ -796,6 +825,100 @@ function exportEntries({ period, contractId, personId }) {
       (r.minutes / 60).toFixed(2), r.minutes, r.source, q(r.note)].join(','));
   }
   return lines.join('\r\n') + '\r\n';
+}
+
+/**
+ * The reporting engine. One pass over the filtered entries, rolled up every
+ * way a client conversation needs: by contract, person, deliverable, and
+ * across time. All integer minutes internally, so every table in the report
+ * sums exactly to the headline — a client can add the columns up.
+ * Hours only; money never enters a report.
+ */
+function report({ from, to, contractId, personId, department, deliverableId }) {
+  if (!isDate(from) || !isDate(to)) throw new Error('give the report a date range');
+  if (to < from) throw new Error('the range ends before it starts');
+
+  const where = ["e.source != 'skip'", 'e.date >= ?', 'e.date <= ?'];
+  const args = [from, to];
+  if (contractId) { where.push('e.contract_id = ?'); args.push(contractId); }
+  if (personId) { where.push('e.person_id = ?'); args.push(personId); }
+  if (department) { where.push('c.department = ?'); args.push(department); }
+  if (deliverableId) { where.push('e.deliverable_id = ?'); args.push(deliverableId); }
+
+  const entries = db.prepare(`
+    SELECT e.date, e.start, e.minutes, e.note, e.source,
+           e.contract_id, e.person_id, e.deliverable_id,
+           p.name AS person, c.name AS contract, c.department,
+           COALESCE(d.name, b.label, 'Uncategorised') AS deliverable
+      FROM time_entries e
+      JOIN people p ON p.id = e.person_id
+      LEFT JOIN contracts c       ON c.id = e.contract_id
+      LEFT JOIN deliverables d    ON d.id = e.deliverable_id
+      LEFT JOIN schedule_blocks b ON b.id = e.block_id
+     WHERE ${where.join(' AND ')}
+     ORDER BY e.date, p.name, COALESCE(e.start, '99')`).all(...args);
+
+  const roll = (key, name) => {
+    const m = new Map();
+    for (const e of entries) {
+      const k = key(e);
+      if (!m.has(k)) m.set(k, { name: name(e), minutes: 0, entries: 0 });
+      const g = m.get(k);
+      g.minutes += e.minutes;
+      g.entries += 1;
+    }
+    const total = entries.reduce((s2, e) => s2 + e.minutes, 0);
+    return [...m.values()].sort((a, b) => b.minutes - a.minutes)
+      .map((g) => ({ ...g, hours: toHours(g.minutes),
+        share: total ? Math.round((g.minutes / total) * 1000) / 10 : 0 }));
+  };
+
+  // timeline grain follows the range: days for a month, weeks for a quarter,
+  // months beyond that — a chart, not a haystack
+  const span = Math.round((new Date(`${to}T00:00Z`) - new Date(`${from}T00:00Z`)) / 86400000) + 1;
+  const grain = span <= 31 ? 'day' : span <= 190 ? 'week' : 'month';
+  const bucketOf = (d) => (grain === 'day' ? d : grain === 'week' ? mondayOf(d) : d.slice(0, 7));
+  const buckets = new Map();
+  for (const e of entries) {
+    const k = bucketOf(e.date);
+    buckets.set(k, (buckets.get(k) || 0) + e.minutes);
+  }
+  // every bucket in the range appears, holes included — a silent gap in a
+  // client chart reads as missing data, an explicit zero reads as truth
+  const timeline = [];
+  if (grain === 'month') {
+    let cur = from.slice(0, 7);
+    while (cur <= to.slice(0, 7)) { timeline.push(cur); cur = cap.shiftPeriod(cur, 1); }
+  } else {
+    let cur = grain === 'week' ? mondayOf(from) : from;
+    while (cur <= to) { timeline.push(cur); cur = addDays(cur, grain === 'week' ? 7 : 1); }
+  }
+
+  const totalMinutes = entries.reduce((s2, e) => s2 + e.minutes, 0);
+  return {
+    from, to, grain,
+    filters: { contractId: contractId || null, personId: personId || null,
+      department: department || null, deliverableId: deliverableId || null },
+    totals: {
+      minutes: totalMinutes,
+      hours: toHours(totalMinutes),
+      entries: entries.length,
+      people: new Set(entries.map((e) => e.person_id)).size,
+      contracts: new Set(entries.map((e) => e.contract_id).filter(Boolean)).size,
+      days_worked: new Set(entries.map((e) => e.date)).size,
+    },
+    by_contract: roll((e) => e.contract_id ?? 0, (e) => e.contract || 'No contract'),
+    by_person: roll((e) => e.person_id, (e) => e.person),
+    by_deliverable: roll((e) => e.deliverable, (e) => e.deliverable),
+    by_department: roll((e) => e.department || 'marketing', (e) => (e.department === 'design' ? 'Design' : 'Marketing')),
+    timeline: timeline.map((k) => ({ bucket: k, minutes: buckets.get(k) || 0, hours: toHours(buckets.get(k) || 0) })),
+    entries: entries.slice(0, 500).map((e) => ({
+      date: e.date, start: e.start, minutes: e.minutes, hours: toHours(e.minutes),
+      person: e.person, contract: e.contract || '', deliverable: e.deliverable,
+      note: e.note, source: e.source,
+    })),
+    entries_truncated: Math.max(0, entries.length - 500),
+  };
 }
 
 const crypto = require('node:crypto');
@@ -881,6 +1004,6 @@ module.exports = {
   startTimer, stopTimer, cancelTimer, currentTimer,
   variance, loggedHours,
   calendarToken, personByToken, feedItems,
-  contractTimeReport, exportEntries,
+  contractTimeReport, exportEntries, report,
   _internal: { isDate, isTime, parseUtc, londonParts },
 };

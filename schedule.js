@@ -240,6 +240,20 @@ function planPerson(personId, period) {
      WHERE a.person_id = ? AND a.period = ? AND c.archived = 0 AND a.hours > 0`)
     .all(personId, period);
 
+  // Committed time is history — a rebuild plans only what is still to do.
+  // Each line's hours are reduced by what is already logged against it, and
+  // blocks that have been answered (done or skipped) keep their ground.
+  const loggedBy = new Map(db.prepare(`
+    SELECT contract_id, deliverable_id, SUM(minutes) m FROM time_entries
+     WHERE person_id = ? AND date LIKE ? AND source != 'skip'
+     GROUP BY contract_id, deliverable_id`).all(personId, `${period}-%`)
+    .map((r) => [`${r.contract_id}:${r.deliverable_id}`, r.m]));
+  const keptBlocks = db.prepare(`
+    SELECT b.* FROM schedule_blocks b
+     WHERE b.person_id = ? AND b.period = ?
+       AND EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = b.id)`)
+    .all(personId, period);
+
   // a person's own recipe wins over the agency default
   const ownRecipe = db.prepare('SELECT * FROM person_recipes WHERE person_id = ? AND deliverable_id = ?');
   const recipeFor = db.prepare('SELECT * FROM recipes WHERE deliverable_id = ?');
@@ -251,7 +265,12 @@ function planPerson(personId, period) {
 
   const wanted = [];
   const offWindow = [];
-  for (const r of rows) {
+  for (let r of rows) {
+    const loggedMin = loggedBy.get(`${r.contract_id}:${r.deliverable_id}`) || 0;
+    if (loggedMin > 0) {
+      r = { ...r, hours: Math.max(0, r.hours - loggedMin / 60) };
+      if (r.hours * 60 < GRAIN) continue;      // fully delivered — nothing left to plan
+    }
     const recipe = ownRecipe.get(personId, r.deliverable_id)
       || recipeFor.get(r.deliverable_id) || DEFAULT_RECIPE;
     const ceiling = r.contract_type === 'internal'
@@ -371,6 +390,25 @@ function planPerson(personId, period) {
       anchored: !!item.anchored,
     });
   };
+
+  // 0) committed blocks keep their ground — carve their windows out before
+  //    any fresh work is placed, and show them in the plan as what they are
+  for (const kb of keptBlocks) {
+    const day = dayOf.get(kb.date);
+    if (day && kb.start) {
+      take(day, toMin(kb.start), kb.minutes);
+      day.used += kb.minutes;
+      if (kb.contract_id) {
+        day.byContract.set(kb.contract_id, (day.byContract.get(kb.contract_id) || 0) + kb.minutes);
+      }
+    }
+    placed.push({
+      date: kb.date, start: kb.start, end: kb.start ? fromMin(toMin(kb.start) + kb.minutes) : null,
+      minutes: kb.minutes, label: kb.label, contract_id: kb.contract_id,
+      contract_name: '', deliverable_id: kb.deliverable_id, deliverable: '',
+      anchored: !!kb.anchored, kept: true,
+    });
+  }
 
   // 1) anchored first — they own their slot
   for (const item of wanted.filter((w) => w.anchored)) {

@@ -391,6 +391,16 @@ app.delete('/api/time/:id/timer', ok((req, res) => {
 app.get('/api/time-variance', ok((req, res) => {
   res.json(time.variance(String(req.query.period || period(req))));
 }));
+app.get('/api/report', ok((req, res) => {
+  res.json(time.report({
+    from: String(req.query.from || ''),
+    to: String(req.query.to || ''),
+    contractId: Number(req.query.contract_id) || null,
+    personId: Number(req.query.person_id) || null,
+    department: ['marketing', 'design'].includes(req.query.department) ? req.query.department : null,
+    deliverableId: Number(req.query.deliverable_id) || null,
+  }));
+}));
 app.get('/api/contract/:id/time-report', ok((req, res) => {
   res.json(time.contractTimeReport(Number(req.params.id), period(req)));
 }));
@@ -400,10 +410,14 @@ const sendCsv = (res, name, csv) => {
 };
 app.get('/api/export/time.csv', ok((req, res) => {
   const p = req.query.period ? String(req.query.period) : null;
-  sendCsv(res, `time-${p || 'all'}.csv`, time.exportEntries({
+  sendCsv(res, `time-${p || req.query.from || 'all'}.csv`, time.exportEntries({
     period: p,
+    from: req.query.from ? String(req.query.from) : null,
+    to: req.query.to ? String(req.query.to) : null,
     contractId: Number(req.query.contract_id) || null,
     personId: Number(req.query.person_id) || null,
+    department: ['marketing', 'design'].includes(req.query.department) ? req.query.department : null,
+    deliverableId: Number(req.query.deliverable_id) || null,
   }));
 }));
 /** A member exports their own time; the gate has already checked the id. */
@@ -703,17 +717,18 @@ app.post('/api/contracts', ok((req, res) => {
     return Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== v ? null : v;
   };
   const month = (v) => (/^\d{4}-(0[1-9]|1[0-2])$/.test(v || '') ? v : null);
+  const dept = b.department === 'design' ? 'design' : 'marketing';
   const fields = [b.name, b.exec_person_id || null, b.type || 'retainer', b.status || 'live',
     num(b.monthly_units), num(b.pot_units), month(b.pot_start), month(b.pot_end),
-    date(b.starts_on), date(b.ends_on), b.harvest_ids || '', b.notes || ''];
+    date(b.starts_on), date(b.ends_on), b.harvest_ids || '', b.notes || '', dept];
   if (b.id) {
     db.prepare(`UPDATE contracts SET name=?, exec_person_id=?, type=?, status=?, monthly_units=?,
-      pot_units=?, pot_start=?, pot_end=?, starts_on=?, ends_on=?, harvest_ids=?, notes=?
+      pot_units=?, pot_start=?, pot_end=?, starts_on=?, ends_on=?, harvest_ids=?, notes=?, department=?
       WHERE id=?`).run(...fields, b.id);
   } else {
     db.prepare(`INSERT INTO contracts (name, exec_person_id, type, status, monthly_units,
-      pot_units, pot_start, pot_end, starts_on, ends_on, harvest_ids, notes, sort_order)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 50)`).run(...fields);
+      pot_units, pot_start, pot_end, starts_on, ends_on, harvest_ids, notes, department, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 50)`).run(...fields);
   }
   res.json(listContracts(req.query.archived === '1'));
 }));
@@ -912,22 +927,32 @@ app.post('/api/schedule/:id/generate', ok((req, res) => {
   const plan = schedule.planPerson(id, p);
   if (!plan) return res.status(404).json({ error: 'no such person' });
 
-  db.prepare('DELETE FROM schedule_blocks WHERE person_id = ? AND period = ?').run(id, p);
+  // blocks someone has answered (done or skipped) are history, not plan —
+  // a rebuild replaces only what is still pending
+  db.prepare(`DELETE FROM schedule_blocks WHERE person_id = ? AND period = ?
+    AND NOT EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = schedule_blocks.id)`)
+    .run(id, p);
   const ins = db.prepare(`INSERT INTO schedule_blocks
     (person_id, period, contract_id, deliverable_id, label, date, start, minutes, anchored, manual)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`);
-  for (const b of plan.blocks) {
+  const fresh = plan.blocks.filter((b) => !b.kept);
+  for (const b of fresh) {
     ins.run(id, p, b.contract_id || null, b.deliverable_id || null,
       b.label, b.date, b.start, Math.round(b.minutes), b.anchored ? 1 : 0);
   }
-  res.json({ saved: plan.blocks.length, unplaced: plan.unplaced.length });
+  res.json({ saved: fresh.length, kept: plan.blocks.length - fresh.length, unplaced: plan.unplaced.length });
 }));
 
-/** Discard the plan and go back to the live draft. */
+/** Discard the plan — the uncommitted part. Answered blocks are the record
+ *  of what happened and survive; only still-pending plan is cleared, from the
+ *  time sheet and the calendar feed alike. */
 app.delete('/api/schedule/:id/plan', ok((req, res) => {
-  db.prepare('DELETE FROM schedule_blocks WHERE person_id = ? AND period = ?')
-    .run(Number(req.params.id), period(req));
-  res.json({ ok: true });
+  const id = Number(req.params.id);
+  const p = period(req);
+  const gone = db.prepare(`DELETE FROM schedule_blocks WHERE person_id = ? AND period = ?
+    AND NOT EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = schedule_blocks.id)`)
+    .run(id, p);
+  res.json({ discarded: gone.changes });
 }));
 
 /** Move a block to another day, change its time, or resize it. */

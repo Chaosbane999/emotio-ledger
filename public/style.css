@@ -110,11 +110,21 @@ section.view { display: flex; flex-direction: column; gap: 20px; }
 
 /* ---------- controls ---------- */
 
-select, input[type="text"], input[type="number"], input[type="password"], input[type="time"] {
+select, input[type="text"], input[type="number"], input[type="password"],
+input[type="time"], input[type="date"], input[type="month"], input[type="search"] {
   font: inherit; font-size: .88rem;
+  height: 34px; box-sizing: border-box;
   padding: 6px 9px;
   color: var(--ink); background: var(--surface);
   border: 1px solid var(--rule-2); border-radius: var(--radius);
+}
+/* the native select chrome sits oddly next to the inputs — draw our own arrow
+   so every control in a row is the same height and shape */
+select {
+  appearance: none; -webkit-appearance: none;
+  padding-right: 26px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23647975' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 9px center;
 }
 select:focus-visible, input:focus-visible, button:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 1px;
@@ -432,3 +442,27 @@ tr.tentry.skip td { opacity: 0.5; }
 
 .sep-v { width: 1px; align-self: stretch; background: var(--rule); margin: 0 4px; }
 .tpanel .conf { padding: 4px 16px; }
+
+.dept-row td { background: var(--surface-2); font-weight: 700; letter-spacing: .02em;
+  padding-top: 10px; padding-bottom: 10px; }
+.dept-row .sub { font-weight: 400; margin-left: 8px; }
+
+/* ---- Reports ------------------------------------------------------------ */
+.rep-head { display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 20px; padding: 22px; flex-wrap: wrap; }
+.rep-head h1 { font-size: 1.4rem; letter-spacing: -.02em; margin: 4px 0 2px; }
+.rep-brand { font-size: .8rem; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.rep-brand b { color: var(--accent); }
+.rep-note { max-width: 320px; font-style: italic; color: var(--muted); }
+
+/* Print: the report document IS the page; everything else stays behind */
+@media print {
+  header.top, .tbar, .no-print, .tpanel, .staging-pill { display: none !important; }
+  body { background: #fff; }
+  #view { padding: 0; }
+  .card { border: none; box-shadow: none; break-inside: avoid; }
+  .rep-head { border-bottom: 2px solid var(--accent); border-radius: 0; }
+  .scroll { max-height: none; overflow: visible; }
+  .grid2 { display: block; }
+  .grid2 .card { margin-bottom: 12px; }
+}

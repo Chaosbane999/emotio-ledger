@@ -135,6 +135,7 @@ async function render() {
     else if (S.view === 'internal') await renderInternal();
     else if (S.view === 'schedule') await renderSchedule();
     else if (S.view === 'time') await renderTime();
+    else if (S.view === 'reports') await renderReports();
     else await renderSettings();
   } catch (e) {
     view().innerHTML = `<div class="banner bad"><div><b>Something went wrong.</b><br>${esc(e.message)}</div></div>`;
@@ -593,7 +594,12 @@ async function renderContracts() {
           <th class="num">Contracted</th><th class="num">Allocated</th>
           <th style="width:150px" title="Retainers: hours logged against hours allocated, resetting each month. Pots: total drawn against the whole pot, across its window.">Progress</th>
           <th class="num">Balance</th></tr></thead>
-        <tbody id="cBody">${a.contracts.map((c) => {
+        <tbody id="cBody">${['marketing', 'design'].map((dept) => {
+          const inDept = a.contracts.filter((c) => (S.boot.contracts.find((x) => x.id === c.contract_id)?.department || 'marketing') === dept);
+          return `<tr class="dept-row"><td colspan="9">${dept === 'design' ? 'Design Department' : 'Marketing Department'}
+            <span class="sub">${inDept.length} contract${inDept.length === 1 ? '' : 's'}</span></td></tr>`
+          + (inDept.length ? '' : '<tr><td colspan="9" class="muted" style="padding-left:24px">Nothing here yet.</td></tr>')
+          + inDept.map((c) => {
           const cc = S.boot.contracts.find((x) => x.id === c.contract_id) || {};
           const ex = S.boot.people.find((p) => p.id === cc.exec_person_id);
           return `<tr class="${cc.archived ? 'archived' : ''}">
@@ -610,6 +616,7 @@ async function renderContracts() {
             <td class="num">${c.type === 'pot' ? `${units(c.pot_remaining)} left`
               : `<span class="pill ${c.balanced ? 'ok' : 'bad'}">${c.balanced ? 'balanced' : h(-c.variance) + ' over'}</span>`}</td>
           </tr>`;
+        }).join('');
         }).join('')}</tbody></table></div></div>`;
     $('#newContract').addEventListener('click', () => openContractEditor(null));
     $('#cSearch').addEventListener('input', (e) => {
@@ -994,6 +1001,11 @@ function openContractEditor(c) {
         <input type="month" id="cPotS" value="${f('pot_start')}" style="width:150px">
         <label style="min-width:auto">to</label>
         <input type="month" id="cPotE" value="${f('pot_end')}" style="width:150px"></div>
+      <div class="rowline"><label>Department</label>
+        <select id="cDept">
+          <option value="marketing"${(c?.department || 'marketing') === 'marketing' ? ' selected' : ''}>Marketing</option>
+          <option value="design"${c?.department === 'design' ? ' selected' : ''}>Design</option>
+        </select></div>
       <div class="rowline"><label>Runs from</label>
         <input type="date" id="cFrom" value="${f('starts_on')}" style="width:160px">
         <label style="min-width:auto">to</label>
@@ -1014,6 +1026,7 @@ function openContractEditor(c) {
       monthly_units: Number($('#cUnits').value), pot_units: Number($('#cPot').value),
       pot_start: $('#cPotS').value || null, pot_end: $('#cPotE').value || null,
       starts_on: $('#cFrom').value || null, ends_on: $('#cTo').value || null,
+      department: $('#cDept').value,
       harvest_ids: $('#cHarvest').value.trim(),
     };
     if (!body.name) return toast('Give the contract a name.', true);
@@ -1164,12 +1177,14 @@ async function renderSchedule() {
       <span class="spacer"></span>
       <button class="btn small" id="toggleRecipes">${
         S.showRecipes ? 'Hide how work is shaped' : 'How this person\'s work is shaped'}</button>
-      <button class="btn small ${plan.committed ? '' : 'primary'}" id="genPlan">
-        ${plan.committed ? 'Rebuild from allocations' : 'Edit this plan'}</button>
-      ${plan.committed ? '<button class="btn small danger" id="clearPlan">Discard plan</button>' : ''}
+      <button class="btn small ${plan.committed ? '' : 'primary'}" id="genPlan"
+        title="${plan.committed ? 'Re-plan what is still pending — committed time keeps its ground'
+          : 'Put this plan on the time sheet, where the team confirms it day by day'}">
+        ${plan.committed ? 'Rebuild from allocations' : 'Send to time sheet'}</button>
+      ${plan.committed ? '<button class="btn small danger" id="clearPlan" title="Clears what is still pending — committed time stays">Discard pending plan</button>' : ''}
       <button class="btn small primary" id="schedCal"
         title="${plan.committed ? 'Subscribe once — the calendar follows this saved plan'
-          : 'The calendar carries the saved plan — save this draft first'}">📅 Send to calendar</button>
+          : 'The calendar carries the saved plan — save this draft first'}">📅 Sync to Calendar</button>
     </div>
 
     <div class="stats">
@@ -1746,6 +1761,26 @@ const SRC_LABEL = { confirm: 'as planned', adjust: 'adjusted', timer: 'timer', m
 
 const timeApi = (path, opts) => api(`/api/time/${S.personId}${path}`, opts);
 
+/**
+ * Contract + task pickers built from what this person is actually allocated
+ * to — pick a contract and the task list narrows to their work on it.
+ */
+function assignSelects(assignments, cId, dId) {
+  const contracts = assignments.map((a) => `<option value="${a.contract_id}">${esc(a.name)}</option>`).join('');
+  const first = assignments[0];
+  const delivs = (a) => (a ? a.deliverables.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('') : '');
+  return {
+    html: `<select id="${cId}"${assignments.length ? '' : ' disabled'}>${contracts || '<option>No allocations this month</option>'}</select>
+      <select id="${dId}"${assignments.length ? '' : ' disabled'}>${delivs(first)}</select>`,
+    wire() {
+      $(`#${cId}`)?.addEventListener('change', () => {
+        const a = assignments.find((x) => x.contract_id === Number($(`#${cId}`).value));
+        $(`#${dId}`).innerHTML = delivs(a);
+      });
+    },
+  };
+}
+
 async function renderTime() {
   const all = S.boot.people.filter((p) => p.active);
   const people = S.me?.role === 'admin' ? all : all.filter((p) => p.id === S.me.person_id);
@@ -1770,7 +1805,7 @@ async function renderTime() {
       <button class="btn small" id="tNext">›</button>
       <b>${mode === 'day' ? niceDay(S.timeDate) : `${niceDay(v.start)} – ${niceDay(v.days[6])}`}</b>
       <span class="spacer"></span>
-      <button class="btn small" id="tCal" title="Send this schedule to your calendar">📅 Calendar</button>
+      <button class="btn small" id="tCal" title="Keep your calendar in step with this schedule">📅 Sync to Calendar</button>
       <a class="btn small" href="${S.me?.role === 'admin'
         ? `/api/export/time.csv?period=${S.timeDate.slice(0, 7)}&person_id=${S.personId}`
         : `/api/time/${S.personId}/export.csv?period=${S.timeDate.slice(0, 7)}`}" download
@@ -1793,6 +1828,7 @@ async function renderTime() {
   $('#tToday').addEventListener('click', () => { S.timeDate = todayIso(); renderTime(); });
   $('#tCal').addEventListener('click', openCalendarPanel);
 
+  S.timeAssignments = v.assignments || [];
   renderTimerBar(v.timer);
   if (mode === 'day') renderTimeDay(v); else renderTimeWeek(v);
   if (S.me?.role === 'admin') renderVariance();
@@ -1819,13 +1855,11 @@ function renderTimerBar(timer) {
       await timeApi('/timer', { method: 'DELETE' }); renderTime();
     });
   } else {
-    const contracts = S.boot.contracts.filter((c) => !c.archived && c.status === 'live');
-    const delivs = S.boot.deliverables.filter((d) => d.active);
+    const picks = assignSelects(S.timeAssignments || [], 'tmC', 'tmD');
     const logDate = S.timeDate <= todayIso() ? S.timeDate : todayIso();
     el.innerHTML = `<div class="card timerbar">
       <span class="k">Timer</span>
-      <select id="tmC">${contracts.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
-      <select id="tmD">${delivs.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select>
+      ${picks.html}
       <button class="btn small" id="tmStart">▶ Start</button>
       <span class="sep-v"></span>
       <span class="k">or log</span>
@@ -1837,6 +1871,7 @@ function renderTimerBar(timer) {
       <input type="text" id="qlNote" placeholder="note" style="width:130px">
       <button class="btn small primary" id="qlGo">Log</button>
     </div>`;
+    picks.wire();
     $('#tmStart').addEventListener('click', async () => {
       await timeApi('/timer/start', { body: { contract_id: Number($('#tmC').value), deliverable_id: Number($('#tmD').value) } });
       renderTime();
@@ -1918,11 +1953,8 @@ function renderTimeDay(v) {
               <button class="btn small danger tDel" data-e="${e.id}">✕</button></td>
           </tr>`).join('')}
       </tbody></table>` : '<p class="muted" style="padding:0 16px 16px">Nothing logged yet.</p>'}
-      <div class="rowline" style="padding:12px 16px">
-        <select id="teC">${S.boot.contracts.filter((c) => !c.archived && c.status === 'live')
-          .map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
-        <select id="teD">${S.boot.deliverables.filter((d) => d.active)
-          .map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select>
+      <div class="rowline" style="padding:12px 16px" id="teRow">
+        ${assignSelects(S.timeAssignments || [], 'teC', 'teD').html}
         <input type="time" id="teStart">
         <input type="number" id="teMins" placeholder="min" min="1" step="15" style="width:80px">
         <input type="text" id="teNote" placeholder="note" style="flex:1;min-width:120px">
@@ -1970,6 +2002,7 @@ function renderTimeDay(v) {
     const e = v.entries.find((x) => x.id === Number(b.dataset.e));
     openEntryEditor(e);
   }));
+  assignSelects(S.timeAssignments || [], 'teC', 'teD').wire();
   $('#teAdd').addEventListener('click', async () => {
     const minutes = Number($('#teMins').value);
     if (!minutes) return toast('How many minutes?', true);
@@ -2041,7 +2074,7 @@ async function openCalendarPanel(isDraft) {
   const p = document.createElement('div');
   p.className = 'tpanel card';
   p.innerHTML = `
-    <header><h2>📅 Send to calendar</h2><button class="btn small" id="tpX">✕</button></header>
+    <header><h2>📅 Sync to Calendar</h2><button class="btn small" id="tpX">✕</button></header>
     ${isDraft ? `<p class="muted" style="padding:0 16px"><b>This month is still a draft.</b>
       The calendar follows the saved plan, so press “Edit this plan” to save it first —
       the subscription below then picks it up on its next refresh.</p>` : ''}
@@ -2458,4 +2491,171 @@ function openConflictPanel(entry, hits) {
       p.remove(); toast('Sorted.'); renderTime();
     } catch (err) { toast(err.message, true); }
   });
+}
+
+// ===========================================================================
+// Reports — the client-facing view of the time data. Filter to a client, a
+// range, a person, a department; the document below the filters is the
+// deliverable: print it (or Save as PDF) and everything else on the page
+// stays behind. Hours only, by design.
+// ===========================================================================
+
+function repRange(preset) {
+  const t = todayIso();
+  const som = (p2) => `${p2}-01`;
+  const eom = (p2) => { const [y, m2] = p2.split('-').map(Number); return `${p2}-${String(new Date(Date.UTC(y, m2, 0)).getUTCDate()).padStart(2, '0')}`; };
+  const thisM = t.slice(0, 7);
+  const shift = (p2, n) => { const [y, m2] = p2.split('-').map(Number); const d = new Date(Date.UTC(y, m2 - 1 + n, 1)); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`; };
+  if (preset === 'last') { const lm = shift(thisM, -1); return [som(lm), eom(lm)]; }
+  if (preset === 'q') return [som(shift(thisM, -2)), eom(thisM)];
+  if (preset === 'year') return [`${t.slice(0, 4)}-01-01`, t];
+  return [som(thisM), eom(thisM)];
+}
+
+async function renderReports() {
+  if (!S.repFrom) [S.repFrom, S.repTo] = repRange('month');
+  const contracts = S.boot.contracts.filter((c) => !c.archived);
+  const people = S.boot.people.filter((p) => p.active);
+  const delivs = S.boot.deliverables;
+
+  view().innerHTML = `
+    <div class="tbar no-print">
+      <select id="rpPreset">
+        <option value="month">This month</option><option value="last">Last month</option>
+        <option value="q">Last 3 months</option><option value="year">This year</option>
+        <option value="custom">Custom range</option></select>
+      <input type="date" id="rpFrom" value="${S.repFrom}">
+      <span class="muted">to</span>
+      <input type="date" id="rpTo" value="${S.repTo}">
+      <select id="rpDept"><option value="">All departments</option>
+        <option value="marketing"${S.repDept === 'marketing' ? ' selected' : ''}>Marketing</option>
+        <option value="design"${S.repDept === 'design' ? ' selected' : ''}>Design</option></select>
+      <select id="rpC"><option value="">All clients</option>${contracts.map((c) =>
+        `<option value="${c.id}"${S.repC === c.id ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+      <select id="rpP"><option value="">Whole team</option>${people.map((p) =>
+        `<option value="${p.id}"${S.repP === p.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
+      <select id="rpD"><option value="">All tasks</option>${delivs.map((d) =>
+        `<option value="${d.id}"${S.repD === d.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select>
+      <span class="spacer"></span>
+      <button class="btn small" id="rpCsv">Export CSV</button>
+      <button class="btn small primary" id="rpPdf">Print / Save as PDF</button>
+    </div>
+    <div id="reportDoc"><p class="muted">Building the report…</p></div>`;
+
+  const qs = () => {
+    const parts = [`from=${S.repFrom}`, `to=${S.repTo}`];
+    if (S.repDept) parts.push(`department=${S.repDept}`);
+    if (S.repC) parts.push(`contract_id=${S.repC}`);
+    if (S.repP) parts.push(`person_id=${S.repP}`);
+    if (S.repD) parts.push(`deliverable_id=${S.repD}`);
+    return parts.join('&');
+  };
+  const run = async () => { await drawReport(qs()); };
+
+  $('#rpPreset').addEventListener('change', (e) => {
+    if (e.target.value !== 'custom') {
+      [S.repFrom, S.repTo] = repRange(e.target.value);
+      $('#rpFrom').value = S.repFrom; $('#rpTo').value = S.repTo;
+    }
+    run();
+  });
+  $('#rpFrom').addEventListener('change', (e) => { S.repFrom = e.target.value; run(); });
+  $('#rpTo').addEventListener('change', (e) => { S.repTo = e.target.value; run(); });
+  $('#rpDept').addEventListener('change', (e) => { S.repDept = e.target.value || null; run(); });
+  $('#rpC').addEventListener('change', (e) => { S.repC = Number(e.target.value) || null; run(); });
+  $('#rpP').addEventListener('change', (e) => { S.repP = Number(e.target.value) || null; run(); });
+  $('#rpD').addEventListener('change', (e) => { S.repD = Number(e.target.value) || null; run(); });
+  $('#rpCsv').addEventListener('click', () => { location.href = `/api/export/time.csv?${qs()}`; });
+  $('#rpPdf').addEventListener('click', () => window.print());
+  run();
+}
+
+async function drawReport(qs) {
+  const el = document.getElementById('reportDoc');
+  let r;
+  try { r = await api(`/api/report?${qs}`); }
+  catch (err) { el.innerHTML = `<div class="banner bad"><div>${esc(err.message)}</div></div>`; return; }
+
+  const subject = [
+    S.repC ? S.boot.contracts.find((c) => c.id === S.repC)?.name : null,
+    S.repP ? S.boot.people.find((p) => p.id === S.repP)?.name : null,
+    S.repDept ? (S.repDept === 'design' ? 'Design department' : 'Marketing department') : null,
+    S.repD ? S.boot.deliverables.find((d) => d.id === S.repD)?.name : null,
+  ].filter(Boolean).join(' · ') || 'All work';
+  const nice = (d) => new Date(`${d}T00:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+
+  const shareTable = (rows, label) => `
+    <div class="card"><header><h2>${label}</h2></header>
+    <table><thead><tr><th>${label.replace('By ', '')}</th><th class="num">Hours</th>
+      <th class="num">Share</th><th style="width:120px"></th></tr></thead>
+    <tbody>${rows.map((x) => `<tr>
+      <td>${esc(x.name)}</td><td class="num">${hrs(x.hours)}</td>
+      <td class="num">${h(x.share, 1)}%</td>
+      <td><div class="bar"><i class="used" style="width:${Math.min(100, x.share)}%"></i></div></td>
+    </tr>`).join('')}
+    <tr class="total"><td>Total</td><td class="num">${hrs(r.totals.hours)}</td><td class="num">100%</td><td></td></tr>
+    </tbody></table></div>`;
+
+  const maxT = Math.max(1, ...r.timeline.map((t2) => t2.hours));
+  const step = [1, 2, 5, 10, 20, 25, 50, 100, 200].find((st) => maxT / st <= 4) || 500;
+  const H2 = 120;
+  const px = (v2) => Math.round((v2 / maxT) * H2);
+  const ticks = []; for (let t2 = step; t2 <= maxT; t2 += step) ticks.push(t2);
+  const bLabel = (b) => (r.grain === 'month' ? monthName(b).slice(0, 3)
+    : r.grain === 'week' ? `w/c ${b.slice(8)}/${b.slice(5, 7)}` : b.slice(8));
+
+  el.innerHTML = `
+    <div class="rep-head card">
+      <div>
+        <span class="rep-brand">Emotio<b>Hours</b></span>
+        <h1>Time report — ${esc(subject)}</h1>
+        <p class="muted">${nice(r.from)} to ${nice(r.to)} · prepared ${nice(todayIso())}</p>
+      </div>
+      <div class="stats" style="margin:0">
+        <div class="stat"><span class="k">Hours delivered</span><span class="v">${hrs(r.totals.hours)}</span></div>
+        <div class="stat"><span class="k">Days worked</span><span class="v">${r.totals.days_worked}</span></div>
+        <div class="stat"><span class="k">People</span><span class="v">${r.totals.people}</span></div>
+        <div class="stat"><span class="k">Entries</span><span class="v">${r.totals.entries}</span></div>
+      </div>
+    </div>
+
+    <div class="card"><header><h2>Hours over time</h2>
+      <p>${r.grain === 'day' ? 'Each working day' : r.grain === 'week' ? 'By week' : 'By month'}</p></header>
+      <div class="tr-wrap">
+        ${ticks.map((t2) => `<div class="tr-grid" style="bottom:${22 + px(t2)}px"></div>
+          <span class="tr-tick" style="bottom:${22 + px(t2) - 8}px">${t2}&nbsp;h</span>`).join('')}
+        <div class="tr-chart">
+        ${r.timeline.map((t2) => `<div class="tr-col" title="${esc(t2.bucket)}: ${h(t2.hours)} h">
+          <div class="tr-bar" style="height:${H2}px">
+            <i class="tr-within" style="height:${px(t2.hours)}px"></i>
+            ${t2.hours > 0 && r.timeline.length <= 16 ? `<b class="tr-val" style="bottom:${px(t2.hours) + 2}px">${h(t2.hours)}</b>` : ''}
+          </div>
+          <span class="sub">${esc(bLabel(t2.bucket))}</span>
+        </div>`).join('')}
+        </div>
+      </div>
+    </div>
+
+    <div class="grid2">
+      ${S.repC ? shareTable(r.by_deliverable, 'By task') : shareTable(r.by_contract, 'By client')}
+      ${S.repP ? shareTable(r.by_contract, 'By client') : shareTable(r.by_person, 'By person')}
+    </div>
+    <div class="grid2">
+      ${S.repC ? shareTable(r.by_person, 'By person') : shareTable(r.by_deliverable, 'By task')}
+      ${!S.repDept ? shareTable(r.by_department, 'By department') : ''}
+    </div>
+
+    <div class="card"><header><h2>Work log</h2>
+      <p>${r.totals.entries} entries${r.entries_truncated ? ` — first 500 shown, the CSV export carries all` : ''}</p></header>
+      <div class="scroll"><table>
+        <thead><tr><th>Date</th><th>Person</th><th>Client</th><th>Task</th>
+          <th class="num">Hours</th><th>Note</th></tr></thead>
+        <tbody>${r.entries.map((e) => `<tr>
+          <td style="white-space:nowrap">${e.date.slice(8)}/${e.date.slice(5, 7)}</td>
+          <td>${esc(e.person)}</td><td>${esc(e.contract)}</td><td>${esc(e.deliverable)}</td>
+          <td class="num">${h(e.hours)}</td>
+          <td class="rep-note">${esc(e.note || '')}</td>
+        </tr>`).join('') || '<tr><td colspan="6" class="muted">Nothing logged in this range.</td></tr>'}</tbody>
+      </table></div>
+    </div>`;
 }

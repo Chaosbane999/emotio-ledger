@@ -275,6 +275,11 @@ db.exec(`
    WHERE deliverable_id IS NULL AND block_id IS NOT NULL;
 `);
 
+// migration: departments. Everything to date is the marketing department;
+// design is joining the time system, so contracts now say whose they are.
+try { db.exec("ALTER TABLE contracts ADD COLUMN department TEXT NOT NULL DEFAULT 'marketing'"); }
+catch (e) { /* already there */ }
+
 // migration: a private token per person lets their calendar app subscribe to
 // their schedule without a login — the token IS the credential, so it is
 // random, revocable, and never derived from anything guessable.

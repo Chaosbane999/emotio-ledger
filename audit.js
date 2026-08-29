@@ -240,7 +240,24 @@ if (periods.length >= 2) {
   }
 }
 
-// ---- 7. unit conversion, standalone -----------------------------------
+// ---- 7. reports: every rollup sums exactly to the headline ------------
+{
+  const timeMod = require('./time');
+  for (const period of periods) {
+    const days = db.prepare(`SELECT MIN(date) lo, MAX(date) hi FROM time_entries WHERE date LIKE ?`)
+      .get(`${period}-%`);
+    if (!days.lo) continue;
+    const r = timeMod.report({ from: days.lo, to: days.hi });
+    const sum = (arr) => arr.reduce((s2, x) => s2 + x.minutes, 0);
+    ok(sum(r.by_contract) === r.totals.minutes, `${period}: report by-contract sums to total`);
+    ok(sum(r.by_person) === r.totals.minutes, `${period}: report by-person sums to total`);
+    ok(sum(r.by_deliverable) === r.totals.minutes, `${period}: report by-deliverable sums to total`);
+    ok(sum(r.by_department) === r.totals.minutes, `${period}: report by-department sums to total`);
+    ok(sum(r.timeline) === r.totals.minutes, `${period}: report timeline sums to total`);
+  }
+}
+
+// ---- 8. unit conversion, standalone -----------------------------------
 for (const [hours, rate, want] of [[10, 33.30, 3.25], [2, 250, 5], [10, 100, 10], [15, 33.30, 5], [4, 250, 10]]) {
   ok(near(cap.toUnits(hours, rate), want), `toUnits(${hours}h, £${rate}) = ${want}u`);
 }
