@@ -275,6 +275,11 @@ db.exec(`
    WHERE deliverable_id IS NULL AND block_id IS NOT NULL;
 `);
 
+// migration: fixed commitments gain a cadence — daily, weekly, fortnightly or
+// monthly — where before every one was implicitly weekly.
+try { db.exec("ALTER TABLE anchors ADD COLUMN cadence TEXT NOT NULL DEFAULT 'weekly'"); }
+catch (e) { /* already there */ }
+
 // migration: a plan now has a draft stage. A suggestion is saved as draft
 // blocks the person can push around; nothing reaches the time sheet, the
 // calendar feed, or the variance numbers until they send it there.

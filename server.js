@@ -981,12 +981,13 @@ app.post('/api/anchors', ok((req, res) => {
       assertOwnContract(req, cur.contract_id);
     }
   }
+  const cadence = ['daily', 'weekly', 'fortnightly', 'monthly'].includes(b.cadence) ? b.cadence : 'weekly';
   if (b.id) {
-    db.prepare('UPDATE anchors SET person_id=?, contract_id=?, label=?, dow=?, time=?, minutes=? WHERE id=?')
-      .run(b.person_id, b.contract_id || null, b.label, num(b.dow, 2), b.time || '10:00', num(b.minutes, 60), b.id);
+    db.prepare('UPDATE anchors SET person_id=?, contract_id=?, label=?, dow=?, time=?, minutes=?, cadence=? WHERE id=?')
+      .run(b.person_id, b.contract_id || null, b.label, num(b.dow, 2), b.time || '10:00', num(b.minutes, 60), cadence, b.id);
   } else {
-    db.prepare('INSERT INTO anchors (person_id, contract_id, label, dow, time, minutes) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(b.person_id, b.contract_id || null, b.label, num(b.dow, 2), b.time || '10:00', num(b.minutes, 60));
+    db.prepare('INSERT INTO anchors (person_id, contract_id, label, dow, time, minutes, cadence) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(b.person_id, b.contract_id || null, b.label, num(b.dow, 2), b.time || '10:00', num(b.minutes, 60), cadence);
   }
   res.json({ ok: true });
 }));

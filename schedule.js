@@ -324,14 +324,33 @@ function planPerson(personId, period) {
       : { start: periodFrom, end: periodTo };
     if (!win) continue;
     const allowed = new Set(allDates.filter((iso) => iso >= win.start && iso <= win.end));
-    for (let w = 0; w < weeks; w++) {
-      if (!buckets[w].some((iso) => allowed.has(iso))) continue;
-      wanted.push({
-        minutes: a.minutes, week: w, anchored: true, dow: a.dow, time: a.time,
-        contract_id: a.contract_id, contract_name: a.contract_name || '',
-        deliverable_name: a.label, contract_type: 'retainer', allowed,
-        label: a.contract_name ? `${a.contract_name} — ${a.label}` : a.label,
-      });
+    const cadence = a.cadence || 'weekly';
+    const push = (week, dow) => wanted.push({
+      minutes: a.minutes, week, anchored: true, dow, time: a.time,
+      contract_id: a.contract_id, contract_name: a.contract_name || '',
+      deliverable_name: a.label, contract_type: 'retainer', allowed,
+      label: a.contract_name ? `${a.contract_name} — ${a.label}` : a.label,
+    });
+    if (cadence === 'daily') {
+      // one sitting every working day inside the window
+      for (let w = 0; w < weeks; w++) {
+        for (const iso of buckets[w]) {
+          if (!allowed.has(iso)) continue;
+          push(w, new Date(`${iso}T00:00:00Z`).getUTCDay());
+        }
+      }
+    } else if (cadence === 'monthly') {
+      // once a month, on the first week that carries its day
+      for (let w = 0; w < weeks; w++) {
+        if (buckets[w].some((iso) => allowed.has(iso)
+          && new Date(`${iso}T00:00:00Z`).getUTCDay() === a.dow)) { push(w, a.dow); break; }
+      }
+    } else {
+      // weekly, or fortnightly (every other week)
+      const step = cadence === 'fortnightly' ? 2 : 1;
+      for (let w = 0; w < weeks; w += step) {
+        if (buckets[w].some((iso) => allowed.has(iso))) push(w, a.dow);
+      }
     }
   }
 
