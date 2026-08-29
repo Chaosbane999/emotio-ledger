@@ -982,12 +982,83 @@ function wireContractDetail(id, deliverables) {
     renderContracts();
   });
 
+
+}
+
+/** Safari types months as text — accept 09-2026 or 2026-09, hand back YYYY-MM. */
+function normMonth(v) {
+  const t = String(v || '').trim();
+  if (!t) return null;
+  let m = t.match(/^(\d{4})[\/\-](\d{1,2})$/);
+  if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}`;
+  m = t.match(/^(\d{1,2})[\/\-](\d{4})$/);
+  if (m) return `${m[2]}-${String(m[1]).padStart(2, '0')}`;
+  return t;
+}
+
+function openContractEditor(c) {
+  const people = S.boot.people;
+  const f = (k, d = '') => esc(c?.[k] ?? d);
+  view().innerHTML = `
+    <div class="rowline"><button class="btn small" id="backE">← Back</button>
+      <h2 style="margin-left:8px">${c ? 'Edit' : 'New'} contract</h2></div>
+    <div class="card"><div class="body">
+      ${showsMoney() ? `
+      <div class="rowline"><label>Name</label>
+        <input type="text" id="cName" value="${f('name')}" style="flex:1;min-width:220px"></div>
+      <div class="rowline"><label>Owner</label>
+        <select id="cExec"><option value="">Unassigned</option>
+          ${people.map((p) => `<option value="${p.id}"${c?.exec_person_id === p.id ? ' selected' : ''}>${esc(p.name)}${p.active ? '' : ' (inactive)'}</option>`).join('')}
+        </select></div>
+      <div class="rowline"><label>Type</label>
+        <select id="cType">
+          <option value="retainer"${c?.type === 'retainer' ? ' selected' : ''}>Retainer — balances monthly</option>
+          <option value="pot"${c?.type === 'pot' ? ' selected' : ''}>Fixed pot — drawn down over a period</option>
+          <option value="internal"${c?.type === 'internal' ? ' selected' : ''}>Internal</option>
+        </select>
+        <label style="margin-left:14px">Status</label>
+        <select id="cStatus">
+          ${['live', 'hold', 'pipeline'].map((s) => `<option value="${s}"${c?.status === s ? ' selected' : ''}>${s}</option>`).join('')}
+        </select></div>
+      <div class="rowline"><label>Monthly units</label>
+        <input type="number" id="cUnits" step="0.5" min="0" value="${f('monthly_units', 0)}">
+        <span class="muted">1 unit = £${h(S.boot.settings.standard_rate)} of contract value</span></div>
+      <div class="rowline"><label>Pot units</label>
+        <input type="number" id="cPot" step="0.5" min="0" value="${f('pot_units', 0)}">
+        <label style="min-width:auto">from</label>
+        <input type="month" id="cPotS" value="${f('pot_start')}" placeholder="YYYY-MM" style="width:150px">
+        <label style="min-width:auto">to</label>
+        <input type="month" id="cPotE" value="${f('pot_end')}" placeholder="YYYY-MM" style="width:150px"></div>
+      <div class="rowline"><label>Department</label>
+        <select id="cDept">
+          <option value="marketing"${(c?.department || 'marketing') === 'marketing' ? ' selected' : ''}>Marketing</option>
+          <option value="design"${c?.department === 'design' ? ' selected' : ''}>Design</option>
+        </select></div>
+      <div class="rowline"><label>Runs from</label>
+        <input type="date" id="cFrom" value="${f('starts_on')}" style="width:160px">
+        <label style="min-width:auto">to</label>
+        <input type="date" id="cTo" value="${f('ends_on')}" style="width:160px">
+        <span class="muted">Optional. Work is only scheduled between these dates.</span></div>
+      ` : `<p class="muted" style="padding:0 16px 4px">The commercial terms — value, type, status, dates and owner —
+        are set by an administrator. You can update the notes and the Harvest mapping here, and run
+        delivery on the tabs below.</p>`}
+      <div class="rowline"><label>Harvest projects</label>
+        <input type="text" id="cHarvest" value="${f('harvest_ids')}" placeholder="comma-separated project ids" style="flex:1;min-width:220px"></div>
+      <div class="rowline"><label>Notes</label>
+        <input type="text" id="cNotes" value="${f('notes')}" style="flex:1;min-width:220px"></div>
+      <div class="rowline"><span class="spacer"></span>
+        ${c && showsMoney() ? '<button class="btn danger small" id="cDel">Archive</button>' : ''}
+        <button class="btn primary" id="cSave">Save</button></div>
+    </div></div>`;
+
+  $('#backE').addEventListener('click', () => { if (c) renderContractDetail(c.id); else { S.contractId = null; renderContracts(); } });
+
   $('#cSave').addEventListener('click', async () => {
     const body = showsMoney() ? {
       id: c?.id, name: $('#cName').value.trim(), exec_person_id: Number($('#cExec').value) || null,
       type: $('#cType').value, status: $('#cStatus').value,
       monthly_units: Number($('#cUnits').value), pot_units: Number($('#cPot').value),
-      pot_start: $('#cPotS').value || null, pot_end: $('#cPotE').value || null,
+      pot_start: normMonth($('#cPotS').value), pot_end: normMonth($('#cPotE').value),
       starts_on: $('#cFrom').value || null, ends_on: $('#cTo').value || null,
       department: $('#cDept').value,
       harvest_ids: $('#cHarvest').value.trim(),

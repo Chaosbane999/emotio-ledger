@@ -820,7 +820,14 @@ app.post('/api/contracts', ok((req, res) => {
     const d = new Date(`${v}T00:00:00Z`);
     return Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== v ? null : v;
   };
-  const month = (v) => (/^\d{4}-(0[1-9]|1[0-2])$/.test(v || '') ? v : null);
+  // Safari has no month picker — it hands users a text box, and they will
+  // reasonably type 09-2026. Accept both orders and normalise to YYYY-MM.
+  const month = (v) => {
+    const t = String(v || '').trim();
+    if (/^\d{4}-(0[1-9]|1[0-2])$/.test(t)) return t;
+    const m = t.match(/^(0?[1-9]|1[0-2])[\/\-](\d{4})$/);
+    return m ? `${m[2]}-${String(m[1]).padStart(2, '0')}` : null;
+  };
   const dept = b.department === 'design' ? 'design' : 'marketing';
 
   // A member runs delivery on their accounts, not the commercial terms. They
