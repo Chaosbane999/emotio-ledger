@@ -977,6 +977,17 @@ function wireContractDetail(id, deliverables) {
   view().querySelectorAll('.chtick').forEach((el) => el.addEventListener('change', chSave));
 }
 
+/** Safari types months as text — accept 09-2026 or 2026-09, hand back YYYY-MM. */
+function normMonth(v) {
+  const t = String(v || '').trim();
+  if (!t) return null;
+  let m = t.match(/^(\d{4})[\/\-](\d{1,2})$/);
+  if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}`;
+  m = t.match(/^(\d{1,2})[\/\-](\d{4})$/);
+  if (m) return `${m[2]}-${String(m[1]).padStart(2, '0')}`;
+  return t;
+}
+
 function openContractEditor(c) {
   const people = S.boot.people;
   const f = (k, d = '') => esc(c?.[k] ?? d);
@@ -1007,9 +1018,9 @@ function openContractEditor(c) {
       <div class="rowline"><label>Pot units</label>
         <input type="number" id="cPot" step="0.5" min="0" value="${f('pot_units', 0)}">
         <label style="min-width:auto">from</label>
-        <input type="month" id="cPotS" value="${f('pot_start')}" style="width:150px">
+        <input type="month" id="cPotS" value="${f('pot_start')}" placeholder="YYYY-MM" style="width:150px">
         <label style="min-width:auto">to</label>
-        <input type="month" id="cPotE" value="${f('pot_end')}" style="width:150px"></div>
+        <input type="month" id="cPotE" value="${f('pot_end')}" placeholder="YYYY-MM" style="width:150px"></div>
       <div class="rowline"><label>Department</label>
         <select id="cDept">
           <option value="marketing"${(c?.department || 'marketing') === 'marketing' ? ' selected' : ''}>Marketing</option>
@@ -1038,7 +1049,7 @@ function openContractEditor(c) {
       id: c?.id, name: $('#cName').value.trim(), exec_person_id: Number($('#cExec').value) || null,
       type: $('#cType').value, status: $('#cStatus').value,
       monthly_units: Number($('#cUnits').value), pot_units: Number($('#cPot').value),
-      pot_start: $('#cPotS').value || null, pot_end: $('#cPotE').value || null,
+      pot_start: normMonth($('#cPotS').value), pot_end: normMonth($('#cPotE').value),
       starts_on: $('#cFrom').value || null, ends_on: $('#cTo').value || null,
       department: $('#cDept').value,
       harvest_ids: $('#cHarvest').value.trim(),
