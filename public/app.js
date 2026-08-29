@@ -357,11 +357,12 @@ async function renderAgency() {
         </tr></thead>
         <tbody>${a.staff.map((p) => `<tr>
           <td><button class="linky" data-person="${p.person_id}">${esc(p.name)}</button>
-            <span class="sub">${pct(p.utilisation * 100)} target</span></td>
+            <span class="sub">${pct(p.utilisation * 100)} target${p.shared ? ' · shared with both departments' : ''}</span></td>
           <td class="num">£${h(p.rate)}</td>
           <td class="num">${hrs(p.available_hours)}</td>
           <td class="num">${hrs(p.client_hours)}</td>
-          <td class="num">${hrs(p.allocated_client_hours)}<span class="sub">${units(p.allocated_client_units)}</span></td>
+          <td class="num">${hrs(p.allocated_client_hours)}<span class="sub">${units(p.allocated_client_units)}</span>${
+            p.elsewhere_hours ? `<span class="sub warn">${hrs(p.elsewhere_hours)} for the other department</span>` : ''}</td>
           <td class="num">${p.allocated_internal_hours ? hrs(p.allocated_internal_hours) : '<span class="nil">—</span>'}${
             p.allocated_internal_hours > p.internal_hours + 0.005
               ? `<span class="sub warn">${hrs(p.allocated_internal_hours - p.internal_hours)} over allowance</span>` : ''}</td>
@@ -1516,7 +1517,8 @@ async function renderSettings() {
           <td><input type="text" class="pi" value="${esc(p.initials)}" style="width:56px"></td>
           <td><select class="pd">
             <option value="marketing"${(p.department || 'marketing') === 'marketing' ? ' selected' : ''}>Marketing</option>
-            <option value="design"${p.department === 'design' ? ' selected' : ''}>Design</option></select></td>
+            <option value="design"${p.department === 'design' ? ' selected' : ''}>Design</option>
+            <option value="management"${p.department === 'management' ? ' selected' : ''}>Management — shared</option></select></td>
           <td class="num"><input type="number" class="pw" step="0.5" min="0" value="${h(p.weekly_hours)}"></td>
           <td class="num"><input type="number" class="pr" step="0.1" min="0" value="${h(p.rate)}"></td>
           <td class="num"><input type="number" class="pu" step="1" min="0" max="100" value="${Math.round(p.utilisation * 100)}"></td>
