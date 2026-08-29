@@ -203,7 +203,7 @@ function capBar(usedH, capH) {
   const over = Math.max(0, usedH - capH);
   const used = Math.min(usedH, capH);
   const w = (n) => `${capH > 0 ? Math.max(0, Math.min(100, (n / capH) * 100)) : 0}%`;
-  return `<div class="bar" title="${hrs(usedH)} of ${hrs(capH)}">
+  return `<div class="bar" data-tip="${hrs(usedH)} of ${hrs(capH)}">
     <i class="used" style="width:${w(used)}"></i><i class="over" style="width:${w(over)}"></i></div>`;
 }
 
@@ -660,7 +660,7 @@ async function renderTimeReport(contractId) {
         const within = Math.min(m.logged_hours, m.allocated_hours);
         const over = Math.max(0, m.logged_hours - m.allocated_hours);
         return `<div class="tr-col ${m.period === S.period ? 'now' : ''}"
-            title="${esc(monthName(m.period))}: ${h(m.logged_hours)} h logged of ${h(m.allocated_hours)} h allocated">
+            data-tip="${esc(monthName(m.period))}: ${h(m.logged_hours)} h logged of ${h(m.allocated_hours)} h allocated">
           <div class="tr-bar" style="height:${BAR_H}px">
             <i class="tr-alloc" style="height:${px(m.allocated_hours)}px"></i>
             <i class="tr-within" style="height:${px(within)}px"></i>
@@ -1190,19 +1190,11 @@ async function renderSchedule() {
       <button class="btn small primary" id="genPlan"
         title="Build a schedule from this month's allocations and the recipes in step 1">Suggest a schedule</button>`
     : state === 'draft' ? `
-      <button class="btn small" id="sePrev">‹</button>
-      <b id="seWeekLbl"></b>
-      <button class="btn small" id="seNext">›</button>
-      <span class="spacer"></span>
       <button class="btn small" id="genPlan" title="Throw this suggestion away and build a fresh one">Suggest again</button>
       <button class="btn small danger" id="dropDraft">Discard suggestion</button>
       <button class="btn small primary" id="commitPlan"
         title="Happy with it? Put it on the time sheet — the team manages it from there">Send to time sheet</button>`
     : S.schedEdit ? `
-      <button class="btn small" id="sePrev">‹</button>
-      <b id="seWeekLbl"></b>
-      <button class="btn small" id="seNext">›</button>
-      <span class="spacer"></span>
       <button class="btn small primary" id="seDone">Done editing</button>`
     : `
       <button class="btn small primary" id="schedEdit"
@@ -2278,6 +2270,7 @@ function wireWeekDrag(v, lo) {
       if (!slot) return;
       drag.slot = slot;
       drag.el.classList.add('dragging');
+      drag.el.style.pointerEvents = 'none';   // never occlude the drop target beneath
       const grid = document.querySelector(`.tw-day[data-date="${slot.date}"] .tw-grid`);
       if (drag.el.parentElement !== grid) grid.appendChild(drag.el);
       drag.el.style.top = `${(slot.min - lo) * T_PPM}px`;
@@ -2679,7 +2672,7 @@ async function drawReport(qs) {
         ${ticks.map((t2) => `<div class="tr-grid" style="bottom:${22 + px(t2)}px"></div>
           <span class="tr-tick" style="bottom:${22 + px(t2) - 8}px">${t2}&nbsp;h</span>`).join('')}
         <div class="tr-chart">
-        ${r.timeline.map((t2) => `<div class="tr-col" title="${esc(t2.bucket)}: ${h(t2.hours)} h">
+        ${r.timeline.map((t2) => `<div class="tr-col" data-tip="${esc(t2.bucket)}: ${h(t2.hours)} h">
           <div class="tr-bar" style="height:${H2}px">
             <i class="tr-within" style="height:${px(t2.hours)}px"></i>
             ${t2.hours > 0 && r.timeline.length <= 16 ? `<b class="tr-val" style="bottom:${px(t2.hours) + 2}px">${h(t2.hours)}</b>` : ''}
@@ -2722,77 +2715,77 @@ async function drawReport(qs) {
 // ===========================================================================
 
 function renderSchedEditor(plan, dates) {
-  const weeks = [];
-  for (const d of dates) {
-    const wk = mondayOf(d);
-    if (!weeks.length || weeks[weeks.length - 1].monday !== wk) weeks.push({ monday: wk, days: [] });
-    weeks[weeks.length - 1].days.push(d);
-  }
-  if (!weeks.length) { $('#seCal').innerHTML = '<p class="muted">No working days this month.</p>'; return; }
-  S.schedWeek = Math.max(0, Math.min(S.schedWeek || 0, weeks.length - 1));
-  const week = weeks[S.schedWeek];
-  $('#seWeekLbl').textContent = `Week ${S.schedWeek + 1} of ${weeks.length} — ${niceDay(week.days[0])} to ${niceDay(week.days[week.days.length - 1])}`;
-  $('#sePrev').onclick = () => { S.schedWeek = Math.max(0, S.schedWeek - 1); renderSchedule(); };
-  $('#seNext').onclick = () => { S.schedWeek = Math.min(weeks.length - 1, S.schedWeek + 1); renderSchedule(); };
+  // every week of the month, Mon-Sun, stacked — the whole plan on one page,
+  // dragging works within a week and between weeks alike
+  const period = S.period;
+  const mondays = [...new Set(dates.map(mondayOf))].sort();
+  if (!mondays.length) { $('#seCal').innerHTML = '<p class="muted">No working days this month.</p>'; return; }
+  const inPeriod = (d) => d.slice(0, 7) === period;
 
-  const blocks = plan.blocks.filter((b) => week.days.includes(b.date));
-  let lo = 7 * 60; let hi = 19 * 60;
-  for (const b of blocks) {
-    if (!b.start) continue;
-    const s2 = toMinOfDay(b.start);
-    lo = Math.min(lo, Math.floor(s2 / 60) * 60);
-    hi = Math.max(hi, Math.ceil((s2 + b.minutes) / 60) * 60);
-  }
-  const height = (hi - lo) * T_PPM;
-  const hours = []; for (let m = lo; m <= hi; m += 60) hours.push(m);
-  const pos = (start, minutes) => `top:${(toMinOfDay(start) - lo) * T_PPM}px;height:${Math.max(18, minutes * T_PPM)}px`;
+  $('#seCal').innerHTML = mondays.map((monday) => {
+    const days = Array.from({ length: 7 }, (_, i) => timeShiftDay(monday, i));
+    const blocks = plan.blocks.filter((b) => days.includes(b.date));
+    let lo = 8 * 60; let hi = 18 * 60;
+    for (const b of blocks) {
+      if (!b.start) continue;
+      const s2 = toMinOfDay(b.start);
+      lo = Math.min(lo, Math.floor(s2 / 60) * 60);
+      hi = Math.max(hi, Math.ceil((s2 + b.minutes) / 60) * 60);
+    }
+    const height = (hi - lo) * T_PPM;
+    const hours = []; for (let m = lo; m <= hi; m += 60) hours.push(m);
+    const pos = (start, minutes) => `top:${(toMinOfDay(start) - lo) * T_PPM}px;height:${Math.max(18, minutes * T_PPM)}px`;
 
-  $('#seCal').innerHTML = `<div class="card tw-card">
-    <div class="tw-head"><div class="tw-gutter"></div>
-      ${week.days.map((d) => {
-        const dayMin = blocks.filter((b) => b.date === d).reduce((s2, b) => s2 + b.minutes, 0);
-        return `<div class="tw-col-head ${d === todayIso() ? 'today' : ''}">
-          <b>${niceDay(d)}</b><span class="sub">${hm(dayMin)} planned</span></div>`;
-      }).join('')}
-    </div>
-    <div class="tw-scroll"><div class="tw-body">
-      <div class="tw-gutter" style="height:${height}px">
-        ${hours.slice(0, -1).map((m) => `<div class="tw-hlabel" style="top:${(m - lo) * T_PPM}px">${fromMinOfDay(m)}</div>`).join('')}
+    return `<div class="card tw-card se-week" data-lo="${lo}">
+      <div class="tw-head"><div class="tw-gutter"></div>
+        ${days.map((d) => {
+          const dayMin = blocks.filter((b) => b.date === d).reduce((s2, b) => s2 + b.minutes, 0);
+          const off = !inPeriod(d);
+          return `<div class="tw-col-head ${d === todayIso() ? 'today' : ''} ${off ? 'off' : ''}">
+            <b>${niceDay(d)}</b><span class="sub">${off ? '—' : `${hm(dayMin)} planned`}</span></div>`;
+        }).join('')}
       </div>
-      ${week.days.map((d) => `<div class="tw-day" data-date="${d}">
-        <div class="tw-grid" style="height:${height}px">
-          ${hours.slice(0, -1).map((m) => `<div class="tw-hour" style="top:${(m - lo) * T_PPM}px"></div>`).join('')}
-          ${blocks.filter((b) => b.date === d && b.start).map((b) => b.accounted ? `
-            <div class="tw-ghost done" style="${pos(b.start, b.minutes)}" title="Committed — the record, not the plan">
-              <span>${esc(b.label)}</span><em>${hm(b.minutes)} ✓</em></div>` : `
-            <div class="tw-entry plan${b.anchored ? ' fixed' : ''}" data-kind="sblock" data-id="${b.id}"
-              style="${pos(b.start, b.minutes)}" title="drag to move · drag the lower edge to resize · click for exact times">
-              <span>${esc(b.label)}</span><em>${hm(b.minutes)}</em>
-              <div class="tw-resize" data-kind="sresize" data-id="${b.id}"></div>
-            </div>`).join('')}
+      <div class="tw-body">
+        <div class="tw-gutter" style="height:${height}px">
+          ${hours.slice(0, -1).map((m) => `<div class="tw-hlabel" style="top:${(m - lo) * T_PPM}px">${fromMinOfDay(m)}</div>`).join('')}
         </div>
-      </div>`).join('')}
-    </div></div>
-    <p class="muted" style="padding:8px 16px">Committed blocks (✓) are the record and stay put.
-      The quarter-hour grain applies; a drop that overlaps another block is refused by name.</p>
-  </div>`;
+        ${days.map((d) => `<div class="tw-day ${inPeriod(d) ? '' : 'tw-off'}" data-date="${inPeriod(d) ? d : ''}">
+          <div class="tw-grid" style="height:${height}px">
+            ${hours.slice(0, -1).map((m) => `<div class="tw-hour" style="top:${(m - lo) * T_PPM}px"></div>`).join('')}
+            ${blocks.filter((b) => b.date === d && b.start).map((b) => b.accounted ? `
+              <div class="tw-ghost done" style="${pos(b.start, b.minutes)}" data-tip="Committed — the record, not the plan">
+                <span>${esc(b.label)}</span><em>${hm(b.minutes)} ✓</em></div>` : `
+              <div class="tw-entry plan${b.anchored ? ' fixed' : ''}" data-kind="sblock" data-id="${b.id}"
+                style="${pos(b.start, b.minutes)}">
+                <span>${esc(b.label)}</span><em>${hm(b.minutes)}</em>
+                <div class="tw-resize" data-kind="sresize" data-id="${b.id}"></div>
+              </div>`).join('')}
+          </div>
+        </div>`).join('')}
+      </div>
+    </div>`;
+  }).join('') + `<p class="muted" style="padding:0 4px 12px">Drag a block anywhere in the month —
+    between weeks included. Drag the lower edge to resize, click for exact times.
+    Committed blocks (✓) are the record and stay put.</p>`;
 
-  wireSchedDrag(plan, lo);
+  wireSchedDrag(plan);
 }
 
-function wireSchedDrag(plan, lo) {
-  const body = view().querySelector('#seCal .tw-body');
-  if (!body) return;
+function wireSchedDrag(plan) {
+  const root = document.getElementById('seCal');
+  if (!root) return;
   let drag = null;
+  const loOf = (el) => Number(el.closest('.se-week')?.dataset.lo || 480);
   const slotOf = (ev) => {
     const day = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('#seCal .tw-day');
-    if (!day) return null;
+    if (!day || day.classList.contains('tw-off') || !day.dataset.date) return null;
+    const lo = loOf(day);
     const rect = day.querySelector('.tw-grid').getBoundingClientRect();
     const min = Math.round((ev.clientY - rect.top) / T_PPM / T_SNAP) * T_SNAP + lo;
-    return { date: day.dataset.date, min: Math.max(lo, min) };
+    return { date: day.dataset.date, min: Math.max(lo, min), lo };
   };
 
-  body.addEventListener('pointerdown', (ev) => {
+  root.addEventListener('pointerdown', (ev) => {
     const t = ev.target.closest('[data-kind]');
     if (!t) return;
     const b = plan.blocks.find((x) => x.id === Number(t.dataset.id));
@@ -2805,13 +2798,19 @@ function wireSchedDrag(plan, lo) {
         startX: ev.clientX, startY: ev.clientY, moved: false };
     }
     ev.preventDefault();
-    try { body.setPointerCapture(ev.pointerId); } catch (e) { /* synthetic pointers */ }
+    try { root.setPointerCapture(ev.pointerId); } catch (e) { /* synthetic pointers */ }
   });
 
-  body.addEventListener('pointermove', (ev) => {
+  root.addEventListener('pointermove', (ev) => {
     if (!drag) return;
     if (Math.abs(ev.clientX - (drag.startX ?? ev.clientX)) + Math.abs(ev.clientY - drag.startY) > 4) drag.moved = true;
     if (!drag.moved) return;
+    // a stacked month is taller than the screen — carrying a block to the
+    // edge scrolls the page under it, like every calendar app
+    if (drag.kind === 'move') {
+      if (ev.clientY > window.innerHeight - 70) window.scrollBy(0, 18);
+      else if (ev.clientY < 130) window.scrollBy(0, -18);
+    }
     if (drag.kind === 'resize') {
       const mins = Math.max(T_SNAP,
         Math.round((drag.block.minutes * T_PPM + ev.clientY - drag.startY) / T_PPM / T_SNAP) * T_SNAP);
@@ -2822,13 +2821,14 @@ function wireSchedDrag(plan, lo) {
       if (!slot) return;
       drag.slot = slot;
       drag.el.classList.add('dragging');
+      drag.el.style.pointerEvents = 'none';   // never occlude the drop target beneath
       const grid = document.querySelector(`#seCal .tw-day[data-date="${slot.date}"] .tw-grid`);
       if (drag.el.parentElement !== grid) grid.appendChild(drag.el);
-      drag.el.style.top = `${(slot.min - lo) * T_PPM}px`;
+      drag.el.style.top = `${(slot.min - slot.lo) * T_PPM}px`;
     }
   });
 
-  body.addEventListener('pointerup', async () => {
+  root.addEventListener('pointerup', async () => {
     const d = drag; drag = null;
     if (!d) return;
     try {
