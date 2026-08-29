@@ -315,7 +315,7 @@ const okAsync = (fn) => async (req, res) => {
 
 const listPeople = (withArchived) => db.prepare(
   `SELECT id, harvest_user_id, name, initials, weekly_hours, rate, utilisation, colour,
-          active, sort_order, archived, email, role,
+          active, sort_order, archived, email, role, department,
           password_hash != '' AS has_login
      FROM people ${withArchived ? '' : 'WHERE archived = 0'}
     ORDER BY archived, active = 0, sort_order, name`).all();
