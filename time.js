@@ -687,6 +687,74 @@ function loggedHours(personId, period) {
   return toHours(r.m);
 }
 
+/**
+ * Twelve months of one contract's story: hours logged against hours
+ * allocated, month by month, plus this period's split by deliverable and by
+ * person. Hours only — the report deliberately carries no money.
+ */
+function contractTimeReport(contractId, period) {
+  cap.parsePeriod(period);
+  const contract = db.prepare('SELECT id, name, type FROM contracts WHERE id = ?').get(contractId);
+  if (!contract) throw new Error('no such contract');
+
+  const months = [];
+  let cur = cap.shiftPeriod(period, -11);
+  for (let i = 0; i < 12; i++) {
+    const like = `${cur}-%`;
+    const logged = db.prepare(`SELECT COALESCE(SUM(minutes),0) m FROM time_entries
+      WHERE contract_id = ? AND date LIKE ? AND source != 'skip'`).get(contractId, like).m;
+    const allocated = db.prepare(`SELECT COALESCE(SUM(hours),0) h FROM allocations
+      WHERE contract_id = ? AND period = ?`).get(contractId, cur).h;
+    months.push({ period: cur, logged_hours: toHours(logged), allocated_hours: Math.round(allocated * 100) / 100 });
+    cur = cap.shiftPeriod(cur, 1);
+  }
+
+  const like = `${period}-%`;
+  const byDeliverable = db.prepare(`SELECT d.name, COALESCE(SUM(e.minutes),0) m, COUNT(*) n
+      FROM time_entries e LEFT JOIN deliverables d ON d.id = e.deliverable_id
+     WHERE e.contract_id = ? AND e.date LIKE ? AND e.source != 'skip'
+     GROUP BY e.deliverable_id ORDER BY m DESC`).all(contractId, like)
+    .map((r) => ({ name: r.name || 'Unmapped', hours: toHours(r.m), entries: r.n }));
+  const byPerson = db.prepare(`SELECT p.name, COALESCE(SUM(e.minutes),0) m, COUNT(*) n
+      FROM time_entries e JOIN people p ON p.id = e.person_id
+     WHERE e.contract_id = ? AND e.date LIKE ? AND e.source != 'skip'
+     GROUP BY e.person_id ORDER BY m DESC`).all(contractId, like)
+    .map((r) => ({ name: r.name, hours: toHours(r.m), entries: r.n }));
+
+  return {
+    contract_id: contract.id, contract_name: contract.name, contract_type: contract.type,
+    period, months,
+    by_deliverable: byDeliverable,
+    by_person: byPerson,
+    total_hours: toHours(byDeliverable.reduce((s, r) => s + Math.round(r.hours * 60), 0)),
+  };
+}
+
+/** Time entries as CSV rows. Filters combine; hours only, never money. */
+function exportEntries({ period, contractId, personId }) {
+  const where = ["e.source != 'skip'"];
+  const args = [];
+  if (period) { cap.parsePeriod(period); where.push('e.date LIKE ?'); args.push(`${period}-%`); }
+  if (contractId) { where.push('e.contract_id = ?'); args.push(contractId); }
+  if (personId) { where.push('e.person_id = ?'); args.push(personId); }
+  const rows = db.prepare(`
+    SELECT e.date, e.start, e.minutes, e.note, e.source,
+           p.name AS person, c.name AS contract, d.name AS deliverable
+      FROM time_entries e
+      JOIN people p ON p.id = e.person_id
+      LEFT JOIN contracts c    ON c.id = e.contract_id
+      LEFT JOIN deliverables d ON d.id = e.deliverable_id
+     WHERE ${where.join(' AND ')}
+     ORDER BY e.date, p.name, e.start`).all(...args);
+  const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const lines = ['date,start,person,contract,deliverable,hours,minutes,source,note'];
+  for (const r of rows) {
+    lines.push([r.date, r.start || '', q(r.person), q(r.contract || ''), q(r.deliverable || ''),
+      (r.minutes / 60).toFixed(2), r.minutes, r.source, q(r.note)].join(','));
+  }
+  return lines.join('\r\n') + '\r\n';
+}
+
 const crypto = require('node:crypto');
 
 /** The person's private feed token, created on first use, revocable by null-ing. */
@@ -770,5 +838,6 @@ module.exports = {
   startTimer, stopTimer, cancelTimer, currentTimer,
   variance, loggedHours,
   calendarToken, personByToken, feedItems,
+  contractTimeReport, exportEntries,
   _internal: { isDate, isTime, parseUtc, londonParts },
 };

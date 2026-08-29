@@ -454,6 +454,24 @@ function personView(personId, period) {
     period,
     capacity: cap,
     lines,
+    // the dashboard context: for each contract this person touches, the whole
+    // contract's month — allocated hours, logged hours, and who else is on it.
+    // Names and hours only; nothing here reveals a rate.
+    contract_context: Object.fromEntries([...new Set(lines.map((l) => l.contract_id))]
+      .map((cid) => {
+        const alloc = db.prepare(`SELECT p.id, p.name, p.initials, SUM(a.hours) h
+            FROM allocations a JOIN people p ON p.id = a.person_id
+           WHERE a.contract_id = ? AND a.period = ? GROUP BY p.id ORDER BY h DESC`)
+          .all(cid, period);
+        const loggedMin = db.prepare(`SELECT COALESCE(SUM(minutes),0) m FROM time_entries
+           WHERE contract_id = ? AND date LIKE ? AND source != 'skip'`)
+          .get(cid, `${period}-%`).m;
+        return [cid, {
+          allocated_hours: round2(alloc.reduce((s2, a2) => s2 + a2.h, 0)),
+          logged_hours: round2(loggedMin / 60),
+          people: alloc.map((a2) => ({ id: a2.id, name: a2.name, initials: a2.initials, hours: round2(a2.h) })),
+        }];
+      })),
     actual_by_contract: Object.fromEntries(actualByContract),
     totals: {
       client_hours: round2(clientHours),

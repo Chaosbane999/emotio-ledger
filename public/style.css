@@ -369,8 +369,8 @@ tr.tentry.skip td { opacity: 0.5; }
 .tw-hour { position: absolute; left: 0; right: 0; border-top: 1px solid var(--rule); opacity: 0.6; }
 .tw-ghost, .tw-entry { position: absolute; left: 3px; right: 3px; border-radius: 6px;
   padding: 3px 6px; font-size: 11px; line-height: 1.25; overflow: hidden; box-sizing: border-box; }
-.tw-ghost { border: 1.5px dashed var(--muted); color: var(--muted); background: transparent; }
-.tw-ghost.pending { border-color: var(--warn); color: var(--warn); cursor: grab; }
+.tw-ghost { border: 1px solid var(--accent-2); color: var(--accent); background: transparent; }
+.tw-ghost.pending { background: color-mix(in srgb, var(--accent-2) 7%, transparent); cursor: grab; }
 .tw-ghost.done, .tw-ghost.skipped { opacity: 0.35; }
 .tw-ghost.skipped { text-decoration: line-through; cursor: pointer; }
 .tw-ghost em, .tw-entry em { display: block; font-style: normal; font-weight: 600; }
@@ -403,3 +403,22 @@ tr.tentry.skip td { opacity: 0.5; }
 .rebrow { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 13px; cursor: pointer; }
 .rebrow span { flex: 1; }
 .rebrow b { white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/* teammates on a shared contract */
+.tmate { display: inline-flex; align-items: center; justify-content: center;
+  min-width: 24px; height: 24px; padding: 0 4px; margin-right: 3px;
+  border-radius: 50%; background: var(--accent-soft); color: var(--accent);
+  font-size: 11px; font-weight: 600; }
+
+/* contract time report: a year of hours, allocation as the grey backdrop */
+.tr-chart { display: flex; align-items: flex-end; gap: 8px; padding: 12px 16px 4px; }
+.tr-col { flex: 1; text-align: center; min-width: 0; }
+.tr-col .sub { display: block; margin-top: 4px; }
+.tr-col.now .sub { color: var(--accent); font-weight: 600; }
+.tr-bar { position: relative; }
+.tr-bar i { position: absolute; left: 15%; right: 15%; bottom: 0; border-radius: 3px 3px 0 0; }
+.tr-alloc { background: var(--surface-2); }
+.tr-within { background: var(--accent); opacity: 0.85; }
+.tr-over { background: var(--over); }
+.tw-total-col { background: var(--surface-2); opacity: 0.4; max-width: 90px; }
+.tw-col-head.tw-total { max-width: 90px; }

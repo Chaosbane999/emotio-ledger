@@ -493,22 +493,29 @@ async function renderPerson() {
     <div class="card">
       <header><h2>Client work</h2><p>One row per contract — click to see the deliverables inside</p></header>
       <div class="scroll"><table>
-        <thead><tr><th></th><th>Contract</th><th class="num">Hours</th>${uTh()}<th class="num">Deliverables</th></tr></thead>
-        <tbody>${byContract.length ? byContract.map((g) => `
+        <thead><tr><th></th><th>Contract</th><th class="num">My hours</th>${uTh()}
+          <th style="width:150px" title="The whole contract's month — everyone's logged hours against everyone's allocated hours">Contract progress</th>
+          <th title="Everyone working this contract this month">Team</th></tr></thead>
+        <tbody>${byContract.length ? byContract.map((g) => {
+          const cx = v.contract_context?.[g.contract_id];
+          return `
           <tr class="ct" data-grp="${g.contract_id}">
             <td class="tw"><span class="caret">▸</span></td>
             <td><button class="linky" data-contract="${g.contract_id}">${esc(g.name)}</button></td>
             <td class="num"><b>${hrs(g.hours)}</b></td>
             ${uTd(g.units)}
-            <td class="num">${g.lines.length}</td>
-          </tr>
-          ${g.lines.map((l) => `<tr class="sub-row hidden" data-of="${g.contract_id}">
+            <td>${cx ? `${capBar(cx.logged_hours, cx.allocated_hours)}
+              <span class="sub">${hrs(cx.logged_hours)} of ${hrs(cx.allocated_hours)}</span>` : ''}</td>
+            <td>${cx ? cx.people.map((tp) => `<span class="tmate" title="${esc(tp.name)} — ${hrs(tp.hours)}">${esc(tp.initials || tp.name.slice(0, 2))}</span>`).join('') : ''}</td>
+          </tr>`;
+        }).map((x, i) => x + `
+          ${byContract[i].lines.map((l) => `<tr class="sub-row hidden" data-of="${byContract[i].contract_id}">
             <td></td><td class="indent">${esc(l.deliverable_name)}</td>
-            <td class="num">${hrs(l.hours)}</td>${uTd(l.units)}<td></td>
+            <td class="num">${hrs(l.hours)}</td>${uTd(l.units)}<td></td><td></td>
           </tr>`).join('')}`).join('')
-          : `<tr><td colspan="${showsMoney() ? 5 : 4}" class="muted">Nothing allocated this month.</td></tr>`}
+          : `<tr><td colspan="${showsMoney() ? 6 : 5}" class="muted">Nothing allocated this month.</td></tr>`}
         <tr class="total"><td></td><td>Total</td><td class="num">${hrs(t.client_hours)}</td>
-          ${uTd(t.client_units)}<td></td></tr></tbody>
+          ${uTd(t.client_units)}<td></td><td></td></tr></tbody>
       </table></div>
     </div>
 
@@ -583,7 +590,9 @@ async function renderContracts() {
         <button class="btn small primary" id="newContract">New contract</button></div>
       <div class="card"><div class="scroll"><table>
         <thead><tr><th>Contract</th><th>Owner</th><th>Type</th><th>Status</th>
-          <th class="num">Contracted</th><th class="num">Allocated</th><th class="num">Balance</th></tr></thead>
+          <th class="num">Contracted</th><th class="num">Allocated</th>
+          <th style="width:150px" title="Retainers: hours logged against hours allocated, resetting each month. Pots: total drawn against the whole pot, across its window.">Progress</th>
+          <th class="num">Balance</th></tr></thead>
         <tbody id="cBody">${a.contracts.map((c) => {
           const cc = S.boot.contracts.find((x) => x.id === c.contract_id) || {};
           const ex = S.boot.people.find((p) => p.id === cc.exec_person_id);
@@ -595,6 +604,9 @@ async function renderContracts() {
               : c.status === 'pipeline' ? '<span class="pill warn">Pipeline</span>' : '<span class="pill mute">Hold</span>'}</td>
             <td class="num">${units(c.type === 'pot' ? c.pot_units : c.contracted_units)}</td>
             <td class="num">${units(c.allocated_units)}</td>
+            <td>${c.type === 'pot'
+              ? `${capBar(c.pot_drawn, c.pot_units)}<span class="sub">${h(c.pot_drawn)} of ${h(c.pot_units)} u · whole pot</span>`
+              : `${capBar(c.logged_hours, c.people_hours)}<span class="sub">${hrs(c.logged_hours)} of ${hrs(c.people_hours)} this month</span>`}</td>
             <td class="num">${c.type === 'pot' ? `${units(c.pot_remaining)} left`
               : `<span class="pill ${c.balanced ? 'ok' : 'bad'}">${c.balanced ? 'balanced' : h(-c.variance) + ' over'}</span>`}</td>
           </tr>`;
@@ -614,6 +626,46 @@ async function renderContracts() {
     return;
   }
   await renderContractDetail(S.contractId);
+}
+
+async function renderTimeReport(contractId) {
+  const el = document.getElementById('ctrReport');
+  if (!el) return;
+  const r = await api(`/api/contract/${contractId}/time-report${P()}`);
+  const max = Math.max(1, ...r.months.map((m) => Math.max(m.logged_hours, m.allocated_hours)));
+  const BAR_H = 110;
+  el.innerHTML = `
+    <header><h2>Time report</h2><p>Hours logged, month by month — grey is within the allocation, red is over</p>
+      <a class="btn small" href="/api/export/time.csv?contract_id=${contractId}${P().replace('?', '&')}" download>Export month (.csv)</a>
+      <a class="btn small" href="/api/export/time.csv?contract_id=${contractId}" download>Export all (.csv)</a>
+    </header>
+    <div class="tr-chart">
+      ${r.months.map((m) => {
+        const within = Math.min(m.logged_hours, m.allocated_hours);
+        const over = Math.max(0, m.logged_hours - m.allocated_hours);
+        const px = (v2) => Math.round((v2 / max) * BAR_H);
+        return `<div class="tr-col ${m.period === S.period ? 'now' : ''}"
+            title="${esc(monthName(m.period))}: ${h(m.logged_hours)} h logged of ${h(m.allocated_hours)} h allocated">
+          <div class="tr-bar" style="height:${BAR_H}px">
+            <i class="tr-alloc" style="height:${px(m.allocated_hours)}px"></i>
+            <i class="tr-within" style="height:${px(within)}px"></i>
+            <i class="tr-over" style="height:${px(over)}px;bottom:${px(within)}px"></i>
+          </div>
+          <span class="sub">${monthName(m.period).slice(0, 3)}</span>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="grid2" style="padding:0 16px 16px">
+      <table><thead><tr><th>Deliverable · ${esc(monthName(S.period))}</th><th class="num">Hours</th></tr></thead>
+        <tbody>${r.by_deliverable.length ? r.by_deliverable.map((d2) => `<tr>
+            <td>${esc(d2.name)}</td><td class="num">${hrs(d2.hours)}</td></tr>`).join('')
+          : '<tr><td colspan="2" class="muted">Nothing logged this month yet.</td></tr>'}
+        ${r.by_deliverable.length ? `<tr class="total"><td>Total</td><td class="num">${hrs(r.total_hours)}</td></tr>` : ''}</tbody></table>
+      <table><thead><tr><th>Person · ${esc(monthName(S.period))}</th><th class="num">Hours</th></tr></thead>
+        <tbody>${r.by_person.length ? r.by_person.map((p2) => `<tr>
+            <td>${esc(p2.name)}</td><td class="num">${hrs(p2.hours)}</td></tr>`).join('')
+          : '<tr><td colspan="2" class="muted">—</td></tr>'}</tbody></table>
+    </div>`;
 }
 
 async function renderContractDetail(id) {
@@ -677,6 +729,8 @@ async function renderContractDetail(id) {
       ${s.pot_remaining < 0 ? 'past the pot' : 'left'}, with ${s.months_left}
       month${s.months_left === 1 ? '' : 's'} to go (to ${esc(s.pot_end)}).
       A pot is drawn as the work demands, so there is no monthly target to hit.</div></div>` : ''}
+
+    <div class="card" id="ctrReport"></div>
 
     <div class="grid2">
       <div class="card">
@@ -778,6 +832,7 @@ function wireContractDetail(id, deliverables) {
   const reload = () => renderContractDetail(id);
 
   $('#backC').addEventListener('click', () => { S.contractId = null; renderContracts(); });
+  renderTimeReport(id);      // fills in behind the fold while the page is live
   $('#editC').addEventListener('click', () => openContractEditor(S.boot.contracts.find((c) => c.id === id)));
 
   const saveLine = async (deliverable_id, person_id, hours) => {
@@ -1702,6 +1757,10 @@ async function renderTime() {
       <b>${mode === 'day' ? niceDay(S.timeDate) : `${niceDay(v.start)} – ${niceDay(v.days[6])}`}</b>
       <span class="spacer"></span>
       <button class="btn small" id="tCal" title="Send this schedule to your calendar">📅 Calendar</button>
+      <a class="btn small" href="${S.me?.role === 'admin'
+        ? `/api/export/time.csv?period=${S.timeDate.slice(0, 7)}&person_id=${S.personId}`
+        : `/api/time/${S.personId}/export.csv?period=${S.timeDate.slice(0, 7)}`}" download
+        title="This month's logged time as a spreadsheet">Export</a>
       <span class="pill mute">planned ${hm(v.totals.planned_minutes)}</span>
       <span class="pill ${v.totals.logged_minutes ? '' : 'mute'}">logged ${hm(v.totals.logged_minutes)}</span>
       ${v.totals.pending ? `<span class="pill warn">${v.totals.pending} to confirm</span>` : ''}
@@ -1963,9 +2022,7 @@ const T_SNAP = 15;
 const T_PPM = 1;                    // 1px per minute -> 60px per hour
 
 function renderTimeWeek(v) {
-  const hasWeekend = v.blocks.some((b) => v.days.indexOf(b.date) > 4)
-    || v.entries.some((e) => v.days.indexOf(e.date) > 4);
-  const days = hasWeekend ? v.days : v.days.slice(0, 5);
+  const days = v.days;                     // the full week, weekend included
 
   // window: 07:00–19:00, stretched to fit whatever exists
   let lo = 7 * 60; let hi = 19 * 60;
@@ -2017,12 +2074,15 @@ function renderTimeWeek(v) {
           <b>${niceDay(d)}</b><span class="sub">${hm(per.logged_minutes)} / ${hm(per.planned_minutes)}</span>
         </div>`;
       }).join('')}
+      <div class="tw-col-head tw-total"><b>Week total</b>
+        <span class="sub">${hm(v.totals.logged_minutes)} / ${hm(v.totals.planned_minutes)}</span></div>
     </div>
     <div class="tw-scroll"><div class="tw-body">
       <div class="tw-gutter" style="height:${height}px">
         ${hours.slice(0, -1).map((m) => `<div class="tw-hlabel" style="top:${(m - lo) * T_PPM}px">${fromMinOfDay(m)}</div>`).join('')}
       </div>
       ${days.map(dayCol).join('')}
+      <div class="tw-day tw-total-col"></div>
     </div></div>
     <p class="muted" style="padding:8px 16px">Drag a block to move it · drag its lower edge to change its length ·
       click to add a note · faint outlines are the plan.</p>

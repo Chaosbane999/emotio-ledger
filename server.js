@@ -84,10 +84,12 @@ function readCookie(req, name) {
 }
 const clientIp = (req) => (req.ip || '').replace(/^::ffff:/, '');
 
-const authCookie = (req, res) => {
-  const secure = req.secure ? ' Secure;' : '';
-  res.setHeader('Set-Cookie',
-    `el_auth=${sessionToken()}; Path=/; HttpOnly; SameSite=Lax;${secure} Max-Age=31536000`);
+// The legacy shared-passcode cookie is retired. It granted admin to any
+// browser that still carried it — including a member's — which quietly
+// defeated the roles. Everyone signs in properly now; the old cookie is
+// expired on sight rather than honoured.
+const clearLegacyCookie = (res) => {
+  res.setHeader('Set-Cookie', 'el_auth=; Path=/; HttpOnly; Max-Age=0');
 };
 
 // ---- sessions ----------------------------------------------------------
@@ -116,8 +118,6 @@ function currentUser(req) {
       WHERE s.token = ?`).get(tok);
     if (row && !row.archived) return { person_id: row.person_id, role: row.role, name: row.name };
   }
-  // legacy shared-passcode cookie, so nobody is kicked out by this upgrade
-  if (readCookie(req, 'el_auth') === sessionToken()) return { person_id: null, role: 'admin', name: 'Admin' };
   return null;
 }
 
@@ -157,7 +157,8 @@ app.post('/login', (req, res) => {
 app.post('/logout', (req, res) => {
   const tok = readCookie(req, 'el_sess');
   if (tok) db.prepare('DELETE FROM sessions WHERE token = ?').run(tok);
-  res.setHeader('Set-Cookie', 'el_sess=; Path=/; HttpOnly; Max-Age=0');
+  res.setHeader('Set-Cookie', ['el_sess=; Path=/; HttpOnly; Max-Age=0',
+    'el_auth=; Path=/; HttpOnly; Max-Age=0']);
   res.json({ ok: true });
 });
 
@@ -386,6 +387,27 @@ app.delete('/api/time/:id/timer', ok((req, res) => {
 /** Admin only (the member gate never lets a member reach a path without their id). */
 app.get('/api/time-variance', ok((req, res) => {
   res.json(time.variance(String(req.query.period || period(req))));
+}));
+app.get('/api/contract/:id/time-report', ok((req, res) => {
+  res.json(time.contractTimeReport(Number(req.params.id), period(req)));
+}));
+const sendCsv = (res, name, csv) => {
+  res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+  res.type('text/csv').send(csv);
+};
+app.get('/api/export/time.csv', ok((req, res) => {
+  const p = req.query.period ? String(req.query.period) : null;
+  sendCsv(res, `time-${p || 'all'}.csv`, time.exportEntries({
+    period: p,
+    contractId: Number(req.query.contract_id) || null,
+    personId: Number(req.query.person_id) || null,
+  }));
+}));
+/** A member exports their own time; the gate has already checked the id. */
+app.get('/api/time/:id/export.csv', ok((req, res) => {
+  const p = req.query.period ? String(req.query.period) : null;
+  sendCsv(res, `my-time-${p || 'all'}.csv`,
+    time.exportEntries({ period: p, personId: personParam(req) }));
 }));
 
 app.get('/api/bootstrap', ok((req, res) => {
@@ -838,7 +860,7 @@ app.post('/api/passcode', ok((req, res) => {
   if (next !== String(req.body.confirm || '')) throw new Error('The two new passcodes do not match.');
 
   setPasscode(next);
-  authCookie(req, res);            // keep whoever changed it signed in
+  clearLegacyCookie(res);          // the changer's own el_sess session survives
   res.json({ ok: true });
 }));
 
