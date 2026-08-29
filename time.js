@@ -650,28 +650,32 @@ function cancelTimer(personId) {
 // Variance — the whole point. Planned vs logged, per contract and per person.
 // ---------------------------------------------------------------------------
 
-function variance(period) {
+function variance(period, personId) {
   cap.parsePeriod(period);
   const like = `${period}-%`;
+  // scoped to one person when asked: their contracts, their numbers — the
+  // whole-agency picture stays behind the explicit "everyone" choice
+  const pFilter = personId ? ' AND person_id = ?' : '';
+  const pArgs = personId ? [personId] : [];
 
   const planned = db.prepare(`
     SELECT person_id, contract_id, SUM(minutes) m, COUNT(*) n
-      FROM schedule_blocks WHERE date LIKE ? AND draft = 0 GROUP BY person_id, contract_id`).all(like);
+      FROM schedule_blocks WHERE date LIKE ? AND draft = 0${pFilter} GROUP BY person_id, contract_id`).all(like, ...pArgs);
   const logged = db.prepare(`
     SELECT person_id, contract_id, SUM(minutes) m, COUNT(*) n
-      FROM time_entries WHERE date LIKE ? AND source != 'skip'
-     GROUP BY person_id, contract_id`).all(like);
+      FROM time_entries WHERE date LIKE ? AND source != 'skip'${pFilter}
+     GROUP BY person_id, contract_id`).all(like, ...pArgs);
   const skipped = db.prepare(`
     SELECT person_id, contract_id, COUNT(*) n
-      FROM time_entries WHERE date LIKE ? AND source = 'skip'
-     GROUP BY person_id, contract_id`).all(like);
+      FROM time_entries WHERE date LIKE ? AND source = 'skip'${pFilter}
+     GROUP BY person_id, contract_id`).all(like, ...pArgs);
   // blocks whose fate is still unknown — the nag list
   const pending = db.prepare(`
     SELECT b.person_id, b.contract_id, COUNT(*) n, SUM(b.minutes) m
       FROM schedule_blocks b
-     WHERE b.date LIKE ? AND b.date <= date('now') AND b.draft = 0
+     WHERE b.date LIKE ? AND b.date <= date('now') AND b.draft = 0${pFilter.replace('person_id', 'b.person_id')}
        AND NOT EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = b.id)
-     GROUP BY b.person_id, b.contract_id`).all(like);
+     GROUP BY b.person_id, b.contract_id`).all(like, ...pArgs);
 
   const people = new Map(db.prepare('SELECT id, name FROM people').all().map((p) => [p.id, p.name]));
   const contracts = new Map(db.prepare('SELECT id, name, type FROM contracts').all()

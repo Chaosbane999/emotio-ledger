@@ -389,7 +389,8 @@ app.delete('/api/time/:id/timer', ok((req, res) => {
 
 /** Admin only (the member gate never lets a member reach a path without their id). */
 app.get('/api/time-variance', ok((req, res) => {
-  res.json(time.variance(String(req.query.period || period(req))));
+  res.json(time.variance(String(req.query.period || period(req)),
+    Number(req.query.person_id) || null));
 }));
 app.get('/api/report', ok((req, res) => {
   res.json(time.report({

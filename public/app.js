@@ -1834,13 +1834,38 @@ async function renderTime() {
   if (!S.timeDate) S.timeDate = todayIso();
   S.timeMode = S.timeMode || 'day';
 
+  if (S.timeEveryone && S.me?.role === 'admin') {
+    view().innerHTML = `
+      <div class="tbar">
+        <select id="tPick">${people.map((p) =>
+          `<option value="${p.id}">${esc(p.name)}</option>`).join('')}
+          <option disabled>──────</option>
+          <option value="all" selected>Everyone — planned vs logged</option></select>
+        <b>${esc(monthName(S.period))}</b>
+        <span class="spacer"></span>
+        <a class="btn small" href="/api/export/time.csv?period=${S.period}" download>Export month (.csv)</a>
+      </div>
+      <div class="banner info"><div><b>The whole team, ${esc(monthName(S.period))}.</b>
+        Pick a person to see and manage their calendar; this is the month's
+        planned-vs-logged picture across everyone.</div></div>
+      <div id="tVariance"></div>`;
+    $('#tPick').addEventListener('change', (e) => {
+      if (e.target.value === 'all') return;
+      S.timeEveryone = false; S.personId = Number(e.target.value); renderTime();
+    });
+    renderVariance(null);
+    return;
+  }
   const mode = S.timeMode;
   const v = await timeApi(`/${mode === 'day' ? 'day' : 'week'}?date=${S.timeDate}`);
 
   view().innerHTML = `
     <div class="tbar">
       ${people.length > 1 ? `<select id="tPick">${people.map((p) =>
-        `<option value="${p.id}"${p.id === S.personId ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : `<b>${esc(people[0].name)}</b>`}
+        `<option value="${p.id}"${!S.timeEveryone && p.id === S.personId ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}
+        <option disabled>──────</option>
+        <option value="all"${S.timeEveryone ? ' selected' : ''}>Everyone — planned vs logged</option></select>`
+      : `<b>${esc(people[0].name)}</b>`}
       <div class="seg">
         <button id="tModeDay" class="btn small ${mode === 'day' ? 'primary' : ''}">Day</button>
         <button id="tModeWeek" class="btn small ${mode === 'week' ? 'primary' : ''}">Week</button>
@@ -1864,7 +1889,11 @@ async function renderTime() {
     ${S.me?.role === 'admin' ? '<div id="tVariance"></div>' : ''}
   `;
 
-  $('#tPick')?.addEventListener('change', (e) => { S.personId = Number(e.target.value); renderTime(); });
+  $('#tPick')?.addEventListener('change', (e) => {
+    if (e.target.value === 'all') { S.timeEveryone = true; }
+    else { S.timeEveryone = false; S.personId = Number(e.target.value); }
+    renderTime();
+  });
   $('#tModeDay').addEventListener('click', () => { S.timeMode = 'day'; renderTime(); });
   $('#tModeWeek').addEventListener('click', () => { S.timeMode = 'week'; renderTime(); });
   const step = mode === 'day' ? 1 : 7;
@@ -1876,7 +1905,7 @@ async function renderTime() {
   S.timeAssignments = v.assignments || [];
   renderTimerBar(v.timer);
   if (mode === 'day') renderTimeDay(v); else renderTimeWeek(v);
-  if (S.me?.role === 'admin') renderVariance();
+  if (S.me?.role === 'admin') renderVariance(S.personId);
 }
 
 // --- timer ------------------------------------------------------------------
@@ -2365,8 +2394,9 @@ function openGhostMenu(b) {
 
 // --- variance: the whole point (admin only) ----------------------------------
 
-async function renderVariance() {
-  const v = await api(`/api/time-variance?period=${encodeURIComponent(S.period)}`);
+async function renderVariance(personId) {
+  const v = await api(`/api/time-variance?period=${encodeURIComponent(S.period)}`
+    + (personId ? `&person_id=${personId}` : ''));
   const dev = (h2) => h2 === 0 ? '<span class="pill mute">—</span>'
     : `<span class="pill ${h2 > 0 ? 'warn' : ''}">${h2 > 0 ? '+' : ''}${h(h2)} h</span>`;
   const table = (rows, label) => `
@@ -2384,12 +2414,17 @@ async function renderVariance() {
         <td class="num">${r.pending ? `<span class="pill warn">${r.pending}</span>` : '<span class="nil">—</span>'}</td>
       </tr>`).join('')}</tbody>
     </table></div></div>`;
-  $('#tVariance').innerHTML = `
+  const el = document.getElementById('tVariance');
+  if (!el) return;
+  el.innerHTML = `
     ${v.totals.pending_blocks ? `<div class="banner"><div>
       <b>${v.totals.pending_blocks} past blocks still unconfirmed.</b>
       Their time is planned but nobody has said what happened yet.</div></div>` : ''}
-    <div class="grid2">${table(v.by_contract, 'By contract')}${table(v.by_person, 'By person')}</div>`;
+    ${personId
+      ? `<div class="grid2">${table(v.by_contract, 'By contract')}<div></div></div>`
+      : `<div class="grid2">${table(v.by_contract, 'By contract')}${table(v.by_person, 'By person')}</div>`}`;
 }
+
 
 // --- rebalance: a resize changed what one contract takes; offer to put the
 // difference back into that contract's upcoming plan. Always a proposal with
