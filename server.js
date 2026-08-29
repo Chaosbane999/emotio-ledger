@@ -227,6 +227,12 @@ app.use((req, res, next) => {
   if (req.method !== 'GET' && !(writable && writable.test(req.path)) && !accountWrite) {
     return res.status(403).json({ error: 'Read-only on your account.' });
   }
+
+  // Strip money once, here, for everything a member is ever sent. Leaving it
+  // to each handler to remember send() is a rule that only has to be missed
+  // once — and it was, on the contract detail, the moment contracts opened up.
+  const original = res.json.bind(res);
+  res.json = (payload) => original(stripMoney(payload));
   next();
 });
 
@@ -538,7 +544,8 @@ app.get('/api/contract/:id', ok((req, res) => {
      WHERE a.contract_id = ? AND a.period = ?
      GROUP BY a.person_id, a.deliverable_id`).all(c.id, p);
 
-  res.json({
+  // through send(), so a member gets the delivery view with the money removed
+  send(req, res, {
     contract: c,
     summary: cap.contractSummary(c, p),
     channels: db.prepare('SELECT channel_id FROM contract_channels WHERE contract_id = ?')
