@@ -837,13 +837,17 @@ function contractTimeReport(contractId, period) {
 }
 
 /** Time entries as CSV rows. Filters combine; hours only, never money. */
-function exportEntries({ period, from, to, contractId, personId, department, deliverableId }) {
+function exportEntries({ period, from, to, contractId, contractIds, personId, department, deliverableId }) {
   const where = ["e.source != 'skip'"];
   const args = [];
   if (period) { cap.parsePeriod(period); where.push('e.date LIKE ?'); args.push(`${period}-%`); }
   if (from) { if (!isDate(from)) throw new Error('bad from date'); where.push('e.date >= ?'); args.push(from); }
   if (to) { if (!isDate(to)) throw new Error('bad to date'); where.push('e.date <= ?'); args.push(to); }
   if (contractId) { where.push('e.contract_id = ?'); args.push(contractId); }
+  if (contractIds) {
+    if (!contractIds.length) where.push('1 = 0');
+    else { where.push(`e.contract_id IN (${contractIds.map(() => '?').join(',')})`); args.push(...contractIds); }
+  }
   if (personId) { where.push('e.person_id = ?'); args.push(personId); }
   if (department) { where.push('c.department = ?'); args.push(department); }
   if (deliverableId) { where.push('e.deliverable_id = ?'); args.push(deliverableId); }
@@ -872,13 +876,18 @@ function exportEntries({ period, from, to, contractId, personId, department, del
  * sums exactly to the headline — a client can add the columns up.
  * Hours only; money never enters a report.
  */
-function report({ from, to, contractId, personId, department, deliverableId }) {
+function report({ from, to, contractId, contractIds, personId, department, deliverableId }) {
   if (!isDate(from) || !isDate(to)) throw new Error('give the report a date range');
   if (to < from) throw new Error('the range ends before it starts');
 
   const where = ["e.source != 'skip'", 'e.date >= ?', 'e.date <= ?'];
   const args = [from, to];
   if (contractId) { where.push('e.contract_id = ?'); args.push(contractId); }
+  // a hard scope: the caller may only ever see these contracts
+  if (contractIds) {
+    if (!contractIds.length) where.push('1 = 0');
+    else { where.push(`e.contract_id IN (${contractIds.map(() => '?').join(',')})`); args.push(...contractIds); }
+  }
   if (personId) { where.push('e.person_id = ?'); args.push(personId); }
   if (department) { where.push('c.department = ?'); args.push(department); }
   if (deliverableId) { where.push('e.deliverable_id = ?'); args.push(deliverableId); }

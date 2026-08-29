@@ -96,7 +96,7 @@ async function boot() {
 
   // A member sees only their own month, so the agency-wide tabs are removed
   // rather than shown and refused.
-  const memberViews = ['time', 'people', 'schedule'];
+  const memberViews = ['time', 'people', 'schedule', 'contracts', 'reports'];
   $('#tabs').querySelectorAll('button').forEach((b) => {
     b.classList.toggle('hidden', S.me.role !== 'admin' && !memberViews.includes(b.dataset.view));
   });
@@ -596,17 +596,17 @@ async function renderContracts() {
         <input type="search" id="cSearch" placeholder="Find a contract…" style="width:200px">
         <label class="tick"><input type="checkbox" id="cArch"${S.showArchived ? ' checked' : ''}> show archived</label>
         <span class="spacer"></span>
-        <button class="btn small primary" id="newContract">New contract</button></div>
+        ${showsMoney() ? '<button class="btn small primary" id="newContract">New contract</button>' : ''}</div>
       <div class="card"><div class="scroll"><table>
         <thead><tr><th>Contract</th><th>Owner</th><th>Type</th><th>Status</th>
-          <th class="num">Contracted</th><th class="num">Allocated</th>
+          ${showsMoney() ? '<th class="num">Contracted</th><th class="num">Allocated</th>' : ''}
           <th style="width:150px" title="Retainers: hours logged against hours allocated, resetting each month. Pots: total drawn against the whole pot, across its window.">Progress</th>
-          <th class="num">Balance</th></tr></thead>
+          ${showsMoney() ? '<th class="num">Balance</th>' : ''}</tr></thead>
         <tbody id="cBody">${['marketing', 'design'].map((dept) => {
           const inDept = a.contracts.filter((c) => (S.boot.contracts.find((x) => x.id === c.contract_id)?.department || 'marketing') === dept);
-          return `<tr class="dept-row"><td colspan="9">${dept === 'design' ? 'Design Department' : 'Marketing Department'}
+          return `<tr class="dept-row"><td colspan="${showsMoney() ? 9 : 5}">${dept === 'design' ? 'Design Department' : 'Marketing Department'}
             <span class="sub">${inDept.length} contract${inDept.length === 1 ? '' : 's'}</span></td></tr>`
-          + (inDept.length ? '' : '<tr><td colspan="9" class="muted" style="padding-left:24px">Nothing here yet.</td></tr>')
+          + (inDept.length ? '' : `<tr><td colspan="${showsMoney() ? 9 : 5}" class="muted" style="padding-left:24px">Nothing here yet.</td></tr>`)
           + inDept.map((c) => {
           const cc = S.boot.contracts.find((x) => x.id === c.contract_id) || {};
           const ex = S.boot.people.find((p) => p.id === cc.exec_person_id);
@@ -616,17 +616,17 @@ async function renderContracts() {
             <td><span class="pill ${c.type === 'pot' ? 'info' : 'mute'}">${esc(c.type)}</span></td>
             <td>${c.status === 'live' ? '<span class="pill ok">Live</span>'
               : c.status === 'pipeline' ? '<span class="pill warn">Pipeline</span>' : '<span class="pill mute">Hold</span>'}</td>
-            <td class="num">${units(c.type === 'pot' ? c.pot_units : c.contracted_units)}</td>
-            <td class="num">${units(c.allocated_units)}</td>
+            ${showsMoney() ? `<td class="num">${units(c.type === 'pot' ? c.pot_units : c.contracted_units)}</td>
+            <td class="num">${units(c.allocated_units)}</td>` : ''}
             <td class="progress-cell">${c.type === 'pot'
               ? `${capBar(c.window_logged_hours, c.window_allocated_hours)}<span class="sub">${hrs(c.window_logged_hours)} of ${hrs(c.window_allocated_hours)} · whole&nbsp;pot</span>`
               : `${capBar(c.logged_hours, c.people_hours)}<span class="sub">${hrs(c.logged_hours)} of ${hrs(c.people_hours)} · this&nbsp;month</span>`}</td>
-            <td class="num">${c.type === 'pot' ? `${units(c.pot_remaining)} left`
-              : `<span class="pill ${c.balanced ? 'ok' : 'bad'}">${c.balanced ? 'balanced' : h(-c.variance) + ' over'}</span>`}</td>
+            ${showsMoney() ? `<td class="num">${c.type === 'pot' ? `${units(c.pot_remaining)} left`
+              : `<span class="pill ${c.balanced ? 'ok' : 'bad'}">${c.balanced ? 'balanced' : h(-c.variance) + ' over'}</span>`}</td>` : ''}
           </tr>`;
         }).join('');
         }).join('')}</tbody></table></div></div>`;
-    $('#newContract').addEventListener('click', () => openContractEditor(null));
+    $('#newContract')?.addEventListener('click', () => openContractEditor(null));
     $('#cSearch').addEventListener('input', (e) => {
       const q = e.target.value.trim().toLowerCase();
       for (const tr of view().querySelectorAll('#cBody tr')) {
@@ -984,6 +984,7 @@ function openContractEditor(c) {
     <div class="rowline"><button class="btn small" id="backE">← Back</button>
       <h2 style="margin-left:8px">${c ? 'Edit' : 'New'} contract</h2></div>
     <div class="card"><div class="body">
+      ${showsMoney() ? `
       <div class="rowline"><label>Name</label>
         <input type="text" id="cName" value="${f('name')}" style="flex:1;min-width:220px"></div>
       <div class="rowline"><label>Owner</label>
@@ -1019,16 +1020,21 @@ function openContractEditor(c) {
         <label style="min-width:auto">to</label>
         <input type="date" id="cTo" value="${f('ends_on')}" style="width:160px">
         <span class="muted">Optional. Work is only scheduled between these dates.</span></div>
+      ` : `<p class="muted" style="padding:0 16px 4px">The commercial terms — value, type, status, dates and owner —
+        are set by an administrator. You can update the notes and the Harvest mapping here, and run
+        delivery on the tabs below.</p>`}
       <div class="rowline"><label>Harvest projects</label>
         <input type="text" id="cHarvest" value="${f('harvest_ids')}" placeholder="comma-separated project ids" style="flex:1;min-width:220px"></div>
+      <div class="rowline"><label>Notes</label>
+        <input type="text" id="cNotes" value="${f('notes')}" style="flex:1;min-width:220px"></div>
       <div class="rowline"><span class="spacer"></span>
-        ${c ? '<button class="btn danger small" id="cDel">Archive</button>' : ''}
+        ${c && showsMoney() ? '<button class="btn danger small" id="cDel">Archive</button>' : ''}
         <button class="btn primary" id="cSave">Save</button></div>
     </div></div>`;
 
   $('#backE').addEventListener('click', () => { if (c) renderContractDetail(c.id); else { S.contractId = null; renderContracts(); } });
   $('#cSave').addEventListener('click', async () => {
-    const body = {
+    const body = showsMoney() ? {
       id: c?.id, name: $('#cName').value.trim(), exec_person_id: Number($('#cExec').value) || null,
       type: $('#cType').value, status: $('#cStatus').value,
       monthly_units: Number($('#cUnits').value), pot_units: Number($('#cPot').value),
@@ -1036,12 +1042,17 @@ function openContractEditor(c) {
       starts_on: $('#cFrom').value || null, ends_on: $('#cTo').value || null,
       department: $('#cDept').value,
       harvest_ids: $('#cHarvest').value.trim(),
+      notes: $('#cNotes').value.trim(),
+    } : {
+      id: c?.id,
+      harvest_ids: $('#cHarvest').value.trim(),
+      notes: $('#cNotes').value.trim(),
     };
-    if (!body.name) return toast('Give the contract a name.', true);
-    if (body.starts_on && body.ends_on && body.ends_on < body.starts_on) {
+    if (showsMoney() && !body.name) return toast('Give the contract a name.', true);
+    if (showsMoney() && body.starts_on && body.ends_on && body.ends_on < body.starts_on) {
       return toast('The end date is before the start date.', true);
     }
-    if (body.pot_start && body.pot_end && body.pot_end < body.pot_start) {
+    if (showsMoney() && body.pot_start && body.pot_end && body.pot_end < body.pot_start) {
       return toast('The pot ends before it starts.', true);
     }
     S.boot.contracts = await api('/api/contracts', { body });

@@ -179,6 +179,28 @@ app.use((req, res, next) => {
 
 const isAdmin = (req) => req.user?.role === 'admin';
 
+/**
+ * The accounts a person works on: anything they hold an allocation against in
+ * any period, plus anything they own outright. This is what "their contracts"
+ * means everywhere a member is scoped.
+ */
+function contractsFor(personId) {
+  if (!personId) return new Set();
+  const rows = db.prepare(`
+    SELECT DISTINCT c.id FROM contracts c
+     WHERE c.exec_person_id = ?
+        OR EXISTS (SELECT 1 FROM allocations a WHERE a.contract_id = c.id AND a.person_id = ?)`)
+    .all(personId, personId);
+  return new Set(rows.map((r) => r.id));
+}
+/** Throws unless this contract is one of theirs (admins pass everything). */
+function assertOwnContract(req, contractId) {
+  if (isAdmin(req)) return;
+  if (!contractsFor(req.user?.person_id).has(Number(contractId))) {
+    throw new Error('That contract is not one of yours.');
+  }
+}
+
 /** Admin-only routes: everything that reveals rates or changes the agency. */
 app.use((req, res, next) => {
   if (isAdmin(req) || !req.path.startsWith('/api/')) return next();
@@ -189,13 +211,20 @@ app.use((req, res, next) => {
   const own = String(req.user?.person_id ?? '');
   const mineRe = own && new RegExp(`^/api/(person|schedule|person-recipes|time)/${own}(/|$)`);
   const shared = ['/api/bootstrap', '/api/me', '/api/workdays', '/api/months', '/api/leave'];
-  const allowed = shared.includes(req.path) || (mineRe && mineRe.test(req.path));
+  // their accounts: contracts they work on, and reports over those contracts.
+  // Every one of these is scoped inside its handler, and money is stripped on
+  // the way out regardless.
+  const accountRead = ['/api/contracts', '/api/report', '/api/anchors', '/api/export/time.csv']
+    .includes(req.path) || /^\/api\/contract\/\d+(\/|$)/.test(req.path);
+  const accountWrite = ['/api/allocation', '/api/tp-allocation', '/api/contracts', '/api/anchors']
+    .includes(req.path) || /^\/api\/anchors\/\d+$/.test(req.path);
+  const allowed = shared.includes(req.path) || (mineRe && mineRe.test(req.path))
+    || accountRead || (req.method !== 'GET' && accountWrite);
 
   if (!allowed) return res.status(403).json({ error: 'Not available on your account.' });
 
-  // and may write only their own schedule, recipes, and time
   const writable = own && new RegExp(`^/api/(schedule|person-recipes|time)/${own}(/|$)`);
-  if (req.method !== 'GET' && !(writable && writable.test(req.path))) {
+  if (req.method !== 'GET' && !(writable && writable.test(req.path)) && !accountWrite) {
     return res.status(403).json({ error: 'Read-only on your account.' });
   }
   next();
@@ -293,13 +322,23 @@ const listContracts = (withArchived) => db.prepare(
 // ---------------------------------------------------------------------------
 
 /** Units divided by hours gives the rate away, so a member gets neither. */
+/**
+ * Members see hours, never money. The pattern catches anything named for a
+ * rate or units, but several fields are unit-valued without saying so —
+ * `variance` and the pot drawdown among them — and a name-shaped denylist
+ * cannot infer that. They are listed explicitly, and a test asserts no
+ * member-reachable payload carries one.
+ */
+const UNIT_FIELDS = new Set([
+  'variance', 'pot_drawn', 'pot_remaining', 'pot_this_period',
+]);
 function stripMoney(payload) {
   const scrub = (o) => {
     if (Array.isArray(o)) return o.map(scrub);
     if (o && typeof o === 'object') {
       const out = {};
       for (const [k, v] of Object.entries(o)) {
-        if (/rate|_units$|^units$/.test(k)) continue;
+        if (/rate|_units$|^units$/.test(k) || UNIT_FIELDS.has(k)) continue;
         out[k] = scrub(v);
       }
       return out;
@@ -397,10 +436,15 @@ app.get('/api/time-variance', ok((req, res) => {
     Number(req.query.person_id) || null));
 }));
 app.get('/api/report', ok((req, res) => {
+  // a member's report covers their accounts and nothing else
+  const scope = isAdmin(req) ? null : [...contractsFor(req.user?.person_id)];
+  const asked = Number(req.query.contract_id) || null;
+  if (scope && asked && !scope.includes(asked)) throw new Error('That contract is not one of yours.');
   res.json(time.report({
     from: String(req.query.from || ''),
     to: String(req.query.to || ''),
-    contractId: Number(req.query.contract_id) || null,
+    contractIds: scope,
+    contractId: asked,
     personId: Number(req.query.person_id) || null,
     department: ['marketing', 'design'].includes(req.query.department) ? req.query.department : null,
     deliverableId: Number(req.query.deliverable_id) || null,
@@ -415,8 +459,12 @@ const sendCsv = (res, name, csv) => {
 };
 app.get('/api/export/time.csv', ok((req, res) => {
   const p = req.query.period ? String(req.query.period) : null;
+  const scope = isAdmin(req) ? null : [...contractsFor(req.user?.person_id)];
+  const asked = Number(req.query.contract_id) || null;
+  if (scope && asked && !scope.includes(asked)) throw new Error('That contract is not one of yours.');
   sendCsv(res, `time-${p || req.query.from || 'all'}.csv`, time.exportEntries({
     period: p,
+    contractIds: scope,
     from: req.query.from ? String(req.query.from) : null,
     to: req.query.to ? String(req.query.to) : null,
     contractId: Number(req.query.contract_id) || null,
@@ -446,7 +494,8 @@ app.get('/api/bootstrap', ok((req, res) => {
     third_parties: listThirdParties(),
     channels: db.prepare('SELECT * FROM channels ORDER BY sort_order, name').all(),
     me: { person_id: req.user?.person_id ?? null, role: req.user?.role || 'member', name: req.user?.name },
-    contracts: listContracts(withArchived),
+    contracts: isAdmin(req) ? listContracts(withArchived)
+      : listContracts(withArchived).filter((c) => contractsFor(req.user?.person_id).has(c.id)),
     settings: {
       standard_rate: cap.standardRate(),
       work_start: get('work_start'),
@@ -476,6 +525,7 @@ app.get('/api/person/:id', ok((req, res) => {
 
 app.get('/api/contract/:id', ok((req, res) => {
   const p = period(req);
+  assertOwnContract(req, req.params.id);
   const c = db.prepare('SELECT * FROM contracts WHERE id = ?').get(Number(req.params.id));
   if (!c) return res.status(404).json({ error: 'no such contract' });
 
@@ -515,6 +565,7 @@ app.get('/api/leave', ok((req, res) => {
 
 app.post('/api/allocation', ok((req, res) => {
   const { contract_id, person_id, deliverable_id } = req.body;
+  assertOwnContract(req, contract_id);
   const p = req.body.period || period(req);
   // quarter-hour grain, the same grain the schedule is built on
   const hours = Math.max(0, Math.round(num(req.body.hours) * 4) / 4);
@@ -534,6 +585,8 @@ app.post('/api/allocation', ok((req, res) => {
 }));
 
 app.post('/api/tp-allocation', ok((req, res) => {
+  // third-party lines consume contract value in units — a commercial act
+  if (!isAdmin(req)) throw new Error('Third-party services are set by an administrator.');
   const { contract_id, third_party_id } = req.body;
   const p = req.body.period || period(req);
   const units = Math.max(0, num(req.body.units));
@@ -745,6 +798,22 @@ app.post('/api/contracts', ok((req, res) => {
   };
   const month = (v) => (/^\d{4}-(0[1-9]|1[0-2])$/.test(v || '') ? v : null);
   const dept = b.department === 'design' ? 'design' : 'marketing';
+
+  // A member runs delivery on their accounts, not the commercial terms. They
+  // may edit notes and the Harvest mapping on a contract they work on;
+  // everything that prices or scopes the deal — value, type, status, dates,
+  // owner, department — keeps whatever it already had.
+  if (!isAdmin(req)) {
+    if (!b.id) throw new Error('New contracts are set up by an administrator.');
+    assertOwnContract(req, b.id);
+    const cur = db.prepare('SELECT * FROM contracts WHERE id = ?').get(Number(b.id));
+    if (!cur) throw new Error('no such contract');
+    db.prepare('UPDATE contracts SET notes = ?, harvest_ids = ? WHERE id = ?')
+      .run(String(b.notes ?? cur.notes), String(b.harvest_ids ?? cur.harvest_ids), cur.id);
+    return send(req, res, listContracts(req.query.archived === '1')
+      .filter((c) => contractsFor(req.user.person_id).has(c.id)));
+  }
+
   const fields = [b.name, b.exec_person_id || null, b.type || 'retainer', b.status || 'live',
     num(b.monthly_units), num(b.pot_units), month(b.pot_start), month(b.pot_end),
     date(b.starts_on), date(b.ends_on), b.harvest_ids || '', b.notes || '', dept];
@@ -869,13 +938,25 @@ app.delete('/api/person-recipes/:id/:deliverableId', ok((req, res) => {
 }));
 
 app.get('/api/anchors', ok((req, res) => {
-  res.json(db.prepare(`SELECT a.*, p.name AS person_name, c.name AS contract_name FROM anchors a
+  const all = db.prepare(`SELECT a.*, p.name AS person_name, c.name AS contract_name FROM anchors a
     JOIN people p ON p.id = a.person_id
-    LEFT JOIN contracts c ON c.id = a.contract_id ORDER BY p.name, a.dow, a.time`).all());
+    LEFT JOIN contracts c ON c.id = a.contract_id ORDER BY p.name, a.dow, a.time`).all();
+  if (isAdmin(req)) return res.json(all);
+  const mine = contractsFor(req.user?.person_id);
+  res.json(all.filter((a) => a.contract_id && mine.has(a.contract_id)));
 }));
 
 app.post('/api/anchors', ok((req, res) => {
   const b = req.body;
+  if (!isAdmin(req)) {
+    if (!b.contract_id) throw new Error('Pick one of your contracts for this commitment.');
+    assertOwnContract(req, b.contract_id);
+    if (b.id) {
+      const cur = db.prepare('SELECT contract_id FROM anchors WHERE id = ?').get(Number(b.id));
+      if (!cur) throw new Error('no such commitment');
+      assertOwnContract(req, cur.contract_id);
+    }
+  }
   if (b.id) {
     db.prepare('UPDATE anchors SET person_id=?, contract_id=?, label=?, dow=?, time=?, minutes=? WHERE id=?')
       .run(b.person_id, b.contract_id || null, b.label, num(b.dow, 2), b.time || '10:00', num(b.minutes, 60), b.id);
@@ -887,6 +968,11 @@ app.post('/api/anchors', ok((req, res) => {
 }));
 
 app.delete('/api/anchors/:id', ok((req, res) => {
+  if (!isAdmin(req)) {
+    const cur = db.prepare('SELECT contract_id FROM anchors WHERE id = ?').get(Number(req.params.id));
+    if (!cur) throw new Error('no such commitment');
+    assertOwnContract(req, cur.contract_id);
+  }
   db.prepare('DELETE FROM anchors WHERE id = ?').run(Number(req.params.id));
   res.json({ ok: true });
 }));
