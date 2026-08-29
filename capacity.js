@@ -378,10 +378,14 @@ function potPosition(contract, period, thisPeriodUnits) {
 // ---------------------------------------------------------------------------
 
 function agencySummary(period, department) {
-  // scoped to one department when asked: its people, its contracts, its
-  // numbers. Unscoped remains the whole agency, byte-for-byte as before.
+  // Scoped to one department when asked. Work follows the CONTRACT's
+  // department; people have a home. Management people are shared — both
+  // departments can call on them, so they appear (and their capacity counts)
+  // in each tab, marked as such. Unscoped remains the whole agency.
   const people = activePeople().filter((p) =>
-    !department || (p.department || 'marketing') === department);
+    !department
+    || (p.department || 'marketing') === department
+    || p.department === 'management');
   const contracts = db.prepare(
     "SELECT * FROM contracts WHERE archived = 0 ORDER BY sort_order, name").all()
     .filter((c) => !department || (c.department || 'marketing') === department);
@@ -425,6 +429,42 @@ function agencySummary(period, department) {
     if (e) e.actual_hours = round2(r.hours);
   }
 
+  // when scoped: how much of each person's client work goes to OTHER
+  // departments, and who from outside holds hours on THIS department's
+  // contracts — cross-department work stays visible instead of vanishing
+  // into a partition.
+  let elsewhereByPerson = new Map();
+  let borrowed = [];
+  if (department) {
+    const deptOf = new Map(db.prepare('SELECT id, department FROM contracts').all()
+      .map((c) => [c.id, c.department || 'marketing']));
+    const perLine = db.prepare(`
+      SELECT a.person_id, a.contract_id, SUM(a.hours) h
+        FROM allocations a JOIN contracts c ON c.id = a.contract_id
+       WHERE a.period = ? AND c.archived = 0 AND c.status = 'live' AND c.type != 'internal'
+       GROUP BY a.person_id, a.contract_id`).all(period);
+    const inScope = new Set(people.map((p) => p.id));
+    const names = new Map(db.prepare('SELECT id, name, department FROM people').all()
+      .map((p) => [p.id, p]));
+    const borrowedBy = new Map();
+    for (const r of perLine) {
+      const workDept = deptOf.get(r.contract_id);
+      if (inScope.has(r.person_id)) {
+        if (workDept !== department) {
+          elsewhereByPerson.set(r.person_id, (elsewhereByPerson.get(r.person_id) || 0) + r.h);
+        }
+      } else if (workDept === department) {
+        borrowedBy.set(r.person_id, (borrowedBy.get(r.person_id) || 0) + r.h);
+      }
+    }
+    borrowed = [...borrowedBy.entries()].map(([pid, h]) => ({
+      person_id: pid,
+      name: names.get(pid)?.name || `#${pid}`,
+      home: names.get(pid)?.department || 'marketing',
+      hours: round2(h),
+    })).sort((a, b) => b.hours - a.hours);
+  }
+
   const staff = [...perPerson.values()].map((e) => {
     const p = people.find((x) => x.id === e.person_id);
     const clientHours = round2(e.allocated_client_hours);
@@ -438,6 +478,8 @@ function agencySummary(period, department) {
         e.allocated_internal_hours, e.internal_hours),
       load_pct: e.client_hours > 0 ? Math.round((clientHours / e.client_hours) * 100) : 0,
       internal_spare_hours: round2(e.internal_hours - e.allocated_internal_hours),
+      shared: (people.find((x) => x.id === e.person_id)?.department) === 'management',
+      elsewhere_hours: round2(elsewhereByPerson.get(e.person_id) || 0),
     };
   });
 
@@ -480,6 +522,7 @@ function agencySummary(period, department) {
     period,
     working_days: workingDays(period),
     staff,
+    borrowed,
     by_department: byDept,
     contracts: summaries.map((s) => s.summary),
     totals: {

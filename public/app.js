@@ -371,6 +371,19 @@ async function renderAgency() {
       </table></div>
     </div>
 
+    ${a.borrowed?.length ? `<div class="card">
+      <header><h2>Borrowed hands</h2>
+        <p>People homed elsewhere, holding hours on this department's contracts</p></header>
+      <div class="scroll"><table>
+        <thead><tr><th>Person</th><th>Home</th><th class="num">Hours here</th></tr></thead>
+        <tbody>${a.borrowed.map((b) => `<tr>
+          <td><button class="linky" data-person="${b.person_id}">${esc(b.name)}</button></td>
+          <td><span class="pill mute">${b.home === 'design' ? 'Design' : b.home === 'management' ? 'Management' : 'Marketing'}</span></td>
+          <td class="num">${hrs(b.hours)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>` : ''}
+
     <div class="card">
       <header>
         <h2>Contracts</h2>

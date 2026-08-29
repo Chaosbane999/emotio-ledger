@@ -270,19 +270,29 @@ if (periods.length >= 2) {
   }
 }
 
-// ---- 6b. departments: the two views sum exactly to the whole ----------
+// ---- 6b. departments: the two tabs cover the whole, sharing management ----
+// Management people appear in BOTH tabs by design — either department can
+// call on them — so the tabs overlap by exactly the management contingent
+// and by nothing else.
 for (const period of periods) {
   const whole = cap.agencySummary(period);
   const mkt = cap.agencySummary(period, 'marketing');
   const des = cap.agencySummary(period, 'design');
-  ok(mkt.staff.length + des.staff.length === whole.staff.length,
-    `${period}: department staff partition cleanly (${mkt.staff.length}+${des.staff.length} vs ${whole.staff.length})`);
+  const mgmt = whole.staff.filter((p) => {
+    const inM = mkt.staff.some((x) => x.person_id === p.person_id && x.shared);
+    const inD = des.staff.some((x) => x.person_id === p.person_id && x.shared);
+    return inM && inD;
+  });
+  ok(mkt.staff.length + des.staff.length === whole.staff.length + mgmt.length,
+    `${period}: tabs cover everyone, overlapping only by management (${mkt.staff.length}+${des.staff.length} vs ${whole.staff.length}+${mgmt.length})`);
   ok(mkt.contracts.length + des.contracts.length === whole.contracts.length,
     `${period}: department contracts partition cleanly`);
-  for (const k of ['capacity_hours', 'capacity_units']) {
-    ok(near(mkt.totals[k] + des.totals[k], whole.totals[k], 0.05),
-      `${period}: department ${k} sums to the whole (${mkt.totals[k]}+${des.totals[k]} vs ${whole.totals[k]})`);
-  }
+  const mgmtCapH = mgmt.reduce((s2, p) => s2 + p.client_hours, 0);
+  const mgmtCapU = mgmt.reduce((s2, p) => s2 + p.client_units, 0);
+  ok(near(mkt.totals.capacity_hours + des.totals.capacity_hours, whole.totals.capacity_hours + mgmtCapH, 0.05),
+    `${period}: capacity hours sum to whole + shared management`);
+  ok(near(mkt.totals.capacity_units + des.totals.capacity_units, whole.totals.capacity_units + mgmtCapU, 0.05),
+    `${period}: capacity units sum to whole + shared management`);
   ok(near(mkt.totals.contracted_units + des.totals.contracted_units, whole.totals.contracted_units, 0.05),
     `${period}: department contracted_units sum to the whole`);
 }

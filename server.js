@@ -761,7 +761,7 @@ app.delete('/api/months/:period', ok((req, res) => {
 
 app.post('/api/people', ok((req, res) => {
   const b = req.body;
-  const pDept = b.department === 'design' ? 'design' : 'marketing';
+  const pDept = ['design', 'management'].includes(b.department) ? b.department : 'marketing';
   if (b.id) {
     db.prepare(`UPDATE people SET name=?, initials=?, weekly_hours=?, rate=?, utilisation=?, active=?,
       archived=?, harvest_user_id=?, department=? WHERE id=?`).run(b.name, b.initials || '', num(b.weekly_hours, 37.5),
