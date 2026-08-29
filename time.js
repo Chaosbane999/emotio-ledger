@@ -58,7 +58,7 @@ function blocksFor(personId, from, to) {
       FROM schedule_blocks b
       LEFT JOIN contracts c    ON c.id = b.contract_id
       LEFT JOIN deliverables d ON d.id = b.deliverable_id
-     WHERE b.person_id = ? AND b.date >= ? AND b.date <= ?
+     WHERE b.person_id = ? AND b.date >= ? AND b.date <= ? AND b.draft = 0
      ORDER BY b.date, b.start`).all(personId, from, to);
 }
 
@@ -415,7 +415,7 @@ function rebalanceCandidates(personId, contractId, period, excludeBlockId) {
       LEFT JOIN contracts c    ON c.id = b.contract_id
       LEFT JOIN deliverables d ON d.id = b.deliverable_id
      WHERE b.person_id = ? AND b.contract_id = ? AND b.period = ?
-       AND b.date >= ? AND b.id != ? AND b.anchored = 0
+       AND b.date >= ? AND b.id != ? AND b.anchored = 0 AND b.draft = 0
      ORDER BY b.date DESC, b.start DESC`)
     .all(personId, contractId, period, todayLondon(), excludeBlockId || 0))
     .filter((b) => b.status === 'pending');
@@ -656,7 +656,7 @@ function variance(period) {
 
   const planned = db.prepare(`
     SELECT person_id, contract_id, SUM(minutes) m, COUNT(*) n
-      FROM schedule_blocks WHERE date LIKE ? GROUP BY person_id, contract_id`).all(like);
+      FROM schedule_blocks WHERE date LIKE ? AND draft = 0 GROUP BY person_id, contract_id`).all(like);
   const logged = db.prepare(`
     SELECT person_id, contract_id, SUM(minutes) m, COUNT(*) n
       FROM time_entries WHERE date LIKE ? AND source != 'skip'
@@ -669,7 +669,7 @@ function variance(period) {
   const pending = db.prepare(`
     SELECT b.person_id, b.contract_id, COUNT(*) n, SUM(b.minutes) m
       FROM schedule_blocks b
-     WHERE b.date LIKE ? AND b.date <= date('now')
+     WHERE b.date LIKE ? AND b.date <= date('now') AND b.draft = 0
        AND NOT EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = b.id)
      GROUP BY b.person_id, b.contract_id`).all(like);
 

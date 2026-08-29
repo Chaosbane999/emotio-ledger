@@ -246,7 +246,7 @@ if (periods.length >= 2) {
       WHERE date LIKE ? AND source != 'skip'`).get(`${period}-%`).m;
     ok(v.totals.logged_minutes === tableLogged, `${period}: variance logged = table sum`);
     const tablePlanned = db.prepare(`SELECT COALESCE(SUM(minutes),0) m FROM schedule_blocks
-      WHERE date LIKE ?`).get(`${period}-%`).m;
+      WHERE date LIKE ? AND draft = 0`).get(`${period}-%`).m;
     ok(v.totals.planned_minutes === tablePlanned, `${period}: variance planned = table sum`);
     for (const r of v.rows) {
       ok(near(r.variance_hours, r.logged_hours - r.planned_hours),

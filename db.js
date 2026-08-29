@@ -275,6 +275,25 @@ db.exec(`
    WHERE deliverable_id IS NULL AND block_id IS NOT NULL;
 `);
 
+// migration: a plan now has a draft stage. A suggestion is saved as draft
+// blocks the person can push around; nothing reaches the time sheet, the
+// calendar feed, or the variance numbers until they send it there.
+try { db.exec('ALTER TABLE schedule_blocks ADD COLUMN draft INTEGER NOT NULL DEFAULT 0'); }
+catch (e) { /* already there */ }
+
+// repair: entries orphaned by early plan rebuilds lost their deliverable and
+// reported as "Uncategorised". Where the person had exactly one deliverable
+// allocated on that contract that month, the answer is unambiguous.
+db.exec(`
+  UPDATE time_entries SET deliverable_id = (
+    SELECT a.deliverable_id FROM allocations a
+     WHERE a.person_id = time_entries.person_id
+       AND a.contract_id = time_entries.contract_id
+       AND a.period = substr(time_entries.date, 1, 7)
+     GROUP BY a.contract_id HAVING COUNT(DISTINCT a.deliverable_id) = 1)
+   WHERE deliverable_id IS NULL AND block_id IS NULL AND contract_id IS NOT NULL;
+`);
+
 // migration: departments. Everything to date is the marketing department;
 // design is joining the time system, so contracts now say whose they are.
 try { db.exec("ALTER TABLE contracts ADD COLUMN department TEXT NOT NULL DEFAULT 'marketing'"); }

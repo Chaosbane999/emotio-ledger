@@ -189,6 +189,24 @@ eq(T.dayView(1, FUT).blocks.find((b) => b.id === 20).status, 'pending', 'delete 
   }
 }
 
+// --- drafts: a suggestion is invisible until it is sent to the time sheet ----
+{
+  const TD = T.todayLondon();
+  db.prepare(`INSERT INTO schedule_blocks (id, person_id, period, contract_id, deliverable_id, label, date, start, minutes, draft)
+    VALUES (60, 1, ?, 10, 100, 'Client A — SEO', ?, '06:00', 60, 1)`).run(TD.slice(0, 7), TD);
+  eq(T.dayView(1, TD).blocks.some((b) => b.id === 60), false, 'draft absent from the day view');
+  eq(T.feedItems(1).some((b) => b.uid === 'ledger-block-60@emotio'), false, 'draft absent from the calendar feed');
+  const vD = T.variance(TD.slice(0, 7));
+  const draftPlanned = db.prepare('SELECT COALESCE(SUM(minutes),0) m FROM schedule_blocks WHERE draft = 1').get().m;
+  const allPlanned = db.prepare("SELECT COALESCE(SUM(minutes),0) m FROM schedule_blocks WHERE date LIKE ?").get(`${TD.slice(0, 7)}-%`).m;
+  eq(vD.totals.planned_minutes, allPlanned - draftPlanned, 'variance ignores drafts');
+  // the flip: committed, it is real everywhere
+  db.prepare('UPDATE schedule_blocks SET draft = 0 WHERE id = 60').run();
+  eq(T.dayView(1, TD).blocks.some((b) => b.id === 60), true, 'committed block appears in the day view');
+  ok(T.feedItems(1).some((b) => b.uid === 'ledger-block-60@emotio'), 'committed block reaches the calendar feed');
+  db.prepare('DELETE FROM schedule_blocks WHERE id = 60').run();
+}
+
 // --- calendar feed -----------------------------------------------------------
 const tok = T.calendarToken(1);
 ok(tok.length >= 24, 'token is long and random');

@@ -1151,6 +1151,8 @@ async function renderSchedule() {
   const pv = await api(`/api/person/${S.personId}${P()}`);
   const dates = await api(`/api/workdays${P()}`);
   const recipes = S.showRecipes ? await api(`/api/person-recipes/${S.personId}`) : [];
+  const state = plan.state || (plan.committed ? 'committed' : 'none');
+  const editing = state === 'draft' || (state === 'committed' && S.schedEdit);
 
   const byDate = new Map();
   for (const b of plan.blocks) {
@@ -1159,47 +1161,73 @@ async function renderSchedule() {
   }
   const dayLabel = (iso) => new Date(`${iso}T00:00:00Z`)
     .toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
-
   const dayOptions = (sel) => dates.map((d) =>
     `<option value="${d}"${d === sel ? ' selected' : ''}>${esc(dayLabel(d))}</option>`).join('');
-
   const contractOptions = S.boot.contracts.filter((c) => !c.archived)
     .map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
   const deliverableOptions = S.boot.deliverables
     .map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
+
+  // The journey, spelled out. One current step, always visible, so nobody has
+  // to deduce the state from which buttons happen to exist.
+  const stepNo = S.showRecipes ? 1 : state === 'draft' ? 2 : state === 'committed' ? 3 : 0;
+  const steps = `
+    <div class="steps">
+      <button class="step ${stepNo === 1 ? 'on' : ''}" id="stepRecipes">
+        <b>1</b> How they work</button>
+      <span class="step-arrow">›</span>
+      <div class="step ${stepNo === 2 ? 'on' : ''} ${stepNo < 2 && !S.showRecipes ? 'todo' : ''}">
+        <b>2</b> Review the suggestion</div>
+      <span class="step-arrow">›</span>
+      <div class="step ${stepNo === 3 ? 'on' : ''} ${stepNo < 3 ? 'todo' : ''}">
+        <b>3</b> On the time sheet</div>
+    </div>`;
+
+  const toolbar = S.showRecipes ? `
+      <button class="btn small" id="toggleRecipes">Cancel</button>
+      <button class="btn small primary" id="prSaveAll">Save</button>`
+    : state === 'none' ? `
+      <button class="btn small primary" id="genPlan"
+        title="Build a schedule from this month's allocations and the recipes in step 1">Suggest a schedule</button>`
+    : state === 'draft' ? `
+      <button class="btn small" id="sePrev">‹</button>
+      <b id="seWeekLbl"></b>
+      <button class="btn small" id="seNext">›</button>
+      <span class="spacer"></span>
+      <button class="btn small" id="genPlan" title="Throw this suggestion away and build a fresh one">Suggest again</button>
+      <button class="btn small danger" id="dropDraft">Discard suggestion</button>
+      <button class="btn small primary" id="commitPlan"
+        title="Happy with it? Put it on the time sheet — the team manages it from there">Send to time sheet</button>`
+    : S.schedEdit ? `
+      <button class="btn small" id="sePrev">‹</button>
+      <b id="seWeekLbl"></b>
+      <button class="btn small" id="seNext">›</button>
+      <span class="spacer"></span>
+      <button class="btn small primary" id="seDone">Done editing</button>`
+    : `
+      <button class="btn small primary" id="schedEdit"
+        title="Drag blocks around the week, resize them, or click one for exact times">Edit Schedule</button>
+      <button class="btn small" id="genPlan"
+        title="Build a fresh suggestion to review — the time sheet keeps this plan until you send the new one">Rebuild from allocations</button>
+      <button class="btn small danger" id="clearPlan"
+        title="Clears what is still pending — committed time stays">Discard pending plan</button>
+      <button class="btn small" id="schedCal" title="Keep a calendar app in step with this schedule">📅 Sync</button>`;
 
   view().innerHTML = `
     <div class="rowline">
       <label for="schedPick">Person</label>
       <select id="schedPick">${people.map((p) =>
         `<option value="${p.id}"${p.id === S.personId ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
-      <span class="pill ${plan.committed ? 'ok' : 'warn'}">${plan.committed ? 'Saved plan' : 'Draft'}</span>
+      ${state === 'draft' ? '<span class="pill warn">Suggestion — not on the time sheet yet</span>'
+        : state === 'committed' ? '<span class="pill ok">On the time sheet</span>' : ''}
       <span class="spacer"></span>
-      ${S.showRecipes ? `
-        <button class="btn small" id="toggleRecipes">Cancel</button>
-        <button class="btn small primary" id="prSaveAll">Save</button>`
-      : S.schedEdit && plan.committed ? `
-        <button class="btn small" id="sePrev">‹</button>
-        <b id="seWeekLbl"></b>
-        <button class="btn small" id="seNext">›</button>
-        <span class="spacer"></span>
-        <button class="btn small primary" id="seDone">Done editing</button>`
-      : `
-        <button class="btn small" id="toggleRecipes">How this person's work is shaped</button>
-        ${plan.committed ? `
-          <button class="btn small primary" id="schedEdit" title="Drag blocks around the week, resize them, or click one for exact times">Edit Schedule</button>
-          <button class="btn small" id="genPlan" title="Re-plan what is still pending — committed time keeps its ground">Rebuild from allocations</button>
-          <button class="btn small danger" id="clearPlan" title="Clears what is still pending — committed time stays">Discard pending plan</button>`
-        : `<button class="btn small primary" id="genPlan"
-            title="Put this plan on the time sheet, where the team confirms it day by day">Send to time sheet</button>`}
-        <button class="btn small primary" id="schedCal"
-          title="${plan.committed ? 'Subscribe once — the calendar follows this saved plan'
-            : 'The calendar carries the saved plan — save this draft first'}">📅 Sync to Calendar</button>`}
+      ${toolbar}
     </div>
+    ${steps}
 
     <div class="stats">
       <div class="stat"><span class="k">Scheduled</span><span class="v">${hrs(plan.totals.scheduled_hours)}</span>
-        <span class="s">${plan.totals.blocks} blocks across ${byDate.size} days</span></div>
+        <span class="s">${plan.totals.blocks} blocks</span></div>
       <div class="stat ${pv.totals.spare_hours < 0 ? 'bad' : 'good'}">
         <span class="k">Headroom</span><span class="v">${hrs(pv.totals.spare_hours)}</span>
         <span class="s">of ${hrs(pv.capacity.client_hours)} sellable · ${pct(pv.totals.load_pct)} loaded</span></div>
@@ -1208,16 +1236,10 @@ async function renderSchedule() {
         <span class="s">${plan.totals.unplaced_hours > 0 ? 'no room left in the month' : 'everything fits'}</span></div>
     </div>
 
-    ${plan.unplaced.length ? `<div class="banner"><div>
+    ${plan.unplaced?.length ? `<div class="banner"><div>
       <b>${plan.unplaced.length} sessions wouldn't fit.</b>
       ${esc([...new Set(plan.unplaced.map((u) => u.label))].slice(0, 6).join('; '))}.
     </div></div>` : ''}
-
-    <div class="banner ${plan.committed ? 'info' : ''}"><div>
-      ${plan.committed
-        ? 'This is a saved plan — move blocks between days, change their hours, or delete them and they stay put. Rebuilding from allocations discards these edits.'
-        : 'This is a draft from the scheduling recipes. Save it to start moving blocks around by hand.'}
-    </div></div>
 
     ${S.showRecipes ? `<div class="card">
       <header><h2>How this person's work is shaped</h2>
@@ -1243,28 +1265,36 @@ async function renderSchedule() {
       </table></div>
       <div class="body" style="border-top:1px solid var(--rule)">
         <p class="muted"><b>Max sittings</b> caps how many separate blocks one allocation is broken
-        into. Leave it 0 and the block size decides. It is a preference either way: if a block would
-        not physically fit a day, the daily ceiling wins and it splits further — which is why a 12h
-        build lands as 3 x 4h however this is set.
-        To pin something to a fixed day and time — a weekly call, a standing review — add it as a
-        <b>Fixed commitment</b> on the contract. That is per contract, so two clients' calls never
-        collide; a recipe default could only ever put everyone on the same slot.</p>
+        into. Leave it 0 and the block size decides. If a block would not physically fit a day,
+        the daily ceiling wins and it splits further. To pin something to a fixed day and time,
+        add it as a <b>Fixed commitment</b> on the contract.</p>
       </div>
     </div>` : ''}
 
-    ${plan.committed ? `<div class="card">
+    ${!S.showRecipes && state === 'none' ? `<div class="card">
+      <div class="body" style="text-align:center;padding:40px 20px">
+        <h2 style="margin-bottom:8px">No schedule for ${esc(monthName(S.period))} yet</h2>
+        <p class="muted" style="max-width:52ch;margin:0 auto 6px">Step 1 shapes how ${esc(pv.person.name)} likes to work;
+        <b>Suggest a schedule</b> then lays their allocated hours out for review. Nothing touches the
+        time sheet until you send it there.</p>
+      </div>
+    </div>` : ''}
+
+    ${!S.showRecipes && editing ? `<div id="seCal"></div>
+
+    <div class="card">
       <header><h2>Add a block</h2><p>Work the recipes knew nothing about</p></header>
       <div class="body"><div class="rowline">
         <select id="nbC"><option value="">No contract</option>${contractOptions}</select>
         <select id="nbD"><option value="">No deliverable</option>${deliverableOptions}</select>
         <select id="nbDate">${dayOptions(dates[0])}</select>
-        <input type="time" id="nbStart" value="09:00" style="width:104px">
+        <input type="time" id="nbStart" value="09:00" style="width:110px">
         <input type="number" id="nbH" step="0.25" min="0.25" value="1"><span class="muted">h</span>
         <button class="btn small primary" id="addBlock">Add</button>
       </div></div>
     </div>` : ''}
 
-    ${S.schedEdit && plan.committed ? '<div id="seCal"></div>' : `
+    ${!S.showRecipes && state === 'committed' && !S.schedEdit ? `
     <div class="weekgrid">${[...byDate.entries()].map(([date, blocks]) => `
       <div class="day">
         <h4><span>${esc(dayLabel(date))}</span>
@@ -1276,26 +1306,22 @@ async function renderSchedule() {
               b.accounted ? ' <span class="pill ok">✓ done</span>' : ''}</span>
             <span class="m">${hrs(b.minutes / 60)}</span>
           </div>`).join('')}
-      </div>`).join('') || '<p class="muted">Nothing scheduled this month.</p>'}</div>`}`;
+      </div>`).join('') || '<p class="muted">Nothing scheduled this month.</p>'}</div>` : ''}`;
 
+  // ---- wiring ---------------------------------------------------------------
   $('#schedPick').addEventListener('change', (e) => { S.personId = Number(e.target.value); S.schedWeek = 0; renderSchedule(); });
-  $('#schedCal')?.addEventListener('click', () => openCalendarPanel(!plan.committed));
+  $('#stepRecipes')?.addEventListener('click', () => { S.showRecipes = true; renderSchedule(); });
+  $('#toggleRecipes')?.addEventListener('click', () => { S.showRecipes = false; renderSchedule(); });
+  $('#schedCal')?.addEventListener('click', () => openCalendarPanel(false));
   $('#schedEdit')?.addEventListener('click', () => { S.schedEdit = true; S.schedWeek = S.schedWeek || 0; renderSchedule(); });
   $('#seDone')?.addEventListener('click', () => { S.schedEdit = false; renderSchedule(); });
-  if (S.schedEdit && plan.committed) renderSchedEditor(plan, dates);
 
-  $('#toggleRecipes').addEventListener('click', () => {
-    S.showRecipes = !S.showRecipes;
-    renderSchedule();
-  });
-
-  // anchor controls follow the distribution, so they never look live when idle
   $('#prSaveAll')?.addEventListener('click', async () => {
     let saved = 0;
     for (const tr of view().querySelectorAll('tr[data-orig]')) {
       const now = [$('.prc', tr).value, $('.prd', tr).value, Number($('.prb', tr).value),
         $('.prs', tr).checked ? 1 : 0, Number($('.prm', tr).value)];
-      if (JSON.stringify(now) === tr.dataset.orig) continue;   // untouched — no override created
+      if (JSON.stringify(now) === tr.dataset.orig) continue;
       await api(`/api/person-recipes/${S.personId}`, { body: {
         deliverable_id: Number(tr.dataset.d),
         cadence: now[0], distribution: now[1], block_minutes: now[2],
@@ -1307,54 +1333,53 @@ async function renderSchedule() {
     toast(saved ? `${saved} recipe${saved === 1 ? '' : 's'} saved for this person.` : 'Nothing changed.');
     renderSchedule();
   });
-
   view().querySelectorAll('.prReset').forEach((btn) => btn.addEventListener('click', async () => {
-    const tr = btn.closest('tr');
-    await api(`/api/person-recipes/${S.personId}/${tr.dataset.d}`, { method: 'DELETE' });
+    await api(`/api/person-recipes/${S.personId}/${btn.closest('tr').dataset.d}`, { method: 'DELETE' });
     toast('Back to the agency default.');
     renderSchedule();
   }));
 
   $('#genPlan')?.addEventListener('click', async () => {
-    if (plan.committed && !confirm('Rebuild from the allocations?\n\nEvery block you have moved, resized or added by hand will be replaced.')) return;
-    const r = await api(`/api/schedule/${S.personId}/generate${P()}`, { method: 'POST' });
-    toast(`Plan saved — ${r.saved} blocks${r.unplaced ? `, ${r.unplaced} could not be placed` : ''}.`);
+    if (state === 'committed'
+      && !confirm('Build a fresh suggestion? The pending plan is replaced by it once you review and send it — committed time stays either way.')) return;
+    const r = await api(`/api/schedule/${S.personId}/generate${P()}`, { method: 'POST', body: {} });
+    S.schedWeek = 0;
+    toast(`Suggested ${r.saved} blocks${r.kept ? ` around ${r.kept} committed` : ''}${r.unplaced ? ` — ${r.unplaced} wouldn't fit` : ''}.`);
     renderSchedule();
   });
-
+  $('#commitPlan')?.addEventListener('click', async () => {
+    const r = await api(`/api/schedule/${S.personId}/commit${P()}`, { method: 'POST', body: {} });
+    S.schedEdit = false;
+    toast(`On the time sheet — ${r.committed} blocks. The team confirms them day by day.`);
+    renderSchedule();
+  });
+  $('#dropDraft')?.addEventListener('click', async () => {
+    if (!confirm('Throw this suggestion away? The time sheet never saw it.')) return;
+    await api(`/api/schedule/${S.personId}/draft${P()}`, { method: 'DELETE' });
+    renderSchedule();
+  });
   const clear = $('#clearPlan');
   if (clear) clear.addEventListener('click', async () => {
-    if (!confirm('Discard this plan and go back to the live draft?')) return;
+    if (!confirm('Discard the pending plan? Committed time stays.')) return;
     await api(`/api/schedule/${S.personId}/plan${P()}`, { method: 'DELETE' });
-    toast('Plan discarded.');
+    toast('Pending plan discarded.');
     renderSchedule();
   });
 
-  const patch = async (id, body) => {
-    await api(`/api/schedule/block/${id}`, { method: 'PATCH', body });
-    renderSchedule();
-  };
-  view().querySelectorAll('.bDate').forEach((el) => el.addEventListener('change',
-    () => patch(el.dataset.b, { date: el.value })));
-  view().querySelectorAll('.bStart').forEach((el) => el.addEventListener('change',
-    () => patch(el.dataset.b, { start: el.value })));
-  view().querySelectorAll('.bH').forEach((el) => el.addEventListener('change',
-    () => patch(el.dataset.b, { hours: Number(el.value) })));
-  view().querySelectorAll('.bDel').forEach((el) => el.addEventListener('click', async () => {
-    await api(`/api/schedule/block/${el.dataset.b}`, { method: 'DELETE' });
-    renderSchedule();
-  }));
-
-  const add = $('#addBlock');
-  if (add) add.addEventListener('click', async () => {
+  $('#addBlock')?.addEventListener('click', async () => {
     await api('/api/schedule/block', { body: {
       person_id: S.personId, period: S.period,
       contract_id: Number($('#nbC').value) || null,
       deliverable_id: Number($('#nbD').value) || null,
-      date: $('#nbDate').value, start: $('#nbStart').value, hours: Number($('#nbH').value) } });
+      date: $('#nbDate').value, start: $('#nbStart').value,
+      minutes: Math.round(Number($('#nbH').value) * 4) * 15,
+      draft: state === 'draft',
+    } });
     toast('Block added.');
     renderSchedule();
   });
+
+  if (editing) renderSchedEditor(plan, dates);
 }
 
 // ---------------------------------------------------------------------------
@@ -2621,17 +2646,29 @@ async function drawReport(qs) {
   const bLabel = (b) => (r.grain === 'month' ? monthName(b).slice(0, 3)
     : r.grain === 'week' ? `w/c ${b.slice(8)}/${b.slice(5, 7)}` : b.slice(8));
 
+  // the header tells the story in a sentence before any table does
+  const topC = r.by_contract[0]; const topP = r.by_person[0]; const topD = r.by_deliverable[0];
+  const narrative = r.totals.entries === 0 ? 'Nothing was logged in this range.'
+    : [
+      `${r.totals.people === 1 ? (topP ? esc(topP.name) : 'One person') : `${r.totals.people} people`}`
+      + ` delivered <b>${h(r.totals.hours)} hours</b> across ${r.totals.days_worked} working day${r.totals.days_worked === 1 ? '' : 's'}`,
+      !S.repC && topC ? `the largest share went to <b>${esc(topC.name)}</b> (${h(topC.share, 1)}%)` : null,
+      topD ? `most of the time was <b>${esc(topD.name)}</b>` : null,
+    ].filter(Boolean).join(' — ') + '.';
+
   el.innerHTML = `
     <div class="rep-head card">
-      <div>
+      <div class="rep-title">
         <span class="rep-brand">Emotio<b>Hours</b></span>
         <h1>Time report — ${esc(subject)}</h1>
         <p class="muted">${nice(r.from)} to ${nice(r.to)} · prepared ${nice(todayIso())}</p>
+        <p class="rep-narrative">${narrative}</p>
       </div>
-      <div class="stats" style="margin:0">
+      <div class="stats rep-tiles">
         <div class="stat"><span class="k">Hours delivered</span><span class="v">${hrs(r.totals.hours)}</span></div>
         <div class="stat"><span class="k">Days worked</span><span class="v">${r.totals.days_worked}</span></div>
         <div class="stat"><span class="k">People</span><span class="v">${r.totals.people}</span></div>
+        <div class="stat"><span class="k">Clients</span><span class="v">${r.totals.contracts}</span></div>
         <div class="stat"><span class="k">Entries</span><span class="v">${r.totals.entries}</span></div>
       </div>
     </div>

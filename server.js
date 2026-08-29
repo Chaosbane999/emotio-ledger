@@ -907,8 +907,10 @@ app.get('/api/schedule/:id', ok((req, res) => {
 
   if (saved.length) {
     const person = db.prepare('SELECT id, name FROM people WHERE id = ?').get(id);
+    // a draft anywhere means the month is under review — the journey's step 2
+    const state = saved.some((b) => b.draft) ? 'draft' : 'committed';
     return res.json({
-      person, period: p, committed: true, blocks: saved, unplaced: [],
+      person, period: p, state, committed: state === 'committed', blocks: saved, unplaced: [],
       totals: {
         scheduled_hours: cap.round2(saved.reduce((s, b) => s + b.minutes, 0) / 60),
         unplaced_hours: 0, blocks: saved.length,
@@ -918,7 +920,7 @@ app.get('/api/schedule/:id', ok((req, res) => {
 
   const plan = schedule.planPerson(id, p);
   if (!plan) return res.status(404).json({ error: 'no such person' });
-  res.json({ ...plan, committed: false });
+  res.json({ ...plan, state: 'none', committed: false });
 }));
 
 /** Commit the packer's draft, replacing anything already saved. */
@@ -934,14 +936,28 @@ app.post('/api/schedule/:id/generate', ok((req, res) => {
     AND NOT EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = schedule_blocks.id)`)
     .run(id, p);
   const ins = db.prepare(`INSERT INTO schedule_blocks
-    (person_id, period, contract_id, deliverable_id, label, date, start, minutes, anchored, manual)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`);
+    (person_id, period, contract_id, deliverable_id, label, date, start, minutes, anchored, manual, draft)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`);
   const fresh = plan.blocks.filter((b) => !b.kept);
   for (const b of fresh) {
     ins.run(id, p, b.contract_id || null, b.deliverable_id || null,
       b.label, b.date, b.start, Math.round(b.minutes), b.anchored ? 1 : 0);
   }
   res.json({ saved: fresh.length, kept: plan.blocks.length - fresh.length, unplaced: plan.unplaced.length });
+}));
+
+/** Step 3: the reviewed suggestion goes onto the time sheet in one flip. */
+app.post('/api/schedule/:id/commit', ok((req, res) => {
+  const r = db.prepare('UPDATE schedule_blocks SET draft = 0 WHERE person_id = ? AND period = ? AND draft = 1')
+    .run(Number(req.params.id), period(req));
+  res.json({ committed: r.changes });
+}));
+
+/** Throw the suggestion away — the time sheet never saw it. */
+app.delete('/api/schedule/:id/draft', ok((req, res) => {
+  const r = db.prepare('DELETE FROM schedule_blocks WHERE person_id = ? AND period = ? AND draft = 1')
+    .run(Number(req.params.id), period(req));
+  res.json({ discarded: r.changes });
 }));
 
 /** Discard the plan — the uncommitted part. Answered blocks are the record
@@ -986,12 +1002,13 @@ app.post('/api/schedule/block', ok((req, res) => {
   const d = b.deliverable_id ? db.prepare('SELECT name FROM deliverables WHERE id = ?').get(b.deliverable_id) : null;
   const label = b.label || [c?.name, d?.name].filter(Boolean).join(' — ') || 'Untitled';
 
+  const minutes = b.minutes ? Math.max(15, Math.round(Number(b.minutes) / 15) * 15)
+    : Math.max(15, Math.round((Number(b.hours || 1) * 60) / 15) * 15);
   db.prepare(`INSERT INTO schedule_blocks
-    (person_id, period, contract_id, deliverable_id, label, date, start, minutes, anchored, manual)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`)
+    (person_id, period, contract_id, deliverable_id, label, date, start, minutes, anchored, manual, draft)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?)`)
     .run(b.person_id, b.period || period(req), b.contract_id || null, b.deliverable_id || null,
-      label, b.date, b.start || '09:00',
-      Math.max(15, Math.round((Number(b.hours || 1) * 60) / 15) * 15));
+      label, b.date, b.start || '09:00', minutes, b.draft ? 1 : 0);
   res.json({ ok: true });
 }));
 
