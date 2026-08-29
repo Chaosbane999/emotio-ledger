@@ -1589,7 +1589,7 @@ async function renderSettings() {
         <thead><tr><th>Deliverable</th><th>Cadence</th><th>Distribution</th><th class="num">Block (min)</th>
           <th>Splittable</th><th class="num">Max sittings</th><th></th></tr></thead>
         <tbody>${recipes.map((r) => `<tr data-d="${r.id}">
-          <td>${esc(r.name)}${r.internal ? ' <span class="pill mute">internal</span>' : ''}</td>
+          <td><input type="text" class="dn" value="${esc(r.name)}" style="width:210px">${r.internal ? ' <span class="pill mute">internal</span>' : ''}</td>
           <td><select class="rc">${['daily', 'weekly', 'fortnightly', 'monthly', 'oneoff'].map((x) =>
             `<option${r.cadence === x ? ' selected' : ''}>${x}</option>`).join('')}</select></td>
           <td><select class="rd">${['spread', 'frontload', 'deadline'].map((x) =>
@@ -1597,9 +1597,16 @@ async function renderSettings() {
           <td class="num"><input type="number" class="rb" step="15" min="15" value="${r.block_minutes ?? 60}"></td>
           <td><input type="checkbox" class="rs"${r.splittable ? ' checked' : ''}></td>
           <td class="num"><input type="number" class="rm" step="1" min="0" value="${r.max_sittings ?? 0}"></td>
-          <td class="num"><button class="btn small primary saver">Save</button></td>
+          <td class="num"><button class="btn small primary saver">Save</button>
+            <button class="btn small danger deld">Remove</button></td>
         </tr>`).join('')}</tbody>
       </table></div>
+      <div class="body" style="border-top:1px solid var(--rule)">
+        <div class="rowline"><label>Add deliverable</label>
+          <input type="text" id="ndName" placeholder="e.g. Email marketing" style="flex:1;min-width:220px">
+          <label class="muted"><input type="checkbox" id="ndInternal"> internal</label>
+          <button class="btn small primary" id="addDeliv">Add</button></div>
+      </div>
     </div>
 
     <div class="grid2">
@@ -1779,13 +1786,31 @@ function wireSettings() {
   view().querySelectorAll('.saver').forEach((btn) => btn.addEventListener('click', async () => {
     const tr = btn.closest('tr');
     await api('/api/deliverables', { body: {
-      id: Number(tr.dataset.d), name: tr.cells[0].textContent.replace(/\s*internal\s*$/i, '').trim(),
+      id: Number(tr.dataset.d), name: $('.dn', tr).value.trim(),
       recipe: {
         cadence: $('.rc', tr).value, distribution: $('.rd', tr).value,
         block_minutes: Number($('.rb', tr).value), splittable: $('.rs', tr).checked,
         max_sittings: Number($('.rm', tr).value),
         anchor_dow: 2, anchor_time: '10:00' } } });
     toast('Recipe saved.');
+  }));
+
+  $('#addDeliv')?.addEventListener('click', async () => {
+    const name = $('#ndName').value.trim();
+    if (!name) return toast('Give the deliverable a name.');
+    await api('/api/deliverables', { body: { name, internal: $('#ndInternal').checked } });
+    S.boot = await api(`/api/bootstrap${P()}`);
+    toast('Deliverable added.'); renderSettings();
+  });
+
+  view().querySelectorAll('.deld').forEach((btn) => btn.addEventListener('click', async () => {
+    const tr = btn.closest('tr');
+    if (!confirm(`Remove "${$('.dn', tr).value.trim()}"? If it has history it is archived instead.`)) return;
+    const r = await api(`/api/deliverables/${tr.dataset.d}`, { method: 'DELETE' });
+    S.boot = await api(`/api/bootstrap${P()}`);
+    toast(r.archived ? 'Archived — it had logged history, so it keeps its past but leaves the lists.'
+      : 'Deliverable removed.');
+    renderSettings();
   }));
 
   $('#saveSettings').addEventListener('click', async () => {

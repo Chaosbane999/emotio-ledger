@@ -920,6 +920,18 @@ app.post('/api/deliverables', ok((req, res) => {
     LEFT JOIN recipes r ON r.deliverable_id = d.id ORDER BY d.internal, d.sort_order`).all());
 }));
 
+/** Removing a deliverable: hard-delete only when nothing references it —
+ *  allocations cascade and blocks/entries null out, so a used deliverable is
+ *  archived instead (gone from every picker, history intact). */
+app.delete('/api/deliverables/:id', ok((req, res) => {
+  const id = Number(req.params.id);
+  const used = ['allocations', 'time_entries', 'schedule_blocks', 'actuals', 'timers']
+    .reduce((n, t) => n + db.prepare(`SELECT COUNT(*) c FROM ${t} WHERE deliverable_id = ?`).get(id).c, 0);
+  if (used) db.prepare('UPDATE deliverables SET active = 0 WHERE id = ?').run(id);
+  else db.prepare('DELETE FROM deliverables WHERE id = ?').run(id);
+  res.json({ archived: !!used });
+}));
+
 app.get('/api/recipes', ok((req, res) => {
   res.json(db.prepare(`SELECT d.id, d.name, d.internal, r.cadence, r.distribution, r.block_minutes,
     r.splittable, r.max_sittings, r.anchor_dow, r.anchor_time
