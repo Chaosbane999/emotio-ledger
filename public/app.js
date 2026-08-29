@@ -2370,16 +2370,16 @@ function openGhostMenu(b) {
   document.querySelector('.tpanel')?.remove();
   const p = document.createElement('div');
   p.className = 'tpanel card';
+  const future = b.date > todayIso();
   p.innerHTML = `
     <header><h2>${esc(b.label)}</h2><button class="btn small" id="tpX">✕</button></header>
-    <p class="muted">Planned ${b.start || ''} · ${hm(b.minutes)}</p>
+    <div class="tmeta">Planned ${niceDay(b.date)}${b.start ? ` · ${b.start}` : ''} · ${hm(b.minutes)}
+      ${future ? '<span class="pill mute">later — tick it once it\'s happened</span>' : ''}</div>
     <div class="rowline"><input type="text" id="tgNote" placeholder="note (optional)" style="flex:1"></div>
     <div class="rowline">
-      ${b.date <= todayIso()
-        ? '<button class="btn primary small" id="tgCf">✓ As planned</button>'
-        : '<span class="muted">Planned for later — tick it once it\'s happened.</span>'}
+      <button class="btn small danger" id="tgSk">✗ ${future ? "Won't happen" : "Didn't happen"}</button>
       <span class="spacer"></span>
-      <button class="btn small danger" id="tgSk">✗ ${b.date <= todayIso() ? "Didn't happen" : "Won't happen"}</button></div>`;
+      ${future ? '' : '<button class="btn primary small" id="tgCf">✓ As planned</button>'}</div>`;
   view().appendChild(p);
   $('#tpX').addEventListener('click', () => p.remove());
   $('#tgCf')?.addEventListener('click', async () => {
