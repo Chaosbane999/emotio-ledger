@@ -1177,13 +1177,21 @@ async function renderSchedule() {
       <span class="spacer"></span>
       ${S.showRecipes ? `
         <button class="btn small" id="toggleRecipes">Cancel</button>
-        <button class="btn small primary" id="prSaveAll">Save</button>` : `
+        <button class="btn small primary" id="prSaveAll">Save</button>`
+      : S.schedEdit && plan.committed ? `
+        <button class="btn small" id="sePrev">‹</button>
+        <b id="seWeekLbl"></b>
+        <button class="btn small" id="seNext">›</button>
+        <span class="spacer"></span>
+        <button class="btn small primary" id="seDone">Done editing</button>`
+      : `
         <button class="btn small" id="toggleRecipes">How this person's work is shaped</button>
-        <button class="btn small ${plan.committed ? '' : 'primary'}" id="genPlan"
-          title="${plan.committed ? 'Re-plan what is still pending — committed time keeps its ground'
-            : 'Put this plan on the time sheet, where the team confirms it day by day'}">
-          ${plan.committed ? 'Rebuild from allocations' : 'Send to time sheet'}</button>
-        ${plan.committed ? '<button class="btn small danger" id="clearPlan" title="Clears what is still pending — committed time stays">Discard pending plan</button>' : ''}
+        ${plan.committed ? `
+          <button class="btn small primary" id="schedEdit" title="Drag blocks around the week, resize them, or click one for exact times">Edit Schedule</button>
+          <button class="btn small" id="genPlan" title="Re-plan what is still pending — committed time keeps its ground">Rebuild from allocations</button>
+          <button class="btn small danger" id="clearPlan" title="Clears what is still pending — committed time stays">Discard pending plan</button>`
+        : `<button class="btn small primary" id="genPlan"
+            title="Put this plan on the time sheet, where the team confirms it day by day">Send to time sheet</button>`}
         <button class="btn small primary" id="schedCal"
           title="${plan.committed ? 'Subscribe once — the calendar follows this saved plan'
             : 'The calendar carries the saved plan — save this draft first'}">📅 Sync to Calendar</button>`}
@@ -1256,29 +1264,25 @@ async function renderSchedule() {
       </div></div>
     </div>` : ''}
 
+    ${S.schedEdit && plan.committed ? '<div id="seCal"></div>' : `
     <div class="weekgrid">${[...byDate.entries()].map(([date, blocks]) => `
       <div class="day">
         <h4><span>${esc(dayLabel(date))}</span>
           <span>${hrs(blocks.reduce((s, b) => s + b.minutes, 0) / 60)}</span></h4>
-        ${blocks.map((b) => plan.committed ? `
-          <div class="blk${b.anchored ? ' fixed' : ''}${b.manual ? ' manual' : ''}">
-            <select class="bDate" data-b="${b.id}">${dayOptions(b.date)}</select>
-            <input type="time" class="bStart" data-b="${b.id}" value="${esc(b.start)}">
-            <input type="number" class="bH" data-b="${b.id}" step="0.25" min="0.25"
-              value="${h(b.minutes / 60)}"><span class="muted">h</span>
-            <span class="lbl">${esc(b.label)}${b.anchored ? ' <span class="pill info">fixed</span>' : ''}${
-              b.manual ? ' <span class="pill warn">moved</span>' : ''}</span>
-            <button class="btn small danger bDel" data-b="${b.id}">Remove</button>
-          </div>` : `
-          <div class="blk${b.anchored ? ' fixed' : ''}">
-            <span class="t">${esc(b.start)}–${esc(b.end)}</span>
-            <span>${esc(b.label)}${b.anchored ? ' <span class="pill info">fixed</span>' : ''}</span>
+        ${blocks.map((b) => `
+          <div class="blk${b.anchored ? ' fixed' : ''}${b.manual ? ' manual' : ''}${b.accounted ? ' done' : ''}">
+            <span class="t">${esc(b.start || '')}${b.end ? `–${esc(b.end)}` : ''}</span>
+            <span>${esc(b.label)}${b.anchored ? ' <span class="pill info">fixed</span>' : ''}${
+              b.accounted ? ' <span class="pill ok">✓ done</span>' : ''}</span>
             <span class="m">${hrs(b.minutes / 60)}</span>
           </div>`).join('')}
-      </div>`).join('') || '<p class="muted">Nothing scheduled this month.</p>'}</div>`;
+      </div>`).join('') || '<p class="muted">Nothing scheduled this month.</p>'}</div>`}`;
 
-  $('#schedPick').addEventListener('change', (e) => { S.personId = Number(e.target.value); renderSchedule(); });
+  $('#schedPick').addEventListener('change', (e) => { S.personId = Number(e.target.value); S.schedWeek = 0; renderSchedule(); });
   $('#schedCal')?.addEventListener('click', () => openCalendarPanel(!plan.committed));
+  $('#schedEdit')?.addEventListener('click', () => { S.schedEdit = true; S.schedWeek = S.schedWeek || 0; renderSchedule(); });
+  $('#seDone')?.addEventListener('click', () => { S.schedEdit = false; renderSchedule(); });
+  if (S.schedEdit && plan.committed) renderSchedEditor(plan, dates);
 
   $('#toggleRecipes').addEventListener('click', () => {
     S.showRecipes = !S.showRecipes;
@@ -1756,6 +1760,11 @@ const todayIso = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
+const mondayOf = (iso) => {
+  const d = new Date(`${iso}T00:00:00`);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 const timeShiftDay = (iso, n) => {
   const d = new Date(`${iso}T00:00:00`);
   d.setDate(d.getDate() + n);
@@ -2227,7 +2236,7 @@ function wireWeekDrag(v, lo) {
         startX: ev.clientX, startY: ev.clientY, moved: false };
     }
     ev.preventDefault();
-    body.setPointerCapture(ev.pointerId);
+    try { body.setPointerCapture(ev.pointerId); } catch (e) { /* synthetic pointers */ }
   });
 
   body.addEventListener('pointermove', (ev) => {
@@ -2666,4 +2675,168 @@ async function drawReport(qs) {
         </tr>`).join('') || '<tr><td colspan="6" class="muted">Nothing logged in this range.</td></tr>'}</tbody>
       </table></div>
     </div>`;
+}
+
+// ===========================================================================
+// The schedule editor — the plan on a calendar you can push around. Drag a
+// block to move it, drag its bottom edge to resize, click it for exact times.
+// Blocks that are already answered (done or skipped) are the record, not the
+// plan: they show, but they don't move.
+// ===========================================================================
+
+function renderSchedEditor(plan, dates) {
+  const weeks = [];
+  for (const d of dates) {
+    const wk = mondayOf(d);
+    if (!weeks.length || weeks[weeks.length - 1].monday !== wk) weeks.push({ monday: wk, days: [] });
+    weeks[weeks.length - 1].days.push(d);
+  }
+  if (!weeks.length) { $('#seCal').innerHTML = '<p class="muted">No working days this month.</p>'; return; }
+  S.schedWeek = Math.max(0, Math.min(S.schedWeek || 0, weeks.length - 1));
+  const week = weeks[S.schedWeek];
+  $('#seWeekLbl').textContent = `Week ${S.schedWeek + 1} of ${weeks.length} — ${niceDay(week.days[0])} to ${niceDay(week.days[week.days.length - 1])}`;
+  $('#sePrev').onclick = () => { S.schedWeek = Math.max(0, S.schedWeek - 1); renderSchedule(); };
+  $('#seNext').onclick = () => { S.schedWeek = Math.min(weeks.length - 1, S.schedWeek + 1); renderSchedule(); };
+
+  const blocks = plan.blocks.filter((b) => week.days.includes(b.date));
+  let lo = 7 * 60; let hi = 19 * 60;
+  for (const b of blocks) {
+    if (!b.start) continue;
+    const s2 = toMinOfDay(b.start);
+    lo = Math.min(lo, Math.floor(s2 / 60) * 60);
+    hi = Math.max(hi, Math.ceil((s2 + b.minutes) / 60) * 60);
+  }
+  const height = (hi - lo) * T_PPM;
+  const hours = []; for (let m = lo; m <= hi; m += 60) hours.push(m);
+  const pos = (start, minutes) => `top:${(toMinOfDay(start) - lo) * T_PPM}px;height:${Math.max(18, minutes * T_PPM)}px`;
+
+  $('#seCal').innerHTML = `<div class="card tw-card">
+    <div class="tw-head"><div class="tw-gutter"></div>
+      ${week.days.map((d) => {
+        const dayMin = blocks.filter((b) => b.date === d).reduce((s2, b) => s2 + b.minutes, 0);
+        return `<div class="tw-col-head ${d === todayIso() ? 'today' : ''}">
+          <b>${niceDay(d)}</b><span class="sub">${hm(dayMin)} planned</span></div>`;
+      }).join('')}
+    </div>
+    <div class="tw-scroll"><div class="tw-body">
+      <div class="tw-gutter" style="height:${height}px">
+        ${hours.slice(0, -1).map((m) => `<div class="tw-hlabel" style="top:${(m - lo) * T_PPM}px">${fromMinOfDay(m)}</div>`).join('')}
+      </div>
+      ${week.days.map((d) => `<div class="tw-day" data-date="${d}">
+        <div class="tw-grid" style="height:${height}px">
+          ${hours.slice(0, -1).map((m) => `<div class="tw-hour" style="top:${(m - lo) * T_PPM}px"></div>`).join('')}
+          ${blocks.filter((b) => b.date === d && b.start).map((b) => b.accounted ? `
+            <div class="tw-ghost done" style="${pos(b.start, b.minutes)}" title="Committed — the record, not the plan">
+              <span>${esc(b.label)}</span><em>${hm(b.minutes)} ✓</em></div>` : `
+            <div class="tw-entry plan${b.anchored ? ' fixed' : ''}" data-kind="sblock" data-id="${b.id}"
+              style="${pos(b.start, b.minutes)}" title="drag to move · drag the lower edge to resize · click for exact times">
+              <span>${esc(b.label)}</span><em>${hm(b.minutes)}</em>
+              <div class="tw-resize" data-kind="sresize" data-id="${b.id}"></div>
+            </div>`).join('')}
+        </div>
+      </div>`).join('')}
+    </div></div>
+    <p class="muted" style="padding:8px 16px">Committed blocks (✓) are the record and stay put.
+      The quarter-hour grain applies; a drop that overlaps another block is refused by name.</p>
+  </div>`;
+
+  wireSchedDrag(plan, lo);
+}
+
+function wireSchedDrag(plan, lo) {
+  const body = view().querySelector('#seCal .tw-body');
+  if (!body) return;
+  let drag = null;
+  const slotOf = (ev) => {
+    const day = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('#seCal .tw-day');
+    if (!day) return null;
+    const rect = day.querySelector('.tw-grid').getBoundingClientRect();
+    const min = Math.round((ev.clientY - rect.top) / T_PPM / T_SNAP) * T_SNAP + lo;
+    return { date: day.dataset.date, min: Math.max(lo, min) };
+  };
+
+  body.addEventListener('pointerdown', (ev) => {
+    const t = ev.target.closest('[data-kind]');
+    if (!t) return;
+    const b = plan.blocks.find((x) => x.id === Number(t.dataset.id));
+    if (!b) return;
+    if (t.dataset.kind === 'sresize') {
+      drag = { kind: 'resize', block: b, el: t.closest('.tw-entry'), startY: ev.clientY, moved: false };
+    } else {
+      const box = t.getBoundingClientRect();
+      drag = { kind: 'move', block: b, el: t, grabOffset: ev.clientY - box.top,
+        startX: ev.clientX, startY: ev.clientY, moved: false };
+    }
+    ev.preventDefault();
+    try { body.setPointerCapture(ev.pointerId); } catch (e) { /* synthetic pointers */ }
+  });
+
+  body.addEventListener('pointermove', (ev) => {
+    if (!drag) return;
+    if (Math.abs(ev.clientX - (drag.startX ?? ev.clientX)) + Math.abs(ev.clientY - drag.startY) > 4) drag.moved = true;
+    if (!drag.moved) return;
+    if (drag.kind === 'resize') {
+      const mins = Math.max(T_SNAP,
+        Math.round((drag.block.minutes * T_PPM + ev.clientY - drag.startY) / T_PPM / T_SNAP) * T_SNAP);
+      drag.el.style.height = `${Math.max(18, mins * T_PPM)}px`;
+      drag.mins = mins;
+    } else {
+      const slot = slotOf({ clientX: ev.clientX, clientY: ev.clientY - drag.grabOffset + 1 });
+      if (!slot) return;
+      drag.slot = slot;
+      drag.el.classList.add('dragging');
+      const grid = document.querySelector(`#seCal .tw-day[data-date="${slot.date}"] .tw-grid`);
+      if (drag.el.parentElement !== grid) grid.appendChild(drag.el);
+      drag.el.style.top = `${(slot.min - lo) * T_PPM}px`;
+    }
+  });
+
+  body.addEventListener('pointerup', async () => {
+    const d = drag; drag = null;
+    if (!d) return;
+    try {
+      if (!d.moved) { openBlockEditor(d.block); return; }
+      if (d.kind === 'resize' && d.mins && d.mins !== d.block.minutes) {
+        await timeApi('/resize-block', { body: { block_id: d.block.id, minutes: d.mins } });
+      } else if (d.kind === 'move' && d.slot) {
+        await timeApi('/move-block', { body: { block_id: d.block.id, date: d.slot.date, start: fromMinOfDay(d.slot.min) } });
+      }
+      renderSchedule();
+    } catch (err) { toast(err.message, true); renderSchedule(); }
+  });
+}
+
+/** Exact control over one planned block: day, start, length — or remove it. */
+function openBlockEditor(b) {
+  document.querySelector('.tpanel')?.remove();
+  const p = document.createElement('div');
+  p.className = 'tpanel card';
+  p.innerHTML = `
+    <header><h2>${esc(b.label)}</h2><button class="btn small" id="tpX">✕</button></header>
+    <div class="rowline"><label>Day</label><input type="date" id="sbDate" value="${b.date}"></div>
+    <div class="rowline"><label>Start</label><input type="time" id="sbStart" value="${b.start || '09:00'}"></div>
+    <div class="rowline"><label>Hours</label><input type="number" id="sbH" step="0.25" min="0.25" value="${h(b.minutes / 60)}"></div>
+    <div class="rowline"><span class="spacer"></span>
+      ${S.me?.role === 'admin' ? '<button class="btn danger small" id="sbDel">Remove</button>' : ''}
+      <button class="btn primary small" id="sbSave">Save</button></div>`;
+  view().appendChild(p);
+  $('#tpX').addEventListener('click', () => p.remove());
+  $('#sbDel')?.addEventListener('click', async () => {
+    await api(`/api/schedule/block/${b.id}`, { method: 'DELETE' });
+    p.remove(); renderSchedule();
+  });
+  $('#sbSave').addEventListener('click', async () => {
+    try {
+      const date = $('#sbDate').value; const start = $('#sbStart').value;
+      const minutes = Math.round(Number($('#sbH').value) * 4) * 15;
+      // shrink before moving, grow after — the overlap check always sees the
+      // size the block will actually have in its destination
+      if (minutes < b.minutes) await timeApi('/resize-block', { body: { block_id: b.id, minutes } });
+      if (date !== b.date || start !== b.start) {
+        await timeApi('/move-block', { body: { block_id: b.id, date, start } });
+      }
+      if (minutes > b.minutes) await timeApi('/resize-block', { body: { block_id: b.id, minutes } });
+      p.remove(); toast('Saved.'); renderSchedule();
+    } catch (err) { toast(err.message, true); }
+  });
 }

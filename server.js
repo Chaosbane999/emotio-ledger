@@ -901,8 +901,9 @@ app.post('/api/settings', ok((req, res) => {
 app.get('/api/schedule/:id', ok((req, res) => {
   const id = Number(req.params.id);
   const p = period(req);
-  const saved = db.prepare(
-    'SELECT * FROM schedule_blocks WHERE person_id = ? AND period = ? ORDER BY date, start').all(id, p);
+  const saved = db.prepare(`
+    SELECT b.*, EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = b.id) AS accounted
+      FROM schedule_blocks b WHERE b.person_id = ? AND b.period = ? ORDER BY b.date, b.start`).all(id, p);
 
   if (saved.length) {
     const person = db.prepare('SELECT id, name FROM people WHERE id = ?').get(id);
@@ -997,8 +998,9 @@ app.post('/api/schedule/block', ok((req, res) => {
 app.get('/api/schedule/:id/ics', ok((req, res) => {
   const p = period(req);
   const id = Number(req.params.id);
-  const saved = db.prepare(
-    'SELECT * FROM schedule_blocks WHERE person_id = ? AND period = ? ORDER BY date, start').all(id, p);
+  const saved = db.prepare(`
+    SELECT b.*, EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = b.id) AS accounted
+      FROM schedule_blocks b WHERE b.person_id = ? AND b.period = ? ORDER BY b.date, b.start`).all(id, p);
   const person = db.prepare('SELECT id, name FROM people WHERE id = ?').get(id);
   if (!person) return res.status(404).json({ error: 'no such person' });
 
