@@ -11,8 +11,13 @@ const cap = require('./capacity');
 
 const MAX_DAY_MINUTES = 24 * 60;
 
+// A real calendar date inside a plausible business window. Year 0 parses
+// perfectly well in JavaScript and would sit outside every period, quietly
+// polluting exports and reports.
 const isDate = (v) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(v || '')) return false;
+  const year = Number(v.slice(0, 4));
+  if (year < 2000 || year > 2100) return false;
   const d = new Date(`${v}T00:00:00Z`);
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
 };

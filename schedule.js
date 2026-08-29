@@ -587,7 +587,16 @@ const VTIMEZONE = [
   'END:VTIMEZONE',
 ];
 
-const esc = (s) => String(s).replace(/\\/g, '\\\\').replace(/;/g, '\\;')
+/**
+ * RFC 5545 text escaping. Line endings are normalised and every other control
+ * character stripped BEFORE escaping: a raw CR surviving into a value is
+ * malformed, and lenient parsers treat a lone CR as a line break — which lets
+ * a note forge calendar properties in someone's subscribed calendar.
+ */
+const esc = (s) => String(s)
+  .replace(/\r\n?/g, '\n')
+  .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+  .replace(/\\/g, '\\\\').replace(/;/g, '\\;')
   .replace(/,/g, '\\,').replace(/\n/g, '\\n');
 
 /** RFC 5545 wants lines folded at 75 octets. */
