@@ -2811,8 +2811,8 @@ function renderSchedEditor(plan, dates) {
       </div>
     </div>`;
   }).join('') + `<p class="muted" style="padding:0 4px 12px">Drag a block anywhere in the month —
-    between weeks included. Drag the lower edge to resize, click for exact times.
-    Committed blocks (✓) are the record and stay put.</p>`;
+    between weeks included. Drag the lower edge to resize, click a block for exact times,
+    or <b>click an empty slot to put work there</b>. Committed blocks (✓) are the record and stay put.</p>`;
 
   wireSchedDrag(plan);
 }
@@ -2886,6 +2886,57 @@ function wireSchedDrag(plan) {
       }
       renderSchedule();
     } catch (err) { toast(err.message, true); renderSchedule(); }
+  });
+
+  // an empty slot is an invitation: click it and say what goes there
+  root.addEventListener('click', (ev) => {
+    if (ev.target.closest('[data-kind], .tw-ghost')) return;   // blocks have their own click
+    const day = ev.target.closest('#seCal .tw-day');
+    if (!day || day.classList.contains('tw-off') || !day.dataset.date) return;
+    const grid = day.querySelector('.tw-grid');
+    if (!grid.contains(ev.target) && ev.target !== grid) return;
+    const lo = loOf(day);
+    const rect = grid.getBoundingClientRect();
+    const min = Math.max(lo, Math.round((ev.clientY - rect.top) / T_PPM / T_SNAP) * T_SNAP + lo);
+    openNewBlockPanel(day.dataset.date, fromMinOfDay(min), plan.state === 'draft');
+  });
+}
+
+/** New work, born where you clicked: day and time prefilled, you name the rest. */
+function openNewBlockPanel(date, start, isDraft) {
+  document.querySelector('.tpanel')?.remove();
+  const contracts = S.boot.contracts.filter((c) => !c.archived);
+  const delivs = S.boot.deliverables;
+  const p = document.createElement('div');
+  p.className = 'tpanel card';
+  p.innerHTML = `
+    <header><h2>New block</h2><button class="btn small" id="tpX">✕</button></header>
+    <div class="tmeta">${niceDay(date)} · ${start}${isDraft ? '<span class="pill warn">into the suggestion</span>' : ''}</div>
+    <div class="rowline"><label>Contract</label>
+      <select id="nwC" style="flex:1"><option value="">No contract</option>${contracts.map((c) =>
+        `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+    <div class="rowline"><label>Task</label>
+      <select id="nwD" style="flex:1"><option value="">No deliverable</option>${delivs.map((d) =>
+        `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
+    <div class="rowline"><label>Start</label><input type="time" id="nwStart" value="${start}">
+      <label style="min-width:auto">for</label>
+      <input type="number" id="nwH" step="0.25" min="0.25" value="1" style="width:80px"><span class="muted">h</span></div>
+    <div class="rowline"><span class="spacer"></span>
+      <button class="btn primary small" id="nwGo">Add it</button></div>`;
+  view().appendChild(p);
+  $('#tpX').addEventListener('click', () => p.remove());
+  $('#nwGo').addEventListener('click', async () => {
+    try {
+      await api('/api/schedule/block', { body: {
+        person_id: S.personId, period: S.period,
+        contract_id: Number($('#nwC').value) || null,
+        deliverable_id: Number($('#nwD').value) || null,
+        date, start: $('#nwStart').value || start,
+        minutes: Math.round(Number($('#nwH').value) * 4) * 15,
+        draft: isDraft,
+      } });
+      p.remove(); toast('Added to the plan.'); renderSchedule();
+    } catch (err) { toast(err.message, true); }
   });
 }
 
