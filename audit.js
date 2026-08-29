@@ -137,14 +137,33 @@ for (const P of periods) {
     const plan = sch.planPerson(p.id, P);
     const perDay = (p.weekly_hours / 5) * 60;
 
-    const allocated = db.prepare(`SELECT COALESCE(SUM(a.hours),0) h FROM allocations a
+    // The plan covers what is still to do: each allocation line less what is
+    // already logged against it (a remainder under the 15-minute grain is
+    // dropped — it cannot be scheduled), plus kept blocks, which stay in the
+    // plan at their planned length. With nothing logged this reduces to the
+    // old identity: scheduled + unplaced = allocated + anchors.
+    const lines = db.prepare(`SELECT a.contract_id, a.deliverable_id, a.hours FROM allocations a
       JOIN contracts c ON c.id = a.contract_id
-      WHERE a.person_id = ? AND a.period = ? AND c.archived = 0`).get(p.id, P).h;
+      WHERE a.person_id = ? AND a.period = ? AND c.archived = 0 AND a.hours > 0`).all(p.id, P);
+    const loggedBy = new Map(db.prepare(`SELECT contract_id, deliverable_id, SUM(minutes) m
+        FROM time_entries WHERE person_id = ? AND date LIKE ? AND source != 'skip'
+       GROUP BY contract_id, deliverable_id`).all(p.id, `${P}-%`)
+      .map((r) => [`${r.contract_id}:${r.deliverable_id}`, r.m]));
+    let remainMin = 0;
+    for (const l of lines) {
+      const rem = l.hours * 60 - (loggedBy.get(`${l.contract_id}:${l.deliverable_id}`) || 0);
+      if (rem >= 15) remainMin += rem;
+      else if (!loggedBy.has(`${l.contract_id}:${l.deliverable_id}`) && rem > 0) remainMin += rem;
+    }
+    const keptMin = db.prepare(`SELECT COALESCE(SUM(b.minutes),0) m FROM schedule_blocks b
+      WHERE b.person_id = ? AND b.period = ?
+        AND EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = b.id)`).get(p.id, P).m;
     const anchors = db.prepare('SELECT COALESCE(SUM(minutes),0) m FROM anchors WHERE person_id = ?')
       .get(p.id).m / 60 * cap.weekBuckets(P).length;
+    const expect = remainMin / 60 + keptMin / 60 + anchors;
     const accounted = plan.totals.scheduled_hours + plan.totals.unplaced_hours;
-    ok(near(accounted, allocated + anchors, 0.02),
-      `${P} ${p.name}: scheduled + unplaced = allocated (${accounted} vs ${(allocated + anchors).toFixed(2)})`);
+    ok(near(accounted, expect, 0.02),
+      `${P} ${p.name}: scheduled + unplaced = remaining + kept + anchors (${accounted} vs ${expect.toFixed(2)})`);
 
     const byDay = {}, byDayContract = {};
     for (const b of plan.blocks) {
