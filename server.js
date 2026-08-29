@@ -523,7 +523,8 @@ app.get('/api/bootstrap', ok((req, res) => {
   send(req, res, payload);
 }));
 
-app.get('/api/agency', ok((req, res) => res.json(cap.agencySummary(period(req)))));
+app.get('/api/agency', ok((req, res) => res.json(cap.agencySummary(period(req),
+  ['marketing', 'design'].includes(req.query.department) ? req.query.department : null))));
 
 app.get('/api/person/:id', ok((req, res) => {
   const v = cap.personView(Number(req.params.id), period(req));
@@ -760,16 +761,17 @@ app.delete('/api/months/:period', ok((req, res) => {
 
 app.post('/api/people', ok((req, res) => {
   const b = req.body;
+  const pDept = b.department === 'design' ? 'design' : 'marketing';
   if (b.id) {
     db.prepare(`UPDATE people SET name=?, initials=?, weekly_hours=?, rate=?, utilisation=?, active=?,
-      archived=?, harvest_user_id=? WHERE id=?`).run(b.name, b.initials || '', num(b.weekly_hours, 37.5),
+      archived=?, harvest_user_id=?, department=? WHERE id=?`).run(b.name, b.initials || '', num(b.weekly_hours, 37.5),
       num(b.rate, 100), Math.min(1, Math.max(0, num(b.utilisation, 0.87))), b.active ? 1 : 0,
-      b.archived ? 1 : 0, b.harvest_user_id ? Number(b.harvest_user_id) : null, b.id);
+      b.archived ? 1 : 0, b.harvest_user_id ? Number(b.harvest_user_id) : null, pDept, b.id);
   } else {
-    db.prepare(`INSERT INTO people (name, initials, weekly_hours, rate, utilisation, active, harvest_user_id, sort_order)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 50)`).run(b.name, b.initials || '', num(b.weekly_hours, 37.5),
+    db.prepare(`INSERT INTO people (name, initials, weekly_hours, rate, utilisation, active, harvest_user_id, department, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 50)`).run(b.name, b.initials || '', num(b.weekly_hours, 37.5),
       num(b.rate, 100), Math.min(1, Math.max(0, num(b.utilisation, 0.87))), b.active ? 1 : 0,
-      b.harvest_user_id ? Number(b.harvest_user_id) : null);
+      b.harvest_user_id ? Number(b.harvest_user_id) : null, pDept);
   }
   res.json(listPeople());
 }));

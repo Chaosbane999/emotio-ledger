@@ -275,6 +275,11 @@ db.exec(`
    WHERE deliverable_id IS NULL AND block_id IS NOT NULL;
 `);
 
+// migration: people belong to a department too, so the agency view can show
+// capacity and load per department, not just contracts.
+try { db.exec("ALTER TABLE people ADD COLUMN department TEXT NOT NULL DEFAULT 'marketing'"); }
+catch (e) { /* already there */ }
+
 // migration: fixed commitments gain a cadence — daily, weekly, fortnightly or
 // monthly — where before every one was implicitly weekly.
 try { db.exec("ALTER TABLE anchors ADD COLUMN cadence TEXT NOT NULL DEFAULT 'weekly'"); }

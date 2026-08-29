@@ -223,7 +223,8 @@ const pairHU = (hh, u) => (showsMoney()
   : hrs(hh));
 
 async function renderAgency() {
-  const a = await api(`/api/agency${P()}`);
+  S.agencyDept = S.agencyDept || 'marketing';
+  const a = await api(`/api/agency${P()}&department=${S.agencyDept}`);
   const t = a.totals;
   const people = S.boot.people;
   const execName = (id) => people.find((p) => p.id === id)?.name || 'Unassigned';
@@ -279,6 +280,11 @@ async function renderAgency() {
   const colTotal = (pid) => live.reduce((s, c) => s + hoursFor(c, pid), 0);
 
   view().innerHTML = `
+    <div class="steps" style="margin-bottom:14px">
+      ${['marketing', 'design'].map((d) => `
+        <button class="step agDept ${S.agencyDept === d ? 'on' : ''}" data-dept="${d}">
+          ${d === 'design' ? 'Design Department' : 'Marketing Department'}</button>`).join('')}
+    </div>
     <div class="stats">
       <div class="stat ${t.headroom_hours > 60 ? 'good' : t.headroom_hours < 0 ? 'bad' : 'warn'}">
         <span class="k">Delivery headroom</span>
@@ -309,16 +315,6 @@ async function renderAgency() {
           : 'every contract reconciles'}</span>
       </div>
     </div>
-
-    ${a.by_department && (a.by_department.design.contracts || a.by_department.marketing.contracts) ? `
-    <div class="stats">
-      ${['marketing', 'design'].map((d) => { const b = a.by_department[d]; return `
-        <div class="stat">
-          <span class="k">${d === 'design' ? 'Design' : 'Marketing'} department</span>
-          <span class="v">${units(b.allocated_units)}</span>
-          <span class="s">${b.contracts} live contract${b.contracts === 1 ? '' : 's'} · ${hrs(b.logged_hours)} logged</span>
-        </div>`; }).join('')}
-    </div>` : ''}
 
     ${overrun.length ? `<div class="banner bad"><div>
       <b>${overrun.length} contracts are allocated beyond what they're contracted for — ${units(overrunUnits)} in total.</b><br>
@@ -431,6 +427,10 @@ async function renderAgency() {
         : inactiveOwned.map((c) => ({ contract_id: c.id }))
   ).map((c) => c.contract_id));
 
+  view().querySelectorAll('.agDept').forEach((b) => b.addEventListener('click', () => {
+    S.agencyDept = b.dataset.dept;
+    renderAgency();
+  }));
   view().querySelectorAll('[data-filter]').forEach((b) => b.addEventListener('click', () => {
     const ids = idsFor(b.dataset.filter);
     const label = { over: 'over contract', under: 'unplanned work',
@@ -1495,11 +1495,14 @@ async function renderSettings() {
         <label class="tick"><input type="checkbox" id="showArch"${S.showArchived ? ' checked' : ''}> show archived</label>
       </header>
       <div class="scroll"><table>
-        <thead><tr><th>Name</th><th>Initials</th><th class="num">Hours/week</th><th class="num">Rate £/h</th>
+        <thead><tr><th>Name</th><th>Initials</th><th>Department</th><th class="num">Hours/week</th><th class="num">Rate £/h</th>
           <th class="num">Utilisation</th><th class="num">Units/h</th><th>Active</th><th></th></tr></thead>
         <tbody>${S.boot.people.map((p) => `<tr data-p="${p.id}" class="${p.archived ? 'archived' : ''}">
           <td><input type="text" class="pn" value="${esc(p.name)}" style="width:150px"></td>
           <td><input type="text" class="pi" value="${esc(p.initials)}" style="width:56px"></td>
+          <td><select class="pd">
+            <option value="marketing"${(p.department || 'marketing') === 'marketing' ? ' selected' : ''}>Marketing</option>
+            <option value="design"${p.department === 'design' ? ' selected' : ''}>Design</option></select></td>
           <td class="num"><input type="number" class="pw" step="0.5" min="0" value="${h(p.weekly_hours)}"></td>
           <td class="num"><input type="number" class="pr" step="0.1" min="0" value="${h(p.rate)}"></td>
           <td class="num"><input type="number" class="pu" step="1" min="0" max="100" value="${Math.round(p.utilisation * 100)}"></td>
@@ -1682,7 +1685,8 @@ function wireSettings() {
       id: Number(tr.dataset.p),
       name: $('.pn', tr).value, initials: $('.pi', tr).value,
       weekly_hours: Number($('.pw', tr).value), rate: Number($('.pr', tr).value),
-      utilisation: Number($('.pu', tr).value) / 100, active: $('.pa', tr).checked } });
+      utilisation: Number($('.pu', tr).value) / 100, active: $('.pa', tr).checked,
+      department: $('.pd', tr).value } });
     toast('Person saved.'); renderSettings();
   }));
 

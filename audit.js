@@ -270,6 +270,23 @@ if (periods.length >= 2) {
   }
 }
 
+// ---- 6b. departments: the two views sum exactly to the whole ----------
+for (const period of periods) {
+  const whole = cap.agencySummary(period);
+  const mkt = cap.agencySummary(period, 'marketing');
+  const des = cap.agencySummary(period, 'design');
+  ok(mkt.staff.length + des.staff.length === whole.staff.length,
+    `${period}: department staff partition cleanly (${mkt.staff.length}+${des.staff.length} vs ${whole.staff.length})`);
+  ok(mkt.contracts.length + des.contracts.length === whole.contracts.length,
+    `${period}: department contracts partition cleanly`);
+  for (const k of ['capacity_hours', 'capacity_units']) {
+    ok(near(mkt.totals[k] + des.totals[k], whole.totals[k], 0.05),
+      `${period}: department ${k} sums to the whole (${mkt.totals[k]}+${des.totals[k]} vs ${whole.totals[k]})`);
+  }
+  ok(near(mkt.totals.contracted_units + des.totals.contracted_units, whole.totals.contracted_units, 0.05),
+    `${period}: department contracted_units sum to the whole`);
+}
+
 // ---- 7. reports: every rollup sums exactly to the headline ------------
 {
   const timeMod = require('./time');

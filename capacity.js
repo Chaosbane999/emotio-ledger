@@ -377,10 +377,14 @@ function potPosition(contract, period, thisPeriodUnits) {
 // Agency roll-up. Cross-person totals are ALWAYS units, never hours.
 // ---------------------------------------------------------------------------
 
-function agencySummary(period) {
-  const people = activePeople();
+function agencySummary(period, department) {
+  // scoped to one department when asked: its people, its contracts, its
+  // numbers. Unscoped remains the whole agency, byte-for-byte as before.
+  const people = activePeople().filter((p) =>
+    !department || (p.department || 'marketing') === department);
   const contracts = db.prepare(
-    "SELECT * FROM contracts WHERE archived = 0 ORDER BY sort_order, name").all();
+    "SELECT * FROM contracts WHERE archived = 0 ORDER BY sort_order, name").all()
+    .filter((c) => !department || (c.department || 'marketing') === department);
 
   const caps = people.map((p) => personCapacity(p, period));
   const capById = new Map(caps.map((c) => [c.person_id, c]));
