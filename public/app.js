@@ -249,11 +249,12 @@ async function renderAgency() {
     return !c.archived && c.status === 'live' && c.type !== 'internal' && ex && (!ex.active || ex.archived);
   });
 
-  // Columns are everyone who can carry client work, plus anyone still holding
-  // allocations this month — otherwise a departed person's hours vanish from
-  // the row and the numbers stop adding up.
+  // Columns are this department's staff, plus anyone else holding allocations
+  // on its contracts this month — otherwise a departed (or cross-department)
+  // person's hours vanish from the row and the numbers stop adding up.
   const allocated = new Set(a.contracts.flatMap((c) => c.lines.map((l) => l.person_id)));
-  const cols = people.filter((p) => (p.active && !p.archived) || allocated.has(p.id));
+  const deptIds = new Set(a.staff.map((p) => p.person_id));
+  const cols = people.filter((p) => deptIds.has(p.id) || allocated.has(p.id));
   const hoursFor = (c, pid) => c.lines.filter((l) => l.person_id === pid).reduce((s, l) => s + l.hours, 0);
 
   const gridRow = (c) => {
