@@ -479,19 +479,36 @@ function planPerson(personId, period) {
 
   placed.sort((a, b) => (a.date === b.date ? a.start.localeCompare(b.start) : a.date.localeCompare(b.date)));
 
+  // Coalesce accidental fragmentation: two sittings of the same task landing
+  // back-to-back are one sitting — three 30-minute "General Management" slots
+  // in a row are a diary nobody asked for. Anchored and kept blocks are left
+  // alone; they mean their exact shape.
+  const blocks = [];
+  for (const b of placed) {
+    const prev = blocks[blocks.length - 1];
+    if (prev && !b.anchored && !prev.anchored && !b.kept && !prev.kept
+      && prev.date === b.date && prev.end === b.start
+      && prev.contract_id === b.contract_id && prev.label === b.label) {
+      prev.minutes += b.minutes;
+      prev.end = b.end;
+      continue;
+    }
+    blocks.push({ ...b });
+  }
+
   return {
     person: { id: person.id, name: person.name },
     period,
-    blocks: placed,
+    blocks,
     unplaced: [
       ...unplaced.map((u) => ({ label: u.label, minutes: Math.round(u.minutes), week: u.week + 1, reason: 'no room left that week' })),
       ...offWindow,
     ],
     totals: {
-      scheduled_hours: cap.round2(placed.reduce((s, b) => s + b.minutes, 0) / 60),
+      scheduled_hours: cap.round2(blocks.reduce((s, b) => s + b.minutes, 0) / 60),
       unplaced_hours: cap.round2(
         [...unplaced, ...offWindow].reduce((s, b) => s + b.minutes, 0) / 60),
-      blocks: placed.length,
+      blocks: blocks.length,
     },
   };
 }

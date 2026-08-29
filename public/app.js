@@ -1175,16 +1175,18 @@ async function renderSchedule() {
         `<option value="${p.id}"${p.id === S.personId ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
       <span class="pill ${plan.committed ? 'ok' : 'warn'}">${plan.committed ? 'Saved plan' : 'Draft'}</span>
       <span class="spacer"></span>
-      <button class="btn small" id="toggleRecipes">${
-        S.showRecipes ? 'Hide how work is shaped' : 'How this person\'s work is shaped'}</button>
-      <button class="btn small ${plan.committed ? '' : 'primary'}" id="genPlan"
-        title="${plan.committed ? 'Re-plan what is still pending — committed time keeps its ground'
-          : 'Put this plan on the time sheet, where the team confirms it day by day'}">
-        ${plan.committed ? 'Rebuild from allocations' : 'Send to time sheet'}</button>
-      ${plan.committed ? '<button class="btn small danger" id="clearPlan" title="Clears what is still pending — committed time stays">Discard pending plan</button>' : ''}
-      <button class="btn small primary" id="schedCal"
-        title="${plan.committed ? 'Subscribe once — the calendar follows this saved plan'
-          : 'The calendar carries the saved plan — save this draft first'}">📅 Sync to Calendar</button>
+      ${S.showRecipes ? `
+        <button class="btn small" id="toggleRecipes">Cancel</button>
+        <button class="btn small primary" id="prSaveAll">Save</button>` : `
+        <button class="btn small" id="toggleRecipes">How this person's work is shaped</button>
+        <button class="btn small ${plan.committed ? '' : 'primary'}" id="genPlan"
+          title="${plan.committed ? 'Re-plan what is still pending — committed time keeps its ground'
+            : 'Put this plan on the time sheet, where the team confirms it day by day'}">
+          ${plan.committed ? 'Rebuild from allocations' : 'Send to time sheet'}</button>
+        ${plan.committed ? '<button class="btn small danger" id="clearPlan" title="Clears what is still pending — committed time stays">Discard pending plan</button>' : ''}
+        <button class="btn small primary" id="schedCal"
+          title="${plan.committed ? 'Subscribe once — the calendar follows this saved plan'
+            : 'The calendar carries the saved plan — save this draft first'}">📅 Sync to Calendar</button>`}
     </div>
 
     <div class="stats">
@@ -1215,7 +1217,8 @@ async function renderSchedule() {
       <div class="scroll"><table>
         <thead><tr><th>Deliverable</th><th>Cadence</th><th>Distribution</th><th class="num">Block (min)</th>
           <th>Splittable</th><th class="num">Max sittings</th><th></th></tr></thead>
-        <tbody>${recipes.map((r) => `<tr data-d="${r.id}" class="${r.overridden ? 'own' : ''}">
+        <tbody>${recipes.map((r) => `<tr data-d="${r.id}" class="${r.overridden ? 'own' : ''}"
+            data-orig="${esc(JSON.stringify([r.cadence, r.distribution, r.block_minutes ?? 60, r.splittable ? 1 : 0, r.max_sittings ?? 0]))}">
           <td>${esc(r.name)}${r.internal ? ' <span class="pill mute">internal</span>' : ''}
             ${r.overridden ? ' <span class="pill info">theirs</span>' : ''}</td>
           <td><select class="prc">${['daily', 'weekly', 'fortnightly', 'monthly', 'oneoff'].map((x) =>
@@ -1227,7 +1230,6 @@ async function renderSchedule() {
           <td class="num"><input type="number" class="prm" step="1" min="0" value="${r.max_sittings ?? 0}"
             title="0 = let the block size decide. A daily ceiling overrides this either way."></td>
           <td class="num" style="white-space:nowrap">
-            <button class="btn small primary prSave">Save</button>
             ${r.overridden ? '<button class="btn small prReset">Default</button>' : ''}</td>
         </tr>`).join('')}</tbody>
       </table></div>
@@ -1276,7 +1278,7 @@ async function renderSchedule() {
       </div>`).join('') || '<p class="muted">Nothing scheduled this month.</p>'}</div>`;
 
   $('#schedPick').addEventListener('change', (e) => { S.personId = Number(e.target.value); renderSchedule(); });
-  $('#schedCal').addEventListener('click', () => openCalendarPanel(!plan.committed));
+  $('#schedCal')?.addEventListener('click', () => openCalendarPanel(!plan.committed));
 
   $('#toggleRecipes').addEventListener('click', () => {
     S.showRecipes = !S.showRecipes;
@@ -1284,17 +1286,23 @@ async function renderSchedule() {
   });
 
   // anchor controls follow the distribution, so they never look live when idle
-  view().querySelectorAll('.prSave').forEach((btn) => btn.addEventListener('click', async () => {
-    const tr = btn.closest('tr');
-    await api(`/api/person-recipes/${S.personId}`, { body: {
-      deliverable_id: Number(tr.dataset.d),
-      cadence: $('.prc', tr).value, distribution: $('.prd', tr).value,
-      block_minutes: Number($('.prb', tr).value), splittable: $('.prs', tr).checked,
-      max_sittings: Number($('.prm', tr).value),
-      anchor_dow: 2, anchor_time: '10:00' } });
-    toast('Recipe saved for this person.');
+  $('#prSaveAll')?.addEventListener('click', async () => {
+    let saved = 0;
+    for (const tr of view().querySelectorAll('tr[data-orig]')) {
+      const now = [$('.prc', tr).value, $('.prd', tr).value, Number($('.prb', tr).value),
+        $('.prs', tr).checked ? 1 : 0, Number($('.prm', tr).value)];
+      if (JSON.stringify(now) === tr.dataset.orig) continue;   // untouched — no override created
+      await api(`/api/person-recipes/${S.personId}`, { body: {
+        deliverable_id: Number(tr.dataset.d),
+        cadence: now[0], distribution: now[1], block_minutes: now[2],
+        splittable: !!now[3], max_sittings: now[4],
+        anchor_dow: 2, anchor_time: '10:00' } });
+      saved += 1;
+    }
+    S.showRecipes = false;
+    toast(saved ? `${saved} recipe${saved === 1 ? '' : 's'} saved for this person.` : 'Nothing changed.');
     renderSchedule();
-  }));
+  });
 
   view().querySelectorAll('.prReset').forEach((btn) => btn.addEventListener('click', async () => {
     const tr = btn.closest('tr');
@@ -1303,7 +1311,7 @@ async function renderSchedule() {
     renderSchedule();
   }));
 
-  $('#genPlan').addEventListener('click', async () => {
+  $('#genPlan')?.addEventListener('click', async () => {
     if (plan.committed && !confirm('Rebuild from the allocations?\n\nEvery block you have moved, resized or added by hand will be replaced.')) return;
     const r = await api(`/api/schedule/${S.personId}/generate${P()}`, { method: 'POST' });
     toast(`Plan saved — ${r.saved} blocks${r.unplaced ? `, ${r.unplaced} could not be placed` : ''}.`);
