@@ -102,7 +102,12 @@ function expand(alloc, recipe, buckets, ceiling) {
     if (minutes <= 0.5) return;
     if (!splittable) { sessions.push({ minutes, week }); return; }
     const hard = recipe.max_sittings > 0 ? recipe.max_sittings : cap;
-    const wanted = Math.min(Math.max(1, Math.ceil(minutes / block)), hard);
+    // FLOOR, not ceil: the block size is a minimum sitting. 75 minutes with
+    // 30-minute blocks is 45 + 30, never 30 + 30 + 15 — rounding the piece
+    // count UP guaranteed a runt below the block size whenever the total
+    // wasn't an exact multiple. The daily ceiling can still force smaller
+    // pieces; physics beats preference, as ever.
+    const wanted = Math.min(Math.max(1, Math.floor(minutes / block)), hard);
     const needed = ceiling ? Math.ceil(minutes / ceiling) : 1;
     const pieces = Math.max(wanted, needed);
     for (const m of splitExact(minutes, pieces)) sessions.push({ minutes: m, week });
@@ -162,7 +167,7 @@ function expand(alloc, recipe, buckets, ceiling) {
         break;
       }
       // spread across the month, weighted by working days per week
-      const byBlock = Math.min(Math.max(1, Math.ceil(totalMin / block)), MAX_PIECES_PER_MONTH);
+      const byBlock = Math.min(Math.max(1, Math.floor(totalMin / block)), MAX_PIECES_PER_MONTH);
       const byCeiling = ceiling ? Math.ceil(totalMin / ceiling) : 1;
       const pieces = splittable ? Math.max(byBlock, byCeiling) : 1;
       splitExact(totalMin, pieces).forEach((m, i) => {
@@ -171,7 +176,7 @@ function expand(alloc, recipe, buckets, ceiling) {
       break;
     }
   }
-  return sessions.map((s) => ({ ...s, minutes: Math.round(s.minutes), splittable }))
+  return sessions.map((s) => ({ ...s, minutes: Math.round(s.minutes), splittable, min_block: block }))
     .filter((s) => s.minutes >= GRAIN);
 }
 
@@ -463,8 +468,11 @@ function planPerson(personId, period) {
     const reach = open ? order.filter((w) => open.has(w)) : order;
     if (reach.some((w) => tryWeek(item, w))) return;
 
-    // nothing took it whole — split and try each half on its own merits
-    if (item.splittable && item.minutes >= GRAIN * 2) {
+    // nothing took it whole — split and try each half on its own merits,
+    // but never below the recipe's block size: a runt the recipe forbids is
+    // worse than the whole thing landing on the weekend valve intact
+    const floorMin = Math.max(GRAIN, item.min_block || GRAIN);
+    if (item.splittable && item.minutes >= floorMin * 2) {
       const half = snap(item.minutes / 2);
       const rest = item.minutes - half;
       place({ ...item, minutes: half, subdivided: true });

@@ -321,6 +321,21 @@ if (D2.slice(0, 7) === RP && D3.slice(0, 7) === RP) {
   console.log('  (rebalance scenario skipped: month boundary)');
 }
 
+// --- block size is a minimum sitting, never a divisor ------------------------
+{
+  const { expand } = require('./schedule');
+  const wk = [['2026-08-03', '2026-08-04', '2026-08-05', '2026-08-06', '2026-08-07']];
+  const rec = { cadence: 'weekly', distribution: 'spread', block_minutes: 30,
+    splittable: 1, max_sittings: 0, anchor_dow: 2, anchor_time: '10:00' };
+  for (const mins of [45, 60, 75, 90, 105, 300]) {
+    const pieces = expand({ hours: mins / 60 }, rec, wk, 240).map((x) => x.minutes);
+    eq(pieces.reduce((a, b) => a + b, 0), mins, `expand conserves ${mins}m`);
+    ok(pieces.every((m) => m >= 30), `no piece under the 30m block (${mins}m -> ${pieces.join('+')})`);
+  }
+  // smaller than a block: the whole thing, unavoidably
+  eq(expand({ hours: 0.25 }, rec, wk, 240).map((x) => x.minutes).join('+'), '15', 'sub-block totals stay whole');
+}
+
 // --- timer ------------------------------------------------------------------
 throws(() => T.startTimer(1, {}), 'timer needs contract+deliverable');
 T.startTimer(1, { contract_id: 10, deliverable_id: 100 });
