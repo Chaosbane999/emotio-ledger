@@ -214,7 +214,8 @@ app.use((req, res, next) => {
   // their accounts: contracts they work on, and reports over those contracts.
   // Every one of these is scoped inside its handler, and money is stripped on
   // the way out regardless.
-  const accountRead = ['/api/contracts', '/api/report', '/api/anchors', '/api/export/time.csv']
+  const accountRead = ['/api/contracts', '/api/contract-summaries', '/api/report',
+    '/api/anchors', '/api/export/time.csv']
     .includes(req.path) || /^\/api\/contract\/\d+(\/|$)/.test(req.path);
   const accountWrite = ['/api/allocation', '/api/tp-allocation', '/api/contracts', '/api/anchors']
     .includes(req.path) || /^\/api\/anchors\/\d+$/.test(req.path);
@@ -457,6 +458,7 @@ app.get('/api/report', ok((req, res) => {
   }));
 }));
 app.get('/api/contract/:id/time-report', ok((req, res) => {
+  assertOwnContract(req, req.params.id);
   res.json(time.contractTimeReport(Number(req.params.id), period(req)));
 }));
 const sendCsv = (res, name, csv) => {
@@ -527,6 +529,21 @@ app.get('/api/person/:id', ok((req, res) => {
   const v = cap.personView(Number(req.params.id), period(req));
   if (!v) return res.status(404).json({ error: 'no such person' });
   send(req, res, v);
+}));
+
+/**
+ * Summaries for the contracts list. The list used to read the whole agency
+ * dashboard for this, which a member cannot see — and should not need to, to
+ * look at their own accounts. Scoped: everything for an admin, their own for
+ * a member.
+ */
+app.get('/api/contract-summaries', ok((req, res) => {
+  const p = period(req);
+  const scope = isAdmin(req) ? null : contractsFor(req.user?.person_id);
+  const contracts = listContracts(req.query.archived === '1')
+    .filter((c) => !scope || scope.has(c.id))
+    .map((c) => cap.contractSummary(c, p));
+  send(req, res, { period: p, contracts });
 }));
 
 app.get('/api/contract/:id', ok((req, res) => {

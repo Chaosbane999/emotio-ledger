@@ -590,7 +590,7 @@ async function renderPerson() {
 
 async function renderContracts() {
   if (!S.contractId) {
-    const a = await api(`/api/agency${P()}`);
+    const a = await api(`/api/contract-summaries${P()}${S.showArchived ? '&archived=1' : ''}`);
     view().innerHTML = `
       <div class="rowline"><h2>Contracts</h2>
         <input type="search" id="cSearch" placeholder="Find a contract…" style="width:200px">
