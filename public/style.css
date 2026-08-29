@@ -429,3 +429,6 @@ tr.tentry.skip td { opacity: 0.5; }
 .tr-over { background: var(--over); }
 .tw-total-col { background: var(--surface-2); opacity: 0.4; max-width: 90px; }
 .tw-col-head.tw-total { max-width: 90px; }
+
+.sep-v { width: 1px; align-self: stretch; background: var(--rule); margin: 0 4px; }
+.tpanel .conf { padding: 4px 16px; }

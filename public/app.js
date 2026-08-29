@@ -1821,15 +1821,48 @@ function renderTimerBar(timer) {
   } else {
     const contracts = S.boot.contracts.filter((c) => !c.archived && c.status === 'live');
     const delivs = S.boot.deliverables.filter((d) => d.active);
+    const logDate = S.timeDate <= todayIso() ? S.timeDate : todayIso();
     el.innerHTML = `<div class="card timerbar">
       <span class="k">Timer</span>
       <select id="tmC">${contracts.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
       <select id="tmD">${delivs.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select>
       <button class="btn small" id="tmStart">▶ Start</button>
+      <span class="sep-v"></span>
+      <span class="k">or log</span>
+      <input type="date" id="qlDate" value="${logDate}" max="${todayIso()}">
+      <input type="time" id="qlFrom" title="start time">
+      <span class="muted">to</span>
+      <input type="time" id="qlTo" title="end time">
+      <span class="pill mute" id="qlDur">0:00</span>
+      <input type="text" id="qlNote" placeholder="note" style="width:130px">
+      <button class="btn small primary" id="qlGo">Log</button>
     </div>`;
     $('#tmStart').addEventListener('click', async () => {
       await timeApi('/timer/start', { body: { contract_id: Number($('#tmC').value), deliverable_id: Number($('#tmD').value) } });
       renderTime();
+    });
+    const durOf = () => {
+      const a = $('#qlFrom').value; const b = $('#qlTo').value;
+      if (!a || !b) return 0;
+      return Math.max(0, toMinOfDay(b) - toMinOfDay(a));
+    };
+    ['#qlFrom', '#qlTo'].forEach((sel) => $(sel).addEventListener('input', () => {
+      $('#qlDur').textContent = hm(durOf());
+    }));
+    $('#qlGo').addEventListener('click', async () => {
+      const minutes = durOf();
+      if (!minutes) return toast('Give it a start and an end time.', true);
+      const body = {
+        contract_id: Number($('#tmC').value), deliverable_id: Number($('#tmD').value),
+        date: $('#qlDate').value, start: $('#qlFrom').value, minutes,
+        note: $('#qlNote').value.trim(),
+      };
+      try {
+        const entry = await timeApi('/entries', { body });
+        toast('Logged.');
+        await renderTime();
+        checkConflicts(entry);
+      } catch (err) { toast(err.message, true); }
     });
   }
 }
@@ -1846,7 +1879,7 @@ function renderTimeDay(v) {
     <div class="grid2">
     <div class="card">
       <header><h2>The plan</h2><p>Tick what went to plan; adjust what didn't</p>
-        ${v.totals.pending ? `<button class="btn primary small" id="tConfirmDay">✓ Confirm all ${v.totals.pending}</button>` : ''}
+        ${v.totals.pending && v.date <= todayIso() ? `<button class="btn primary small" id="tConfirmDay">✓ Confirm all ${v.totals.pending}</button>` : ''}
       </header>
       ${v.blocks.length ? `<table><tbody>
         ${v.blocks.map((b) => `
@@ -1854,10 +1887,11 @@ function renderTimeDay(v) {
             <td class="num" style="white-space:nowrap">${b.start || ''}</td>
             <td>${esc(b.label)}<span class="sub">${hm(b.minutes)} planned</span></td>
             <td class="num">${chip(b)}</td>
-            <td class="num" style="white-space:nowrap">${b.status === 'pending' ? `
+            <td class="num" style="white-space:nowrap">${b.status === 'pending' ? (v.date <= todayIso() ? `
               <button class="btn small tCf" data-b="${b.id}" title="Happened exactly as planned">✓</button>
               <button class="btn small tAj" data-b="${b.id}" title="Happened, but differently">edit</button>
-              <button class="btn small tSk" data-b="${b.id}" title="Didn't happen">✗</button>` : ''}</td>
+              <button class="btn small tSk" data-b="${b.id}" title="Didn't happen">✗</button>`
+              : `<button class="btn small tSk" data-b="${b.id}" title="Won't happen — skip it">✗</button>`) : ''}</td>
           </tr>
           <tr class="tadjust hidden" data-of="${b.id}"><td></td><td colspan="3">
             <div class="rowline">
@@ -2065,7 +2099,7 @@ function renderTimeWeek(v) {
         ${hours.slice(0, -1).map((m) => `<div class="tw-hour" style="top:${(m - lo) * T_PPM}px"></div>`).join('')}
         ${ghosts.map((b) => `<div class="tw-ghost ${b.status}" data-kind="ghost" data-id="${b.id}"
             style="${pos(b.start, b.minutes)}" title="planned: ${esc(b.label)} (${hm(b.minutes)}) — drag to re-plan, tick to commit">
-          ${b.status === 'pending' ? `<button class="tw-tick" data-kind="tick" data-id="${b.id}" title="Commit: this happened as planned here">✓</button>` : ''}
+          ${b.status === 'pending' && b.date <= todayIso() ? `<button class="tw-tick" data-kind="tick" data-id="${b.id}" title="Commit: this happened as planned here">✓</button>` : ''}
           <span>${esc(b.label)}</span><em>${hm(b.minutes)}${b.status === 'done' ? ' ✓' : b.status === 'skipped' ? ' ✗' : ''}</em>
           ${b.status === 'pending' ? `<div class="tw-resize" data-kind="gresize" data-id="${b.id}"></div>` : ''}
         </div>`).join('')}
@@ -2233,12 +2267,14 @@ function openGhostMenu(b) {
     <p class="muted">Planned ${b.start || ''} · ${hm(b.minutes)}</p>
     <div class="rowline"><input type="text" id="tgNote" placeholder="note (optional)" style="flex:1"></div>
     <div class="rowline">
-      <button class="btn primary small" id="tgCf">✓ As planned</button>
+      ${b.date <= todayIso()
+        ? '<button class="btn primary small" id="tgCf">✓ As planned</button>'
+        : '<span class="muted">Planned for later — tick it once it\'s happened.</span>'}
       <span class="spacer"></span>
-      <button class="btn small danger" id="tgSk">✗ Didn't happen</button></div>`;
+      <button class="btn small danger" id="tgSk">✗ ${b.date <= todayIso() ? "Didn't happen" : "Won't happen"}</button></div>`;
   view().appendChild(p);
   $('#tpX').addEventListener('click', () => p.remove());
-  $('#tgCf').addEventListener('click', async () => {
+  $('#tgCf')?.addEventListener('click', async () => {
     await timeApi('/confirm', { body: { block_id: b.id, note: $('#tgNote').value.trim() } });
     p.remove(); renderTime();
   });
@@ -2337,6 +2373,89 @@ function openRebalancePanel(r) {
     try {
       await timeApi('/rebalance', { body: { changes } });
       p.remove(); toast('Plan rebalanced.'); renderTime();
+    } catch (err) { toast(err.message, true); }
+  });
+}
+
+// --- conflicts: logged reality landing on top of something else --------------
+// The entry is already saved — the work happened, that is not in question.
+// The popup is about what it displaced: plan blocks that were sitting in that
+// slot, or other logged entries it overlaps. Each gets its own decision.
+
+async function checkConflicts(entry) {
+  if (!entry.start) return;
+  const day = await timeApi(`/day?date=${entry.date}`);
+  const es = toMinOfDay(entry.start);
+  const ee = es + entry.minutes;
+  const hits = [];
+  for (const b of day.blocks) {
+    if (b.status !== 'pending' || !b.start) continue;
+    const bs = toMinOfDay(b.start);
+    if (es < bs + b.minutes && bs < ee) hits.push({ kind: 'block', item: b });
+  }
+  for (const e of day.entries) {
+    if (e.id === entry.id || e.source === 'skip' || !e.start) continue;
+    const s2 = toMinOfDay(e.start);
+    if (es < s2 + e.minutes && s2 < ee) hits.push({ kind: 'entry', item: e });
+  }
+  if (hits.length) openConflictPanel(entry, hits);
+}
+
+function openConflictPanel(entry, hits) {
+  document.querySelector('.tpanel')?.remove();
+  const es = toMinOfDay(entry.start);
+  const ee = es + entry.minutes;
+  const p = document.createElement('div');
+  p.className = 'tpanel card';
+  p.innerHTML = `
+    <header><h2>That slot wasn't empty</h2><button class="btn small" id="tpX">✕</button></header>
+    <p class="muted" style="padding:0 16px">Your ${hm(entry.minutes)} at ${entry.start} overlaps
+      ${hits.length === 1 ? 'something' : `${hits.length} things`}. The time you logged stands —
+      decide what happens to each of these:</p>
+    ${hits.map((h2, i) => {
+      const it = h2.item;
+      const label = h2.kind === 'block' ? it.label
+        : `${it.contract_name || ''}${it.deliverable_name ? ` — ${it.deliverable_name}` : ''}`;
+      const opts = h2.kind === 'block'
+        ? `<option value="leave">Leave it planned</option>
+           <option value="bump">Move it to the next free slot</option>
+           <option value="skip">It's not happening — skip it</option>`
+        : (toMinOfDay(it.start) >= es && toMinOfDay(it.start) + it.minutes <= ee
+          ? `<option value="leave">Leave it (overlap stays)</option>
+             <option value="delete">Delete it — this replaces it</option>`
+          : `<option value="leave">Leave it (overlap stays)</option>
+             <option value="trim">Trim it so they don't overlap</option>`);
+      return `<div class="rowline conf" data-i="${i}">
+        <span style="flex:1">${h2.kind === 'block' ? 'planned' : 'logged'}: <b>${esc(label)}</b>
+          <span class="sub">${it.start} · ${hm(it.minutes)}</span></span>
+        <select class="confAct">${opts}</select>
+      </div>`;
+    }).join('')}
+    <div class="rowline"><span class="spacer"></span>
+      <button class="btn primary small" id="confGo">Done</button></div>`;
+  view().appendChild(p);
+  $('#tpX').addEventListener('click', () => p.remove());
+  $('#confGo').addEventListener('click', async () => {
+    try {
+      for (const row of p.querySelectorAll('.conf')) {
+        const h2 = hits[Number(row.dataset.i)];
+        const act = row.querySelector('.confAct').value;
+        const it = h2.item;
+        if (act === 'leave') continue;
+        if (act === 'bump') await timeApi('/bump-block', { body: { block_id: it.id } });
+        else if (act === 'skip') await timeApi('/skip', { body: { block_id: it.id, note: 'displaced by logged time' } });
+        else if (act === 'delete') await timeApi(`/entries/${it.id}${it.date < todayIso() ? '?override=1' : ''}`, { method: 'DELETE' });
+        else if (act === 'trim') {
+          const s2 = toMinOfDay(it.start);
+          const e2 = s2 + it.minutes;
+          const body = s2 < es
+            ? { minutes: es - s2 }                                   // ends where the new one starts
+            : { start: fromMinOfDay(ee), minutes: e2 - ee };         // starts where the new one ends
+          if (it.date < todayIso()) body.override = true;
+          await timeApi(`/entries/${it.id}`, { method: 'PATCH', body });
+        }
+      }
+      p.remove(); toast('Sorted.'); renderTime();
     } catch (err) { toast(err.message, true); }
   });
 }

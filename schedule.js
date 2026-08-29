@@ -362,6 +362,10 @@ function planPerson(personId, period) {
       minutes: Math.round(item.minutes),
       label: item.label,
       contract_id: item.contract_id,
+      // the id, not just the name — dropping it here meant every saved block
+      // lost its category, and every entry confirmed from one inherited the
+      // loss, surfacing as "Unmapped" hours in the reports
+      deliverable_id: item.deliverable_id || null,
       contract_name: item.contract_name,
       deliverable: item.deliverable_name,
       anchored: !!item.anchored,

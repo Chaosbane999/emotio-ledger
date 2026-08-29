@@ -128,7 +128,7 @@ throws(() => T.updateEntry(2, e1.id, { minutes: 1, override: true }), "cannot ed
 throws(() => T.deleteEntry(2, e1.id), "cannot delete someone else's entry");
 
 // --- drag arranges the plan; only the tick commits ---------------------------
-const FUT = T.addDays(T.todayLondon(), 3);          // a future working slot
+const FUT = T.todayLondon();          // ticks only work once the day has come
 const FUT_PERIOD = FUT.slice(0, 7);
 db.prepare(`INSERT INTO schedule_blocks (id, person_id, period, contract_id, deliverable_id, label, date, start, minutes)
   VALUES (20, 1, ?, 10, 100, 'Client A — SEO', ?, '09:00', 60),
@@ -140,17 +140,54 @@ eq(T.dayView(1, FUT).totals.logged_minutes, 0, 'moving commits nothing');
 eq(T.dayView(1, FUT).blocks.find((b) => b.id === 20).status, 'pending', 'moved block still pending');
 throws(() => T.moveBlock(2, 20, FUT, '15:00'), "cannot move someone else's block");
 throws(() => T.moveBlock(1, 20, '2030-01-05', '09:00'), 'cannot leave its month');
+// the future cannot be ticked — plan yes, reality no
+const FUT3 = T.addDays(T.todayLondon(), 3);
+if (FUT3.slice(0, 7) === FUT_PERIOD) {
+  db.prepare(`INSERT INTO schedule_blocks (id, person_id, period, contract_id, deliverable_id, label, date, start, minutes)
+    VALUES (25, 1, ?, 10, 100, 'Client A — SEO', ?, '09:00', 60)`).run(FUT_PERIOD, FUT3);
+  throws(() => T.confirmBlock(1, 25), 'future block cannot be confirmed');
+  throws(() => T.confirmDay(1, FUT3), 'future day cannot be confirmed');
+  throws(() => T.addEntry(1, { block_id: 25, date: FUT3, minutes: 30, source: 'adjust' }), 'future worked entry refused');
+  throws(() => T.addEntry(1, { date: FUT3, contract_id: 10, deliverable_id: 100, minutes: 30 }), 'future manual entry refused');
+  const skF = T.skipBlock(1, 25, 'client cancelled next week');
+  eq(skF.minutes, 0, 'skipping a future block is allowed — a statement about the plan');
+  T.deleteEntry(1, skF.id);
+  db.prepare('DELETE FROM schedule_blocks WHERE id = 25').run();
+}
 throws(() => T.moveBlock(1, 20, FUT, '10:00'), 'cannot land on another block (10:00–11:00 hits 10:30–12:00)');
 throws(() => T.moveBlock(1, 20, FUT, 'nonsense'), 'bad time refused');
 const cfM = T.confirmBlock(1, 20, '');
 eq(cfM.start, '14:00', 'tick commits at the moved position');
 eq(cfM.date, FUT, 'tick commits on the moved day');
 throws(() => T.moveBlock(1, 20, FUT, '16:00'), 'an accounted block cannot be re-planned');
-// future entries stay freely editable — the lock is only about the past
+// today's entries stay freely editable — the lock is only about the past
 const eFut = T.updateEntry(1, cfM.id, { minutes: 75 });
-eq(eFut.minutes, 75, 'future entry edits without override');
+eq(eFut.minutes, 75, "today's entry edits without override");
+throws(() => T.updateEntry(1, cfM.id, { date: T.addDays(T.todayLondon(), 2) }),
+  'worked time cannot be moved into the future');
 T.deleteEntry(1, eFut.id);
 eq(T.dayView(1, FUT).blocks.find((b) => b.id === 20).status, 'pending', 'delete restores pending, no override needed');
+
+// --- bump: displaced plan moves to the next free slot ------------------------
+{
+  const TD = T.todayLondon();
+  {
+    db.prepare(`INSERT INTO schedule_blocks (id, person_id, period, contract_id, deliverable_id, label, date, start, minutes)
+      VALUES (50, 1, ?, 10, 100, 'Client A — SEO', ?, '09:00', 60),
+             (51, 1, ?, 10, 100, 'Client A — SEO', ?, '10:00', 60)`)
+      .run(TD.slice(0, 7), TD, TD.slice(0, 7), TD);
+    const bumped = T.bumpBlock(1, 50);
+    ok(bumped.date >= TD, 'bump never goes backwards');
+    ok(!(bumped.date === TD && bumped.start === '09:00'), 'bump actually moved it');
+    const others = db.prepare('SELECT start, minutes FROM schedule_blocks WHERE person_id = 1 AND date = ? AND id != 50').all(bumped.date);
+    const bs = Number(bumped.start.slice(0, 2)) * 60 + Number(bumped.start.slice(3));
+    for (const o of others) {
+      const os = Number(o.start.slice(0, 2)) * 60 + Number(o.start.slice(3));
+      ok(bs + bumped.minutes <= os || os + o.minutes <= bs, 'bumped slot is genuinely free');
+    }
+    db.prepare('DELETE FROM schedule_blocks WHERE id IN (50, 51)').run();
+  }
+}
 
 // --- calendar feed -----------------------------------------------------------
 const tok = T.calendarToken(1);
@@ -254,8 +291,10 @@ if (D2.slice(0, 7) === RP && D3.slice(0, 7) === RP) {
   }
   db.prepare('DELETE FROM schedule_blocks WHERE id = 40').run();
 
-  // an accounted block never rebalances
-  T.confirmBlock(1, 31, '');
+  // an accounted block never rebalances (state seeded directly — the API
+  // itself refuses to confirm a future block, which is its own rule above)
+  db.prepare(`INSERT INTO time_entries (block_id, person_id, contract_id, deliverable_id, date, minutes, source)
+    VALUES (31, 1, 11, 101, ?, 90, 'adjust')`).run(T.todayLondon());
   throws(() => T.applyRebalance(1, [{ block_id: 31, minutes: 15 }]), 'accounted block refused');
   throws(() => T.resizeBlock(1, 31, 60), 'accounted block cannot resize');
   db.prepare('DELETE FROM time_entries WHERE block_id = 31').run();

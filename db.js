@@ -260,6 +260,21 @@ CREATE TABLE IF NOT EXISTS settings (
 try { db.exec('ALTER TABLE people ADD COLUMN archived INTEGER NOT NULL DEFAULT 0'); }
 catch (e) { /* already there */ }
 
+// repair: saved schedule blocks lost their deliverable_id (the packer only
+// carried the name), and entries confirmed from them inherited the loss.
+// The label keeps the name — "Contract — Deliverable", or just the
+// deliverable for internal work — so the id can be recovered from it.
+db.exec(`
+  UPDATE schedule_blocks SET deliverable_id = (
+    SELECT d.id FROM deliverables d
+     WHERE schedule_blocks.label = d.name
+        OR schedule_blocks.label LIKE '% — ' || d.name)
+   WHERE deliverable_id IS NULL;
+  UPDATE time_entries SET deliverable_id = (
+    SELECT b.deliverable_id FROM schedule_blocks b WHERE b.id = time_entries.block_id)
+   WHERE deliverable_id IS NULL AND block_id IS NOT NULL;
+`);
+
 // migration: a private token per person lets their calendar app subscribe to
 // their schedule without a login — the token IS the credential, so it is
 // random, revocable, and never derived from anything guessable.

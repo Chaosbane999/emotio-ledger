@@ -188,6 +188,9 @@ function addEntry(personId, body) {
   if (!Number.isInteger(minutes) || minutes <= 0 || minutes > MAX_DAY_MINUTES) {
     throw new Error('minutes must be a whole number of minutes in the day');
   }
+  if (date > todayLondon()) {
+    throw new Error("That day hasn't happened yet — the plan covers the future; time is logged after the work.");
+  }
   const note = String(body.note || '').slice(0, 2000);
   const source = ['confirm', 'adjust', 'timer', 'manual'].includes(body.source)
     ? body.source : 'manual';
@@ -224,6 +227,9 @@ function addEntry(personId, body) {
 /** One tap: the block happened exactly as planned. */
 function confirmBlock(personId, blockId, note) {
   const b = blockGuard(personId, blockId);
+  if (b.date > todayLondon()) {
+    throw new Error("Not yet — that block is planned for " + b.date + ". Tick it once it's happened.");
+  }
   const state = entryStateOf(b.id);
   if (state.hasSkip) throw new Error('This block is marked as skipped — unskip it first.');
   if (state.hasWork) throw new Error('Already confirmed.');
@@ -236,6 +242,7 @@ function confirmBlock(personId, blockId, note) {
 /** Everything still pending on a date, accepted as planned in one go. */
 function confirmDay(personId, date) {
   if (!isDate(date)) throw new Error('bad date');
+  if (date > todayLondon()) throw new Error("That day hasn't happened yet.");
   const view = dayView(personId, date);
   const out = [];
   for (const b of view.blocks) {
@@ -285,6 +292,9 @@ function updateEntry(personId, entryId, body) {
     if (next.minutes !== 0) throw new Error('a skipped block has no minutes — unskip it instead');
   } else if (!Number.isInteger(next.minutes) || next.minutes <= 0 || next.minutes > MAX_DAY_MINUTES) {
     throw new Error('minutes must be a whole number of minutes in the day');
+  }
+  if (e.source !== 'skip' && next.date > todayLondon()) {
+    throw new Error("Worked time cannot be dated in the future — move the plan instead.");
   }
   // moving or resizing a confirmed block is, by definition, an adjustment
   const source = e.source === 'confirm'
@@ -466,20 +476,49 @@ function rebalancePlan(personId, contractId, period, delta, excludeBlockId) {
 }
 
 /** First stretch of `minutes` free of blocks inside the working day, or null. */
-function findFreeSlot(personId, date, minutes) {
+function findFreeSlot(personId, date, minutes, excludeId, afterMin) {
   const { get } = require('./db');
   const dayStart = toMinOfDayLocal(get('work_start') || '09:00');
   const dayEnd = toMinOfDayLocal(get('work_end') || '17:30');
-  const busy = db.prepare(`SELECT start, minutes FROM schedule_blocks
-    WHERE person_id = ? AND date = ? AND start IS NOT NULL ORDER BY start`)
-    .all(personId, date)
-    .map((b) => [toMinOfDayLocal(b.start), toMinOfDayLocal(b.start) + b.minutes]);
-  let cursor = dayStart;
+  // free means free of the plan AND of logged reality — placing a block on
+  // top of an entry would recreate the very clash being resolved
+  const busy = [
+    ...db.prepare(`SELECT start, minutes FROM schedule_blocks
+      WHERE person_id = ? AND date = ? AND start IS NOT NULL AND id != ?`)
+      .all(personId, date, excludeId || 0),
+    ...db.prepare(`SELECT start, minutes FROM time_entries
+      WHERE person_id = ? AND date = ? AND start IS NOT NULL AND source != 'skip'`)
+      .all(personId, date),
+  ].map((b) => [toMinOfDayLocal(b.start), toMinOfDayLocal(b.start) + b.minutes])
+    .sort((a, b) => a[0] - b[0]);
+  let cursor = Math.max(dayStart, afterMin || 0);
   for (const [bs, be] of busy) {
     if (bs - cursor >= minutes) return fromMinOfDayLocal(cursor);
     cursor = Math.max(cursor, be);
   }
   return dayEnd - cursor >= minutes ? fromMinOfDayLocal(cursor) : null;
+}
+
+/**
+ * Move a still-pending block to the next free slot — same day after its old
+ * spot if possible, otherwise the next working day with room, inside its
+ * month. Used when logged reality lands on top of the plan.
+ */
+function bumpBlock(personId, blockId) {
+  const b = blockGuard(personId, blockId);
+  const state = entryStateOf(b.id);
+  if (state.hasWork || state.hasSkip) throw new Error('This block is already accounted for.');
+  const days = [b.date, ...cap.workingDates(b.period).filter((d) => d > b.date)];
+  for (const d of days) {
+    // on its own day, only look past where it already sits
+    const after = d === b.date && b.start ? toMinOfDayLocal(b.start) + 15 : 0;
+    const slot = findFreeSlot(personId, d, b.minutes, b.id, after);
+    if (slot && !(d === b.date && slot === b.start)) {
+      db.prepare('UPDATE schedule_blocks SET date = ?, start = ? WHERE id = ?').run(d, slot, b.id);
+      return getBlock(b.id);
+    }
+  }
+  throw new Error('No free slot left this month — trim something or leave it pending.');
 }
 
 /** Apply chosen rebalance rows. 0 minutes removes the block outright.
@@ -710,11 +749,15 @@ function contractTimeReport(contractId, period) {
   }
 
   const like = `${period}-%`;
-  const byDeliverable = db.prepare(`SELECT d.name, COALESCE(SUM(e.minutes),0) m, COUNT(*) n
-      FROM time_entries e LEFT JOIN deliverables d ON d.id = e.deliverable_id
+  const byDeliverable = db.prepare(`
+    SELECT COALESCE(d.name, b.label, 'Uncategorised') AS name,
+           COALESCE(SUM(e.minutes),0) m, COUNT(*) n
+      FROM time_entries e
+      LEFT JOIN deliverables d    ON d.id = e.deliverable_id
+      LEFT JOIN schedule_blocks b ON b.id = e.block_id
      WHERE e.contract_id = ? AND e.date LIKE ? AND e.source != 'skip'
-     GROUP BY e.deliverable_id ORDER BY m DESC`).all(contractId, like)
-    .map((r) => ({ name: r.name || 'Unmapped', hours: toHours(r.m), entries: r.n }));
+     GROUP BY COALESCE(d.name, b.label, 'Uncategorised') ORDER BY m DESC`).all(contractId, like)
+    .map((r) => ({ name: r.name, hours: toHours(r.m), entries: r.n }));
   const byPerson = db.prepare(`SELECT p.name, COALESCE(SUM(e.minutes),0) m, COUNT(*) n
       FROM time_entries e JOIN people p ON p.id = e.person_id
      WHERE e.contract_id = ? AND e.date LIKE ? AND e.source != 'skip'
@@ -834,7 +877,7 @@ const fromMinOfDayLocal = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, 
 module.exports = {
   dayView, weekView, mondayOf, addDays, todayLondon,
   addEntry, confirmBlock, confirmDay, skipBlock, updateEntry, deleteEntry, moveBlock,
-  resizeBlock, rebalancePlan, applyRebalance,
+  resizeBlock, rebalancePlan, applyRebalance, bumpBlock,
   startTimer, stopTimer, cancelTimer, currentTimer,
   variance, loggedHours,
   calendarToken, personByToken, feedItems,
