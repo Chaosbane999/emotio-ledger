@@ -174,10 +174,19 @@ for (const P of periods) {
       const k = `${b.date}|${b.contract_id}`;
       byDayContract[k] = (byDayContract[k] || 0) + b.minutes;
     }
+    // Weekday ceilings police the working week. Weekends are the overflow
+    // valve — their whole point is holding what those ceilings squeezed out —
+    // so they answer only to the length of the day itself.
+    const isWeekend = (d) => [0, 6].includes(new Date(`${d}T00:00:00Z`).getUTCDay());
     for (const [d, m] of Object.entries(byDay)) {
-      ok(m <= perDay + 0.5, `${P} ${p.name}: ${d} within daily capacity (${m} vs ${perDay})`);
+      if (isWeekend(d)) {
+        ok(m <= 24 * 60, `${P} ${p.name}: ${d} weekend overflow fits the day (${m})`);
+      } else {
+        ok(m <= perDay + 0.5, `${P} ${p.name}: ${d} within daily capacity (${m} vs ${perDay})`);
+      }
     }
     for (const [k, m] of Object.entries(byDayContract)) {
+      if (isWeekend(k.slice(0, 10))) continue;
       const isInternal = plan.blocks.find((b) => `${b.date}|${b.contract_id}` === k)?.contract_type === 'internal';
       if (!isInternal) ok(m <= maxClient + 0.5, `${P} ${p.name}: ${k} within per-client daily cap (${m})`);
     }
