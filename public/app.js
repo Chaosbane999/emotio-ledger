@@ -178,9 +178,17 @@ $('#addMonth').addEventListener('click', async () => {
 
 $('#delMonth').addEventListener('click', async () => {
   if (S.boot.periods.length <= 1) return toast('That is the only month — add another before deleting this one.', true);
-  if (!confirm(`Delete ${monthName(S.period)}?\n\nEvery allocation, third-party line and carry-over in it goes too. This cannot be undone.`)) return;
+  if (!confirm(`Delete ${monthName(S.period)}?\n\nEvery allocation, third-party line, carry-over and planned block in it goes too. This cannot be undone.`)) return;
   try {
-    const r = await api(`/api/months/${S.period}`, { method: 'DELETE' });
+    let r;
+    try {
+      r = await api(`/api/months/${S.period}`, { method: 'DELETE' });
+    } catch (e) {
+      // the month holds logged time — the record of work done, not a plan
+      if (!/logged time/.test(e.message)) throw e;
+      if (!confirm(`${e.message}\n\nDelete it anyway, losing that time for good?`)) return;
+      r = await api(`/api/months/${S.period}?force=1`, { method: 'DELETE' });
+    }
     toast(`${monthName(S.period)} deleted.`);
     S.period = r.months[r.months.length - 1];
     rememberPeriod(S.period);
@@ -1216,6 +1224,7 @@ async function renderSchedule() {
       ${toolbar}
     </div>
     ${steps}
+    ${S.me?.role === 'admin' ? '<div id="schedTeam"></div>' : ''}
 
     <div class="stats">
       <div class="stat"><span class="k">Scheduled</span><span class="v">${hrs(plan.totals.scheduled_hours)}</span>
@@ -1385,6 +1394,53 @@ async function renderSchedule() {
   });
 
   if (editing) renderSchedEditor(plan, dates);
+  if (S.me?.role === 'admin') renderSchedTeam();
+}
+
+/**
+ * The month at a glance for whoever runs it: whose plan is live, whose is a
+ * suggestion nobody sent, who has none — and what is still unconfirmed. The
+ * answer used to require opening every person in turn.
+ */
+async function renderSchedTeam() {
+  const el = document.getElementById('schedTeam');
+  if (!el) return;
+  const o = await api(`/api/schedule-overview${P()}`);
+  const none = o.rows.filter((r) => r.state === 'none');
+  const draft = o.rows.filter((r) => r.state === 'draft');
+  const badge = (r) => (r.state === 'committed' ? '<span class="pill ok">on the time sheet</span>'
+    : r.state === 'draft' ? '<span class="pill warn">suggestion — not sent</span>'
+      : '<span class="pill mute">no plan</span>');
+  el.innerHTML = `
+    ${none.length || draft.length ? `<div class="banner"><div>
+      <b>${esc(monthName(S.period))}:</b>
+      ${none.length ? `${none.length} ${none.length === 1 ? 'person has' : 'people have'} no plan on the time sheet
+        (${esc(none.map((r) => r.name.split(' ')[0]).join(', '))})` : ''}
+      ${none.length && draft.length ? ' · ' : ''}
+      ${draft.length ? `${draft.length} still a suggestion nobody sent
+        (${esc(draft.map((r) => r.name.split(' ')[0]).join(', '))})` : ''}.
+      Their team can't confirm work that never reached the time sheet.
+    </div></div>` : ''}
+    <div class="card"><header><h2>The team this month</h2>
+      <p>Click a name to open their schedule</p></header>
+      <div class="scroll"><table>
+        <thead><tr><th>Person</th><th>Status</th><th class="num">Planned</th>
+          <th class="num" title="Allocated hours with no block on the calendar yet">Unscheduled</th>
+          <th class="num">Logged</th>
+          <th class="num" title="Blocks in the past nobody has confirmed or skipped">Unconfirmed</th></tr></thead>
+        <tbody>${o.rows.map((r) => `<tr class="${r.person_id === S.personId ? 'on' : ''}">
+          <td><button class="linky schedWho" data-p="${r.person_id}">${esc(r.name)}</button></td>
+          <td>${badge(r)}</td>
+          <td class="num">${hrs(r.planned_hours)}</td>
+          <td class="num">${r.unscheduled_hours ? `<span class="pill warn">${hrs(r.unscheduled_hours)}</span>` : '<span class="nil">—</span>'}</td>
+          <td class="num">${r.logged_hours ? hrs(r.logged_hours) : '<span class="nil">—</span>'}</td>
+          <td class="num">${r.unconfirmed_blocks ? `<span class="pill warn">${r.unconfirmed_blocks}</span>` : '<span class="nil">—</span>'}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+    </div>`;
+  el.querySelectorAll('.schedWho').forEach((b) => b.addEventListener('click', () => {
+    S.personId = Number(b.dataset.p); S.schedEdit = false; S.showRecipes = false; renderSchedule();
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1834,6 +1890,11 @@ async function renderTime() {
   if (!S.personId || !people.some((p) => p.id === S.personId)) S.personId = people[0]?.id;
   if (!S.personId) { view().innerHTML = '<p class="muted">No active people yet.</p>'; return; }
   if (!S.timeDate) S.timeDate = todayIso();
+  // the page carries one month at a time: showing a day from August under a
+  // September variance card put two different months on one screen
+  if (S.timeDate.slice(0, 7) !== S.period) {
+    S.timeDate = S.period === todayIso().slice(0, 7) ? todayIso() : `${S.period}-01`;
+  }
   S.timeMode = S.timeMode || 'day';
 
   if (S.timeEveryone && S.me?.role === 'admin') {
@@ -1899,8 +1960,20 @@ async function renderTime() {
   $('#tModeDay').addEventListener('click', () => { S.timeMode = 'day'; renderTime(); });
   $('#tModeWeek').addEventListener('click', () => { S.timeMode = 'week'; renderTime(); });
   const step = mode === 'day' ? 1 : 7;
-  $('#tPrev').addEventListener('click', () => { S.timeDate = timeShiftDay(S.timeDate, -step); renderTime(); });
-  $('#tNext').addEventListener('click', () => { S.timeDate = timeShiftDay(S.timeDate, step); renderTime(); });
+  const goto = (d) => {
+    S.timeDate = d;
+    const m = d.slice(0, 7);
+    // walking past a month boundary takes the whole page with you, when that
+    // month exists; otherwise the move is refused rather than half-made
+    if (m !== S.period) {
+      if (!S.boot.periods.includes(m)) return toast(`${monthName(m)} hasn't been added yet.`, true);
+      S.period = m; rememberPeriod(m);
+      const sel = $('#period'); if (sel) sel.value = m;
+    }
+    renderTime();
+  };
+  $('#tPrev').addEventListener('click', () => goto(timeShiftDay(S.timeDate, -step)));
+  $('#tNext').addEventListener('click', () => goto(timeShiftDay(S.timeDate, step)));
   $('#tToday').addEventListener('click', () => { S.timeDate = todayIso(); renderTime(); });
   $('#tCal').addEventListener('click', openCalendarPanel);
 
@@ -2694,7 +2767,7 @@ async function drawReport(qs) {
       `${r.totals.people === 1 ? (topP ? esc(topP.name) : 'One person') : `${r.totals.people} people`}`
       + ` delivered <b>${h(r.totals.hours)} hours</b> across ${r.totals.days_worked} working day${r.totals.days_worked === 1 ? '' : 's'}`,
       !S.repC && topC ? `the largest share went to <b>${esc(topC.name)}</b> (${h(topC.share, 1)}%)` : null,
-      topD ? `most of the time was <b>${esc(topD.name)}</b>` : null,
+      topD && topD.name !== 'Uncategorised' ? `most of the time was <b>${esc(topD.name)}</b>` : null,
     ].filter(Boolean).join(' — ') + '.';
 
   el.innerHTML = `

@@ -522,3 +522,5 @@ button.step { cursor: pointer; }
 .login-card input { display: block; width: 100%; margin-top: 10px; height: 40px; font-size: 1rem; }
 .login-card form { margin-top: 16px; }
 .login-card .btn.primary { height: 42px; font-size: 1rem; }
+
+.weekgrid ~ .card tr.on td, #schedTeam tr.on td { background: color-mix(in srgb, var(--accent-2) 9%, transparent); }

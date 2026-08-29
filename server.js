@@ -626,13 +626,16 @@ app.post('/api/months', ok((req, res) => {
     const idx = new Map(fromDays.map((d, i) => [d, i]));
     const blocks = db.prepare('SELECT * FROM schedule_blocks WHERE period = ?').all(from);
     const insB = db.prepare(`INSERT INTO schedule_blocks
-      (person_id, period, contract_id, deliverable_id, label, date, start, minutes, anchored, manual)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      (person_id, period, contract_id, deliverable_id, label, date, start, minutes, anchored, manual, draft)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     for (const b of blocks) {
       const i = idx.get(b.date);
       if (i === undefined || i >= toDays.length) continue;
+      // carry the state across: a reviewed plan copies as reviewed, a
+      // suggestion copies as a suggestion. Dropping the flag put unreviewed
+      // work straight onto next month's time sheet.
       insB.run(b.person_id, p, b.contract_id, b.deliverable_id, b.label,
-        toDays[i], b.start, b.minutes, b.anchored, b.manual);
+        toDays[i], b.start, b.minutes, b.anchored, b.manual, b.draft);
       copied.blocks += 1;
     }
   }
@@ -644,6 +647,25 @@ app.post('/api/months', ok((req, res) => {
 /** Remove a month and everything planned in it. */
 app.delete('/api/months/:period', ok((req, res) => {
   const p = req.params.period;
+  cap.parsePeriod(p);
+  // Logged time is the record of work actually done. Deleting a month used to
+  // leave it behind with its allocations destroyed — invisible in the picker,
+  // still counted by every date-range report, and stripped of the context that
+  // made it mean anything. It is refused unless someone insists explicitly.
+  const logged = db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(minutes),0) m FROM time_entries
+    WHERE date LIKE ? AND source != 'skip'`).get(`${p}-%`);
+  if (logged.n && req.query.force !== '1') {
+    return res.status(409).json({
+      error: `${p} has ${cap.round2(logged.m / 60)} h of logged time across ${logged.n} entries. `
+        + 'That is a record of work done — export it first, then delete with force.',
+      logged_hours: cap.round2(logged.m / 60), logged_entries: logged.n,
+    });
+  }
+  // the plan is disposable with its month; reality only goes when forced
+  db.prepare('DELETE FROM schedule_blocks WHERE period = ?').run(p);
+  if (req.query.force === '1') {
+    db.prepare("DELETE FROM time_entries WHERE date LIKE ?").run(`${p}-%`);
+  }
   db.prepare('DELETE FROM allocations WHERE period = ?').run(p);
   db.prepare('DELETE FROM tp_allocations WHERE period = ?').run(p);
   db.prepare('DELETE FROM carryover WHERE period = ?').run(p);
@@ -960,6 +982,39 @@ app.post('/api/schedule/:id/generate', ok((req, res) => {
     weekend: fresh.filter((b) => b.overflow).length,
     weekend_hours: cap.round2(fresh.filter((b) => b.overflow).reduce((s, b) => s + b.minutes, 0) / 60),
   });
+}));
+
+/**
+ * Where every person's month stands. Answers the question a manager actually
+ * has at the start of a month — whose plan is live, whose is still a
+ * suggestion nobody sent, and who has none at all — which previously took
+ * clicking through the team one at a time to discover.
+ */
+app.get('/api/schedule-overview', ok((req, res) => {
+  const p = period(req);
+  const people = db.prepare(
+    'SELECT id, name FROM people WHERE active = 1 AND archived = 0 ORDER BY sort_order, name').all();
+  const rows = people.map((person) => {
+    const blocks = db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(minutes),0) m, COALESCE(SUM(draft),0) d
+      FROM schedule_blocks WHERE person_id = ? AND period = ?`).get(person.id, p);
+    const state = !blocks.n ? 'none' : blocks.d ? 'draft' : 'committed';
+    const expected = schedule.expectedPlanHours(person.id, p);
+    const planned = cap.round2(blocks.m / 60);
+    const logged = db.prepare(`SELECT COALESCE(SUM(minutes),0) m FROM time_entries
+      WHERE person_id = ? AND date LIKE ? AND source != 'skip'`).get(person.id, `${p}-%`).m;
+    const unconfirmed = db.prepare(`SELECT COUNT(*) n FROM schedule_blocks b
+      WHERE b.person_id = ? AND b.period = ? AND b.draft = 0 AND b.date <= date('now')
+        AND NOT EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = b.id)`).get(person.id, p).n;
+    return {
+      person_id: person.id, name: person.name, state,
+      blocks: blocks.n, planned_hours: planned,
+      expected_hours: expected,
+      unscheduled_hours: Math.max(0, cap.round2(expected - planned)),
+      logged_hours: cap.round2(logged / 60),
+      unconfirmed_blocks: unconfirmed,
+    };
+  });
+  res.json({ period: p, rows });
 }));
 
 /** Step 3: the reviewed suggestion goes onto the time sheet in one flip. */
