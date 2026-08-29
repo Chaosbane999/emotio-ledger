@@ -1194,7 +1194,7 @@ async function renderSchedule() {
   const steps = `
     <div class="steps">
       <button class="step ${stepNo === 1 ? 'on' : ''}" id="stepRecipes">
-        <b>1</b> How ${isSelf ? 'you' : 'they'} work</button>
+        <b>1</b> How you work</button>
       <span class="step-arrow">›</span>
       <div class="step ${stepNo === 2 ? 'on' : ''} ${stepNo < 2 && !S.showRecipes ? 'todo' : ''}">
         <b>2</b> Review the suggestion</div>
@@ -1264,8 +1264,8 @@ async function renderSchedule() {
     </div></div>` : ''}
 
     ${S.showRecipes ? `<div class="card">
-      <header><h2>How ${isSelf ? 'you work' : `${esc(pv.person.name)} works`}</h2>
-        <p>${isSelf ? 'Your' : 'Their'} own recipes. Blank rows follow the agency default in Settings</p></header>
+      <header><h2>How you work</h2>
+        <p>These recipes shape the plan. Blank rows follow the agency default in Settings</p></header>
       <div class="scroll"><table>
         <thead><tr><th>Deliverable</th><th>Cadence</th><th>Distribution</th><th class="num">Block (min)</th>
           <th>Splittable</th><th class="num">Max sittings</th><th></th></tr></thead>
