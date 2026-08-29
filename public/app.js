@@ -604,9 +604,9 @@ async function renderContracts() {
               : c.status === 'pipeline' ? '<span class="pill warn">Pipeline</span>' : '<span class="pill mute">Hold</span>'}</td>
             <td class="num">${units(c.type === 'pot' ? c.pot_units : c.contracted_units)}</td>
             <td class="num">${units(c.allocated_units)}</td>
-            <td>${c.type === 'pot'
-              ? `${capBar(c.pot_drawn, c.pot_units)}<span class="sub">${h(c.pot_drawn)} of ${h(c.pot_units)} u · whole pot</span>`
-              : `${capBar(c.logged_hours, c.people_hours)}<span class="sub">${hrs(c.logged_hours)} of ${hrs(c.people_hours)} this month</span>`}</td>
+            <td class="progress-cell">${c.type === 'pot'
+              ? `${capBar(c.window_logged_hours, c.window_allocated_hours)}<span class="sub">${hrs(c.window_logged_hours)} of ${hrs(c.window_allocated_hours)} · whole&nbsp;pot</span>`
+              : `${capBar(c.logged_hours, c.people_hours)}<span class="sub">${hrs(c.logged_hours)} of ${hrs(c.people_hours)} · this&nbsp;month</span>`}</td>
             <td class="num">${c.type === 'pot' ? `${units(c.pot_remaining)} left`
               : `<span class="pill ${c.balanced ? 'ok' : 'bad'}">${c.balanced ? 'balanced' : h(-c.variance) + ' over'}</span>`}</td>
           </tr>`;
@@ -633,27 +633,37 @@ async function renderTimeReport(contractId) {
   if (!el) return;
   const r = await api(`/api/contract/${contractId}/time-report${P()}`);
   const max = Math.max(1, ...r.months.map((m) => Math.max(m.logged_hours, m.allocated_hours)));
-  const BAR_H = 110;
+  const BAR_H = 130;
+  // a readable hours axis: the smallest nice step that needs at most 4 lines
+  const step = [1, 2, 5, 10, 20, 25, 50, 100, 200].find((st) => max / st <= 4) || 500;
+  const ticks = [];
+  for (let t2 = step; t2 <= max; t2 += step) ticks.push(t2);
+  const px = (v2) => Math.round((v2 / max) * BAR_H);
   el.innerHTML = `
-    <header><h2>Time report</h2><p>Hours logged, month by month — grey is within the allocation, red is over</p>
+    <header><h2>Time report</h2><p>Hours logged, month by month — grey is the allocation, red is over it</p>
       <a class="btn small" href="/api/export/time.csv?contract_id=${contractId}${P().replace('?', '&')}" download>Export month (.csv)</a>
       <a class="btn small" href="/api/export/time.csv?contract_id=${contractId}" download>Export all (.csv)</a>
     </header>
-    <div class="tr-chart">
+    <div class="tr-wrap">
+      ${ticks.map((t2) => `<div class="tr-grid" style="bottom:${22 + px(t2)}px"></div>
+        <span class="tr-tick" style="bottom:${22 + px(t2) - 8}px">${t2}&nbsp;h</span>`).join('')}
+      <span class="tr-tick" style="bottom:14px">0</span>
+      <div class="tr-chart">
       ${r.months.map((m) => {
         const within = Math.min(m.logged_hours, m.allocated_hours);
         const over = Math.max(0, m.logged_hours - m.allocated_hours);
-        const px = (v2) => Math.round((v2 / max) * BAR_H);
         return `<div class="tr-col ${m.period === S.period ? 'now' : ''}"
             title="${esc(monthName(m.period))}: ${h(m.logged_hours)} h logged of ${h(m.allocated_hours)} h allocated">
           <div class="tr-bar" style="height:${BAR_H}px">
             <i class="tr-alloc" style="height:${px(m.allocated_hours)}px"></i>
             <i class="tr-within" style="height:${px(within)}px"></i>
             <i class="tr-over" style="height:${px(over)}px;bottom:${px(within)}px"></i>
+            ${m.logged_hours > 0 ? `<b class="tr-val" style="bottom:${px(m.logged_hours) + 2}px">${h(m.logged_hours)}</b>` : ''}
           </div>
           <span class="sub">${monthName(m.period).slice(0, 3)}</span>
         </div>`;
       }).join('')}
+      </div>
     </div>
     <div class="grid2" style="padding:0 16px 16px">
       <table><thead><tr><th>Deliverable · ${esc(monthName(S.period))}</th><th class="num">Hours</th></tr></thead>
@@ -685,6 +695,8 @@ async function renderContractDetail(id) {
     </select></td>
     <td class="num"><input type="number" class="lh" step="0.25" min="0" value="${h(l.hours)}"
       data-d="${l.deliverable_id}" data-p="${l.person_id}"></td>
+    <td class="progress-cell">${capBar(l.logged_hours, l.hours)}
+      <span class="sub">${hrs(l.logged_hours)} logged</span></td>
     <td class="num">£${h(l.rate)}</td>
     <td class="num">${units(l.units)}</td>
     <td class="num"><button class="btn small danger rm" data-d="${l.deliverable_id}" data-p="${l.person_id}">Remove</button></td>
@@ -755,11 +767,13 @@ async function renderContractDetail(id) {
     <div class="card">
       <header><h2>Allocation</h2><p>Enter hours — units are worked out from each person's rate</p></header>
       <div class="scroll"><table>
-        <thead><tr><th>Deliverable</th><th>Who</th><th class="num">Hours</th><th class="num">Rate</th>
+        <thead><tr><th>Deliverable</th><th>Who</th><th class="num">Hours</th>
+          <th style="width:130px">Progress</th><th class="num">Rate</th>
           <th class="num">Units</th><th class="num"></th></tr></thead>
         <tbody id="lineBody">${s.lines.length ? s.lines.map(lineRow).join('')
-          : '<tr><td colspan="6" class="muted">Tick a deliverable above to start allocating.</td></tr>'}
+          : '<tr><td colspan="7" class="muted">Tick a deliverable above to start allocating.</td></tr>'}
         <tr class="total"><td colspan="2">Total</td><td class="num">${hrs(s.people_hours)}</td>
+          <td>${capBar(s.logged_hours, s.people_hours)}</td>
           <td class="num"></td><td class="num">${units(s.people_units)}</td><td></td></tr></tbody>
       </table></div>
       <div class="body" style="border-top:1px solid var(--rule)">

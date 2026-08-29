@@ -179,12 +179,18 @@ function contractSummary(contract, period) {
       JOIN deliverables d ON d.id = a.deliverable_id
      WHERE a.contract_id = ? AND a.period = ?`).all(contract.id, period);
 
+  const lineLogged = db.prepare(`SELECT person_id, deliverable_id, SUM(minutes) m
+      FROM time_entries WHERE contract_id = ? AND date LIKE ? AND source != 'skip'
+     GROUP BY person_id, deliverable_id`).all(contract.id, `${period}-%`);
+  const loggedOf = new Map(lineLogged.map((r) => [`${r.person_id}:${r.deliverable_id}`, r.m]));
+
   const lines = rows.map((r) => ({
     person_id: r.person_id,
     person_name: r.person_name,
     deliverable_id: r.deliverable_id,
     deliverable_name: r.deliverable_name,
     hours: round2(r.hours),
+    logged_hours: round2((loggedOf.get(`${r.person_id}:${r.deliverable_id}`) || 0) / 60),
     rate: r.rate,
     units: round2(toUnits(r.hours, r.rate)),
   }));
@@ -263,6 +269,15 @@ function potPosition(contract, period, thisPeriodUnits) {
   const drawn = drawnPeople + drawnTp;
   const remaining = contract.pot_units - drawn;
 
+  // Time progress across the window, in hours. The drawdown above is about
+  // VALUE allocated; this is about WORK done. Showing the drawdown as a
+  // progress bar read as "nearly all logged" when almost nothing had been —
+  // a bar must compare logged time to allocated time, nothing else.
+  const windowAllocHours = drawnRows.reduce((s, r) => s + r.hours, 0);
+  const windowLoggedMin = db.prepare(`SELECT COALESCE(SUM(minutes),0) m FROM time_entries
+    WHERE contract_id = ? AND date >= ? AND date <= ? AND source != 'skip'`)
+    .get(contract.id, `${start}-01`, `${end}-31`).m;
+
   // How many months of the window remain. Deliberately no burn-rate forecast:
   // projecting the pace so far assumes nothing changes — no contract ending, no
   // allocation moving — when drawing a pot as the work demands is its whole
@@ -281,6 +296,8 @@ function potPosition(contract, period, thisPeriodUnits) {
     pot_drawn: round2(drawn),
     pot_remaining: round2(remaining),
     pot_this_period: round2(thisPeriodUnits),
+    window_allocated_hours: round2(windowAllocHours),
+    window_logged_hours: round2(windowLoggedMin / 60),
     months_total: total,
     months_left: Math.max(0, total - elapsed),
     pot_exhausted: remaining <= 0.005,

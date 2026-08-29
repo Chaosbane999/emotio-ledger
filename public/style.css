@@ -411,7 +411,14 @@ tr.tentry.skip td { opacity: 0.5; }
   font-size: 11px; font-weight: 600; }
 
 /* contract time report: a year of hours, allocation as the grey backdrop */
-.tr-chart { display: flex; align-items: flex-end; gap: 8px; padding: 12px 16px 4px; }
+.tr-wrap { position: relative; padding: 12px 16px 4px 44px; }
+.tr-grid { position: absolute; left: 44px; right: 16px; border-top: 1px solid var(--rule); opacity: 0.55; }
+.tr-tick { position: absolute; left: 0; width: 38px; text-align: right;
+  font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tr-val { position: absolute; left: 0; right: 0; text-align: center;
+  font-size: 10px; font-weight: 600; color: var(--ink); }
+.tr-chart { display: flex; align-items: flex-end; gap: 8px; position: relative; }
+.progress-cell .sub { white-space: nowrap; display: block; }
 .tr-col { flex: 1; text-align: center; min-width: 0; }
 .tr-col .sub { display: block; margin-top: 4px; }
 .tr-col.now .sub { color: var(--accent); font-weight: 600; }
