@@ -1425,14 +1425,18 @@ async function renderSchedTeam() {
       <p>Click a name to open their schedule</p></header>
       <div class="scroll"><table>
         <thead><tr><th>Person</th><th>Status</th><th class="num">Planned</th>
-          <th class="num" title="Allocated hours with no block on the calendar yet">Unscheduled</th>
+          <th class="num" title="How the plan compares with what the allocations call for: hours still to schedule, or hours planned beyond them">vs allocated</th>
           <th class="num">Logged</th>
           <th class="num" title="Blocks in the past nobody has confirmed or skipped">Unconfirmed</th></tr></thead>
         <tbody>${o.rows.map((r) => `<tr class="${r.person_id === S.personId ? 'on' : ''}">
           <td><button class="linky schedWho" data-p="${r.person_id}">${esc(r.name)}</button></td>
           <td>${badge(r)}</td>
           <td class="num">${hrs(r.planned_hours)}</td>
-          <td class="num">${r.unscheduled_hours ? `<span class="pill warn">${hrs(r.unscheduled_hours)}</span>` : '<span class="nil">—</span>'}</td>
+          <td class="num">${r.unscheduled_hours
+            ? `<span class="pill warn" title="allocated but not yet on the calendar">${hrs(r.unscheduled_hours)} to plan</span>`
+            : r.overplanned_hours
+              ? `<span class="pill bad" title="planned beyond what the allocations call for">${hrs(r.overplanned_hours)} over</span>`
+              : '<span class="nil">—</span>'}</td>
           <td class="num">${r.logged_hours ? hrs(r.logged_hours) : '<span class="nil">—</span>'}</td>
           <td class="num">${r.unconfirmed_blocks ? `<span class="pill warn">${r.unconfirmed_blocks}</span>` : '<span class="nil">—</span>'}</td>
         </tr>`).join('')}</tbody>

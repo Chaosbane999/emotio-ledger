@@ -1010,6 +1010,7 @@ app.get('/api/schedule-overview', ok((req, res) => {
       blocks: blocks.n, planned_hours: planned,
       expected_hours: expected,
       unscheduled_hours: Math.max(0, cap.round2(expected - planned)),
+      overplanned_hours: Math.max(0, cap.round2(planned - expected)),
       logged_hours: cap.round2(logged / 60),
       unconfirmed_blocks: unconfirmed,
     };
