@@ -909,11 +909,16 @@ app.get('/api/schedule/:id', ok((req, res) => {
     const person = db.prepare('SELECT id, name FROM people WHERE id = ?').get(id);
     // a draft anywhere means the month is under review — the journey's step 2
     const state = saved.some((b) => b.draft) ? 'draft' : 'committed';
+    const scheduled = cap.round2(saved.reduce((s, b) => s + b.minutes, 0) / 60);
+    // derived, not remembered: the saved plan versus what the allocations say
+    // it should hold — the packer's warning used to vanish on save
+    const expected = schedule.expectedPlanHours(id, p);
     return res.json({
       person, period: p, state, committed: state === 'committed', blocks: saved, unplaced: [],
       totals: {
-        scheduled_hours: cap.round2(saved.reduce((s, b) => s + b.minutes, 0) / 60),
-        unplaced_hours: 0, blocks: saved.length,
+        scheduled_hours: scheduled,
+        unplaced_hours: Math.max(0, cap.round2(expected - scheduled)),
+        blocks: saved.length,
       },
     });
   }
@@ -943,7 +948,13 @@ app.post('/api/schedule/:id/generate', ok((req, res) => {
     ins.run(id, p, b.contract_id || null, b.deliverable_id || null,
       b.label, b.date, b.start, Math.round(b.minutes), b.anchored ? 1 : 0);
   }
-  res.json({ saved: fresh.length, kept: plan.blocks.length - fresh.length, unplaced: plan.unplaced.length });
+  res.json({
+    saved: fresh.length,
+    kept: plan.blocks.length - fresh.length,
+    unplaced: plan.unplaced.length,
+    weekend: fresh.filter((b) => b.overflow).length,
+    weekend_hours: cap.round2(fresh.filter((b) => b.overflow).reduce((s, b) => s + b.minutes, 0) / 60),
+  });
 }));
 
 /** Step 3: the reviewed suggestion goes onto the time sheet in one flip. */

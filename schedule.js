@@ -477,6 +477,53 @@ function planPerson(personId, period) {
 
   for (const item of flexible) place(item);
 
+  // The overflow valve. A month can simply not have room Monday to Friday;
+  // letting that time vanish into a warning made it nobody's problem. It
+  // lands on a weekend instead — visible on the calendar, draggable like
+  // anything else, and honest about why it is there. Weekends carry no
+  // modelled capacity, so the only limit is the day itself; the weekday
+  // ceilings exist to protect focus in a working week, not to police a
+  // valve whose whole point is that the week was full.
+  if (unplaced.length) {
+    const weekendDays = new Map();          // iso -> { iso, free }
+    const seen = new Set();
+    for (const bk of buckets) {
+      const monday = new Date(`${bk[0]}T00:00:00Z`);
+      monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+      for (const offset of [5, 6]) {        // Saturday, Sunday
+        const d = new Date(monday); d.setUTCDate(d.getUTCDate() + offset);
+        const iso = d.toISOString().slice(0, 10);
+        if (iso.slice(0, 7) !== period || seen.has(iso)) continue;
+        seen.add(iso);
+        weekendDays.set(iso, { iso, free: dayWindows().map(([a, b]) => [a, b]), used: 0, byContract: new Map() });
+      }
+    }
+    const weekends = [...weekendDays.values()].sort((a, b) => a.iso.localeCompare(b.iso));
+    const still = [];
+    for (const item of unplaced) {
+      // a contract window still binds: no weekend outside the dates it ran
+      const bounds = item.allowed ? [...item.allowed].sort() : null;
+      const legal = weekends.filter((w) => !bounds
+        || (w.iso >= bounds[0] && w.iso <= bounds[bounds.length - 1]));
+      const landed = legal.find((day) => {
+        const slot = day.free.find(([a, b]) => b - a >= item.minutes);
+        if (!slot) return false;
+        take(day, slot[0], item.minutes);
+        placed.push({
+          date: day.iso, start: fromMin(slot[0]), end: fromMin(slot[0] + item.minutes),
+          minutes: Math.round(item.minutes), label: item.label,
+          contract_id: item.contract_id, deliverable_id: item.deliverable_id || null,
+          contract_name: item.contract_name, deliverable: item.deliverable_name,
+          anchored: false, overflow: true,
+        });
+        return true;
+      });
+      if (!landed) still.push(item);
+    }
+    unplaced.length = 0;
+    unplaced.push(...still);
+  }
+
   placed.sort((a, b) => (a.date === b.date ? a.start.localeCompare(b.start) : a.date.localeCompare(b.date)));
 
   // Coalesce accidental fragmentation: two sittings of the same task landing
@@ -594,4 +641,32 @@ function nextDay(iso) {
   return d.toISOString().slice(0, 10).replace(/-/g, '');
 }
 
-module.exports = { planPerson, toIcs, expand, dayWindows };
+/**
+ * The hours a saved plan ought to hold: allocations less what is already
+ * logged, plus kept blocks and anchors — the same identity the audit runs.
+ * "Couldn't place" for a saved plan is this minus what is actually scheduled,
+ * so the figure survives the save instead of vanishing with the packer run.
+ */
+function expectedPlanHours(personId, period) {
+  const lines = db.prepare(`SELECT a.contract_id, a.deliverable_id, a.hours FROM allocations a
+    JOIN contracts c ON c.id = a.contract_id
+    WHERE a.person_id = ? AND a.period = ? AND c.archived = 0 AND a.hours > 0`).all(personId, period);
+  const loggedBy = new Map(db.prepare(`SELECT contract_id, deliverable_id, SUM(minutes) m
+      FROM time_entries WHERE person_id = ? AND date LIKE ? AND source != 'skip'
+     GROUP BY contract_id, deliverable_id`).all(personId, `${period}-%`)
+    .map((r) => [`${r.contract_id}:${r.deliverable_id}`, r.m]));
+  let remainMin = 0;
+  for (const l of lines) {
+    const rem = l.hours * 60 - (loggedBy.get(`${l.contract_id}:${l.deliverable_id}`) || 0);
+    if (rem >= GRAIN) remainMin += rem;
+    else if (!loggedBy.has(`${l.contract_id}:${l.deliverable_id}`) && rem > 0) remainMin += rem;
+  }
+  const keptMin = db.prepare(`SELECT COALESCE(SUM(b.minutes),0) m FROM schedule_blocks b
+    WHERE b.person_id = ? AND b.period = ?
+      AND EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = b.id)`).get(personId, period).m;
+  const anchorMin = db.prepare('SELECT COALESCE(SUM(minutes),0) m FROM anchors WHERE person_id = ?')
+    .get(personId).m * cap.weekBuckets(period).length;
+  return cap.round2((remainMin + keptMin + anchorMin) / 60);
+}
+
+module.exports = { planPerson, toIcs, expand, dayWindows, expectedPlanHours };

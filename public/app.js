@@ -1225,11 +1225,20 @@ async function renderSchedule() {
         <span class="s">of ${hrs(pv.capacity.client_hours)} sellable · ${pct(pv.totals.load_pct)} loaded</span></div>
       <div class="stat ${plan.totals.unplaced_hours > 0 ? 'warn' : 'good'}">
         <span class="k">Couldn't place</span><span class="v">${hrs(plan.totals.unplaced_hours)}</span>
-        <span class="s">${plan.totals.unplaced_hours > 0 ? 'no room left in the month' : 'everything fits'}</span></div>
+        <span class="s">${plan.totals.unplaced_hours > 0 ? 'not even weekend room for this' : 'everything has a slot'}</span></div>
     </div>
 
-    ${plan.unplaced?.length ? `<div class="banner"><div>
-      <b>${plan.unplaced.length} sessions wouldn't fit.</b>
+    ${(() => {
+      const wknd = plan.blocks.filter((b) => [0, 6].includes(new Date(`${b.date}T00:00Z`).getUTCDay()));
+      const wkndH = wknd.reduce((s2, b) => s2 + b.minutes, 0) / 60;
+      return wknd.length ? `<div class="banner"><div>
+        <b>${hrs(wkndH)} sits on weekends — the working weeks were full.</b>
+        The month is oversold for ${esc(pv.person.name)}; drag the weekend blocks wherever suits,
+        move work to someone with room, or trim the allocations.
+      </div></div>` : '';
+    })()}
+    ${plan.unplaced?.length ? `<div class="banner bad"><div>
+      <b>${plan.unplaced.length} sessions had nowhere at all — even the weekends are full.</b>
       ${esc([...new Set(plan.unplaced.map((u) => u.label))].slice(0, 6).join('; '))}.
     </div></div>` : ''}
 
@@ -1336,7 +1345,9 @@ async function renderSchedule() {
       && !confirm('Build a fresh suggestion? The pending plan is replaced by it once you review and send it — committed time stays either way.')) return;
     const r = await api(`/api/schedule/${S.personId}/generate${P()}`, { method: 'POST', body: {} });
     S.schedWeek = 0;
-    toast(`Suggested ${r.saved} blocks${r.kept ? ` around ${r.kept} committed` : ''}${r.unplaced ? ` — ${r.unplaced} wouldn't fit` : ''}.`);
+    toast(`Suggested ${r.saved} blocks${r.kept ? ` around ${r.kept} committed` : ''}`
+      + `${r.weekend ? ` — ${h(r.weekend_hours)} h parked on weekends, the weeks were full` : ''}`
+      + `${r.unplaced ? ` — ${r.unplaced} sessions had nowhere at all` : ''}.`);
     renderSchedule();
   });
   $('#commitPlan')?.addEventListener('click', async () => {
