@@ -847,9 +847,13 @@ app.post('/api/contracts', ok((req, res) => {
       .filter((c) => contractsFor(req.user.person_id).has(c.id)));
   }
 
+  // The pot window is the contract's run dates, kept as months — one pair of
+  // dates on the form, no way to set them inconsistently.
+  const startsOn = date(b.starts_on); const endsOn = date(b.ends_on);
   const fields = [b.name, b.exec_person_id || null, b.type || 'retainer', b.status || 'live',
-    num(b.monthly_units), num(b.pot_units), month(b.pot_start), month(b.pot_end),
-    date(b.starts_on), date(b.ends_on), b.harvest_ids || '', b.notes || '', dept];
+    num(b.monthly_units), num(b.pot_units),
+    startsOn ? startsOn.slice(0, 7) : null, endsOn ? endsOn.slice(0, 7) : null,
+    startsOn, endsOn, b.harvest_ids || '', b.notes || '', dept];
   if (b.id) {
     db.prepare(`UPDATE contracts SET name=?, exec_person_id=?, type=?, status=?, monthly_units=?,
       pot_units=?, pot_start=?, pot_end=?, starts_on=?, ends_on=?, harvest_ids=?, notes=?, department=?

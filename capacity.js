@@ -323,8 +323,18 @@ function contractSummary(contract, period) {
 
 /** Drawdown position for a fixed-pot contract. */
 function potPosition(contract, period, thisPeriodUnits) {
-  const start = contract.pot_start || period;
-  const end = contract.pot_end || period;
+  // No dates on the contract: the window is every month the pot has been
+  // drawn in — "this month only" silently hid the rest of the drawdown.
+  let start = contract.pot_start; let end = contract.pot_end;
+  if (!start || !end) {
+    const span = db.prepare(`SELECT MIN(period) lo, MAX(period) hi FROM (
+      SELECT period FROM allocations WHERE contract_id = ?
+      UNION ALL SELECT period FROM tp_allocations WHERE contract_id = ?)`)
+      .get(contract.id, contract.id);
+    start = start || span.lo || period;
+    end = end || span.hi || period;
+  }
+  if (end < start) end = start;
 
   const drawnRows = db.prepare(`
     SELECT a.hours, p.rate FROM allocations a

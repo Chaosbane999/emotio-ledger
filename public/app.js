@@ -263,7 +263,7 @@ async function renderAgency() {
     return `<tr>
       <td class="ini">${esc(execIni(contract.exec_person_id))}</td>
       <td class="name"><button class="linky" data-contract="${c.contract_id}">${esc(c.name)}</button>
-        ${pot ? `<span class="sub">pot ${units(c.pot_units)} · to ${c.pot_end}</span>` : ''}</td>
+        ${pot ? `<span class="sub">pot ${units(c.pot_units)}${c.pot_end ? ` · to ${c.pot_end}` : ''}</span>` : ''}</td>
       <td class="num">${pot ? units(c.pot_units) : units(c.contracted_units)}</td>
       ${cols.map((p) => {
         const hh = hoursFor(c, p.id);
@@ -1049,10 +1049,7 @@ function openContractEditor(c) {
         <span class="muted">1 unit = £${h(S.boot.settings.standard_rate)} of contract value</span></div>
       <div class="rowline"><label>Pot units</label>
         <input type="number" id="cPot" step="0.5" min="0" value="${f('pot_units', 0)}">
-        <label style="min-width:auto">from</label>
-        <input type="month" id="cPotS" value="${f('pot_start')}" placeholder="YYYY-MM" style="width:150px">
-        <label style="min-width:auto">to</label>
-        <input type="month" id="cPotE" value="${f('pot_end')}" placeholder="YYYY-MM" style="width:150px"></div>
+        <span class="muted">Drawn over the contract's run dates below.</span></div>
       <div class="rowline"><label>Department</label>
         <select id="cDept">
           <option value="marketing"${(c?.department || 'marketing') === 'marketing' ? ' selected' : ''}>Marketing</option>
@@ -1082,7 +1079,6 @@ function openContractEditor(c) {
       id: c?.id, name: $('#cName').value.trim(), exec_person_id: Number($('#cExec').value) || null,
       type: $('#cType').value, status: $('#cStatus').value,
       monthly_units: Number($('#cUnits').value), pot_units: Number($('#cPot').value),
-      pot_start: normMonth($('#cPotS').value), pot_end: normMonth($('#cPotE').value),
       starts_on: $('#cFrom').value || null, ends_on: $('#cTo').value || null,
       department: $('#cDept').value,
       harvest_ids: $('#cHarvest').value.trim(),
@@ -1095,9 +1091,6 @@ function openContractEditor(c) {
     if (showsMoney() && !body.name) return toast('Give the contract a name.', true);
     if (showsMoney() && body.starts_on && body.ends_on && body.ends_on < body.starts_on) {
       return toast('The end date is before the start date.', true);
-    }
-    if (showsMoney() && body.pot_start && body.pot_end && body.pot_end < body.pot_start) {
-      return toast('The pot ends before it starts.', true);
     }
     S.boot.contracts = await api('/api/contracts', { body });
     toast('Contract saved.');

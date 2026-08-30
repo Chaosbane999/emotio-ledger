@@ -309,6 +309,7 @@ db.exec(`
 try { db.exec("ALTER TABLE contracts ADD COLUMN department TEXT NOT NULL DEFAULT 'marketing'"); }
 catch (e) { /* already there */ }
 
+
 // migration: a private token per person lets their calendar app subscribe to
 // their schedule without a login — the token IS the credential, so it is
 // random, revocable, and never derived from anything guessable.
@@ -320,8 +321,24 @@ catch (e) { /* already there */ }
 // a contract had already ended.
 for (const [col, def] of [['starts_on', 'TEXT'], ['ends_on', 'TEXT']]) {
   try { db.exec(`ALTER TABLE contracts ADD COLUMN ${col} ${def}`); }
+
+// The pot window now follows the contract's run dates. Old pot contracts that
+// only had pot months get run dates backfilled from them, then every contract's
+// pot months are resynced from its run dates.
   catch (e) { /* already there */ }
 }
+
+// The pot window follows the contract's run dates: backfill run dates from
+// old pot months, then resync pot months from run dates.
+db.exec(`
+  UPDATE contracts SET starts_on = pot_start || '-01'
+   WHERE type = 'pot' AND starts_on IS NULL AND pot_start IS NOT NULL;
+  UPDATE contracts SET ends_on = date(pot_end || '-01', '+1 month', '-1 day')
+   WHERE type = 'pot' AND ends_on IS NULL AND pot_end IS NOT NULL;
+  UPDATE contracts SET
+    pot_start = CASE WHEN starts_on IS NULL THEN NULL ELSE substr(starts_on, 1, 7) END,
+    pot_end   = CASE WHEN ends_on   IS NULL THEN NULL ELSE substr(ends_on,   1, 7) END;
+`);
 
 // migration: backfill bank holidays for instances created before they existed
 try {
