@@ -146,9 +146,14 @@ const impl = {
 
 function handle(req, res) {
   if (!TOKEN) return res.status(404).end();
+  const oauth = require('./oauth'); // late require avoids a load cycle
   const auth = req.headers.authorization || '';
   const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-  if (bearer !== TOKEN && (req.query.token || '') !== TOKEN) {
+  const authed = (bearer && (bearer === TOKEN || oauth.isValidToken(bearer))) ||
+    (req.query.token || '') === TOKEN;
+  if (!authed) {
+    res.set('WWW-Authenticate',
+      `Bearer resource_metadata="${oauth.PUBLIC_URL}/.well-known/oauth-protected-resource"`);
     return res.status(401).json({ error: 'unauthorized' });
   }
   const m = req.body || {};

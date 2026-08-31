@@ -15,6 +15,7 @@ const PORT = process.env.PORT || 3000;
 
 app.set('trust proxy', true);
 app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: false }));
 
 // ---- passcode gate ----------------------------------------------------
 // The passcode lives in the database so it can be changed in Settings without
@@ -174,6 +175,7 @@ app.use((req, res, next) => {
   if (req.path === '/login.html' || req.path.startsWith('/style.css')) return next();
   if (req.path.startsWith('/calendar/')) return next();   // the token IS the auth
   if (req.path === '/mcp') return next();                 // mcp.js checks its own token
+  if (req.path.startsWith('/.well-known/') || req.path.startsWith('/oauth/')) return next();
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'not signed in' });
   return res.redirect('/login.html');
 });
@@ -240,8 +242,18 @@ app.use((req, res, next) => {
 
 // ---- MCP (read-only analysis tools for agents) --------------------------
 const mcp = require('./mcp');
+const oauth = require('./oauth');
 app.post('/mcp', mcp.handle);
 app.get('/mcp', (req, res) => res.status(405).end());
+app.get('/.well-known/oauth-authorization-server', oauth.asMetadata);
+app.get('/.well-known/oauth-authorization-server/mcp', oauth.asMetadata);
+app.get('/.well-known/openid-configuration', oauth.asMetadata);
+app.get('/.well-known/oauth-protected-resource', oauth.prMetadata);
+app.get('/.well-known/oauth-protected-resource/mcp', oauth.prMetadata);
+app.post('/oauth/register', oauth.register);
+app.get('/oauth/authorize', oauth.authorizeForm);
+app.post('/oauth/authorize', oauth.authorizeSubmit);
+app.post('/oauth/token', oauth.token);
 
 app.get('/api/me', (req, res) => res.json({
   person_id: req.user?.person_id ?? null,
