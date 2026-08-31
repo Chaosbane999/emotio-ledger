@@ -173,6 +173,7 @@ app.use((req, res, next) => {
 
   if (req.path === '/login.html' || req.path.startsWith('/style.css')) return next();
   if (req.path.startsWith('/calendar/')) return next();   // the token IS the auth
+  if (req.path === '/mcp') return next();                 // mcp.js checks its own token
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'not signed in' });
   return res.redirect('/login.html');
 });
@@ -236,6 +237,11 @@ app.use((req, res, next) => {
   res.json = (payload) => original(stripMoney(payload));
   next();
 });
+
+// ---- MCP (read-only analysis tools for agents) --------------------------
+const mcp = require('./mcp');
+app.post('/mcp', mcp.handle);
+app.get('/mcp', (req, res) => res.status(405).end());
 
 app.get('/api/me', (req, res) => res.json({
   person_id: req.user?.person_id ?? null,
