@@ -23,6 +23,44 @@ const token = () => (process.env.SLACK_TOKEN || get('slack_token') || '').trim()
 const configured = () => Boolean(token());
 const enabled = () => configured() && get('slack_enabled') === '1';
 
+// Slack's newer app type never shows a long-lived token in its dashboard —
+// the token only exists as the product of an OAuth exchange. So the app runs
+// that exchange itself: the admin saves the Slack app's client id + secret,
+// clicks Connect, approves, and the token lands straight in settings without
+// ever passing through a person.
+const clientId = () => (get('slack_client_id') || '').trim();
+const clientSecret = () => (get('slack_client_secret') || '').trim();
+const oauthReady = () => Boolean(clientId() && clientSecret());
+
+async function exchangeCode(code, redirectUri) {
+  try {
+    const res = await fetch('https://slack.com/api/oauth.v2.access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8' },
+      body: new URLSearchParams({
+        code, client_id: clientId(), client_secret: clientSecret(), redirect_uri: redirectUri,
+      }).toString(),
+      signal: AbortSignal.timeout(15000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!data.ok) {
+      log('error', `Slack refused the OAuth exchange (${data.error || 'unknown'}).`);
+      return { ok: false, error: data.error || 'exchange_failed' };
+    }
+    const userTok = data.authed_user && data.authed_user.access_token;
+    if (!userTok || !userTok.startsWith('xoxp-')) {
+      log('error', 'The OAuth exchange returned no user token — check the app has USER token scopes.');
+      return { ok: false, error: 'no_user_token' };
+    }
+    set('slack_token', userTok);
+    log('info', `Connected via OAuth to ${data.team?.name || 'the workspace'}.`);
+    return { ok: true };
+  } catch (e) {
+    log('error', 'The OAuth exchange could not reach Slack.');
+    return { ok: false, error: 'request_failed' };
+  }
+}
+
 /** London wall-clock now: { iso: 'YYYY-MM-DD', dow: 1-7 (Mon-Sun), min }. */
 function londonNow(when = new Date()) {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
@@ -186,4 +224,8 @@ async function tick(force = false) {
   return result;
 }
 
-module.exports = { configured, enabled, test, tick, recentLog, _internal: { offUntil, londonNow } };
+module.exports = {
+  configured, enabled, test, tick, recentLog,
+  clientId, oauthReady, exchangeCode,
+  _internal: { offUntil, londonNow },
+};

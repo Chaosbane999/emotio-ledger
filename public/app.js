@@ -82,6 +82,15 @@ const rememberPeriod = (p) => { try { localStorage.setItem(REMEMBERED, p); } cat
 const recallPeriod = () => { try { return localStorage.getItem(REMEMBERED); } catch (e) { return null; } };
 
 async function boot() {
+  // landing back from the Slack OAuth round-trip
+  const slackBack = new URLSearchParams(window.location.search).get('slack');
+  if (slackBack) {
+    history.replaceState(null, '', window.location.pathname);
+    setTimeout(() => toast(slackBack === 'connected'
+      ? 'Slack connected — the token is stored. Try Test connection in Settings.'
+      : `Slack connection failed (${slackBack}). Check the Client ID, Secret and redirect URL.`,
+    slackBack !== 'connected'), 400);
+  }
   if (!S.period) S.period = recallPeriod();
   S.boot = await api(`/api/bootstrap${S.period ? P() : ''}`);
 
@@ -1743,8 +1752,17 @@ async function renderSettings() {
           so Slack clears it by itself when they are back. Evenings, weekends and bank holidays are left
           alone, and an existing status (holiday, illness) is never replaced unless you say so below.
           Needs each person's Slack member ID on the People card, and a working pattern.</p>
+          <div class="rowline"><label>Client ID</label>
+            <input type="text" id="skCid" value="${esc(st.slack_client_id || '')}" placeholder="from the app's Basic Information page" style="flex:1;min-width:220px"></div>
+          <div class="rowline"><label>Client Secret</label>
+            <input type="password" id="skCsec" placeholder="${st.slack_oauth_ready ? '•••••• stored' : 'Basic Information → Client Secret → Show'}" style="flex:1;min-width:220px"></div>
+          <div class="rowline"><span class="spacer"></span>
+            <button class="btn primary small" id="skConnect"${st.slack_oauth_ready ? '' : ' disabled title="Save the Client ID and Secret first"'}>Connect to Slack</button></div>
+          <p class="muted">Save the Client ID and Secret, then <b>Connect to Slack</b> — you approve on
+          Slack's screen and land back here with the token stored server-side; it is never shown to
+          anyone. If you have a token from elsewhere you can still paste it below instead.</p>
           <div class="rowline"><label>Token</label>
-            <input type="password" id="skTok" placeholder="${st.slack_connected ? '•••••• stored' : 'xoxp- user token'}" style="flex:1;min-width:220px"></div>
+            <input type="password" id="skTok" placeholder="${st.slack_connected ? '•••••• stored' : 'or paste an xoxp- user token'}" style="flex:1;min-width:220px"></div>
           <div class="rowline"><label>Status</label>
             <input type="text" id="skText" value="${esc(st.slack_status_text)}" maxlength="100" style="width:180px">
             <input type="text" id="skEmoji" value="${esc(st.slack_status_emoji)}" style="width:140px" title="an emoji name like :no_entry_sign:"></div>
@@ -1865,10 +1883,15 @@ function wireSettings() {
       };
       const tok = $('#skTok').value.trim();
       if (tok) body.slack_token = tok;      // blank keeps the stored token
+      const cid = $('#skCid').value.trim();
+      if (cid) body.slack_client_id = cid;
+      const csec = $('#skCsec').value.trim();
+      if (csec) body.slack_client_secret = csec;   // blank keeps the stored secret
       await api('/api/settings', { body });
       S.boot = await api(`/api/bootstrap${P()}`);
       toast('Slack settings saved.'); renderSettings();
     });
+    $('#skConnect').addEventListener('click', () => { window.location.href = '/api/slack/connect'; });
     $('#skTest').addEventListener('click', async () => {
       const r = await api('/api/slack/test', { body: {} });
       if (r.ok) toast(`Connected to ${r.team} as ${r.user}.`);

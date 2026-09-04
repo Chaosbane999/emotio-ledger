@@ -535,6 +535,8 @@ app.get('/api/bootstrap', ok((req, res) => {
       harvest_connected: harvest.configured(),
       harvest_account_id: get('harvest_account_id') || '',
       slack_connected: slack.configured(),
+      slack_oauth_ready: slack.oauthReady(),
+      slack_client_id: get('slack_client_id') || '',
       slack_enabled: get('slack_enabled') === '1',
       slack_override: get('slack_override') === '1',
       slack_status_text: get('slack_status_text') || 'Not working',
@@ -1083,7 +1085,8 @@ app.post('/api/passcode', ok((req, res) => {
 app.post('/api/settings', ok((req, res) => {
   const allowed = ['standard_rate', 'work_start', 'work_end', 'lunch_start', 'lunch_minutes',
     'max_client_minutes_per_day', 'holidays', 'harvest_account_id', 'harvest_token', 'default_period',
-    'slack_enabled', 'slack_override', 'slack_status_text', 'slack_status_emoji', 'slack_token'];
+    'slack_enabled', 'slack_override', 'slack_status_text', 'slack_status_emoji', 'slack_token',
+    'slack_client_id', 'slack_client_secret'];
   for (const [k, v] of Object.entries(req.body)) if (allowed.includes(k)) set(k, v);
   res.json({ ok: true });
 }));
@@ -1143,6 +1146,34 @@ app.post('/api/person-days/:id', ok((req, res) => {
   db.prepare('UPDATE people SET weekly_hours = ? WHERE id = ?').run(weekly || person.weekly_hours, id);
 
   res.json({ ok: true, days, weekly_hours: weekly, people: listPeople() });
+}));
+
+// The Connect flow: browser goes to Slack's authorize page, Slack sends it
+// back to /api/slack/oauth with a short-lived code, and the server swaps the
+// code for the user token and keeps it. The token itself never touches a
+// screen or a clipboard. The redirect URL must be registered on the Slack app.
+const SLACK_USER_SCOPES = 'users.profile:read,users.profile:write';
+const slackRedirect = (req) => `https://${req.headers.host}/api/slack/oauth`;
+
+app.get('/api/slack/connect', ok((req, res) => {
+  if (!slack.oauthReady()) throw new Error('Save the Slack Client ID and Client Secret first.');
+  const state = crypto.randomBytes(16).toString('hex');
+  set('slack_oauth_state', `${state}:${Date.now()}`);
+  res.redirect('https://slack.com/oauth/v2/authorize?' + new URLSearchParams({
+    client_id: slack.clientId(),
+    user_scope: SLACK_USER_SCOPES,
+    redirect_uri: slackRedirect(req),
+    state,
+  }).toString());
+}));
+
+app.get('/api/slack/oauth', okAsync(async (req, res) => {
+  const [state, at] = String(get('slack_oauth_state') || '').split(':');
+  set('slack_oauth_state', '');       // single use, however this ends
+  const fresh = state && req.query.state === state && Date.now() - Number(at) < 10 * 60 * 1000;
+  if (!fresh || !req.query.code) return res.redirect('/?slack=stale');
+  const r = await slack.exchangeCode(String(req.query.code), slackRedirect(req));
+  res.redirect(r.ok ? '/?slack=connected' : `/?slack=${encodeURIComponent(r.error)}`);
 }));
 
 app.post('/api/slack/test', okAsync(async (req, res) => res.json(await slack.test())));

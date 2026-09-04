@@ -422,6 +422,8 @@ const defaults = {
   harvest_token: '',
   // Slack working-pattern sync. Off until a token is added and it is enabled.
   slack_token: '',
+  slack_client_id: '',
+  slack_client_secret: '',
   slack_enabled: '0',
   slack_override: '0',              // replace an existing status? off by default
   slack_status_text: 'Not working',
