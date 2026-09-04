@@ -703,10 +703,9 @@ function placeAnchor(anchorId) {
     VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 1, 0, ?, ?)`);
   let placed = 0;
   for (const p of periods) {
-    const state = db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(draft),0) d
-      FROM schedule_blocks WHERE person_id = ? AND period = ?`).get(a.person_id, p);
-    if (!state.n) continue;              // no plan yet — the packer places it when one is built
-    const draft = state.d === state.n ? 1 : 0;    // a plan still in draft stays a draft
+    // A commitment is a fact, not a suggestion: it goes on the time sheet
+    // even while the month's plan is still a draft — or before any plan
+    // exists at all. The packer's next run recognises and re-places it.
     for (const date of anchorDates(a, contract, p)) {
       if (date < today) continue;        // the past is not retro-planned
       const dupe = db.prepare(`SELECT id FROM schedule_blocks
@@ -714,7 +713,7 @@ function placeAnchor(anchorId) {
           AND (anchor_id = ? OR (start = ? AND label = ?))`)
         .get(a.person_id, date, a.id, a.time, label);
       if (dupe) continue;
-      ins.run(a.person_id, p, a.contract_id, label, date, a.time, a.minutes, draft, a.id);
+      ins.run(a.person_id, p, a.contract_id, label, date, a.time, a.minutes, 0, a.id);
       placed++;
     }
   }
