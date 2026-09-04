@@ -326,13 +326,39 @@ function updateEntry(personId, entryId, body) {
   if (e.source !== 'skip' && next.date > todayLondon()) {
     throw new Error("Worked time cannot be dated in the future — move the plan instead.");
   }
-  // moving or resizing a confirmed block is, by definition, an adjustment
+  // Relabelling: work logged against the wrong contract or deliverable can be
+  // pointed at the right one. An entry that answered a planned block detaches
+  // from it first — the block's identity and the entry's would otherwise
+  // disagree, and the block goes back to pending so it can be skipped or
+  // deleted honestly rather than silently absorbed.
+  let contractId = e.contract_id;
+  let deliverableId = e.deliverable_id;
+  let blockId = e.block_id;
+  let relabelled = false;
+  if (e.source !== 'skip'
+    && ((body.contract_id !== undefined && Number(body.contract_id) !== e.contract_id)
+      || (body.deliverable_id !== undefined && Number(body.deliverable_id) !== e.deliverable_id))) {
+    contractId = body.contract_id !== undefined ? Number(body.contract_id) : e.contract_id;
+    deliverableId = body.deliverable_id !== undefined ? Number(body.deliverable_id) : e.deliverable_id;
+    if (!contractId || !db.prepare('SELECT id FROM contracts WHERE id = ?').get(contractId)) {
+      throw new Error('no such contract');
+    }
+    if (!deliverableId || !db.prepare('SELECT id FROM deliverables WHERE id = ?').get(deliverableId)) {
+      throw new Error('no such deliverable');
+    }
+    blockId = null;
+    relabelled = true;
+  }
+
+  // moving, resizing or relabelling a confirmed block is, by definition, an adjustment
   const source = e.source === 'confirm'
-    && (next.date !== e.date || next.start !== e.start || next.minutes !== e.minutes)
+    && (relabelled || next.date !== e.date || next.start !== e.start || next.minutes !== e.minutes)
     ? 'adjust' : e.source;
-  db.prepare(`UPDATE time_entries SET date = ?, start = ?, minutes = ?, note = ?, source = ?
-    WHERE id = ?`).run(next.date, next.start, next.minutes, next.note, source, entryId);
-  return getEntry(entryId);
+  db.prepare(`UPDATE time_entries SET date = ?, start = ?, minutes = ?, note = ?, source = ?,
+      contract_id = ?, deliverable_id = ?, block_id = ?
+    WHERE id = ?`).run(next.date, next.start, next.minutes, next.note, source,
+    contractId, deliverableId, blockId, entryId);
+  return { ...getEntry(entryId), relabelled };
 }
 
 function deleteEntry(personId, entryId, override) {

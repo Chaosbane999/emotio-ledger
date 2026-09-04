@@ -1295,6 +1295,14 @@ async function renderSchedule() {
         <span class="s">${plan.totals.unplaced_hours > 0 ? 'not even weekend room for this' : 'everything has a slot'}</span></div>
     </div>
 
+    ${plan.totals.off_pattern_blocks ? `<div class="banner"><div>
+      <b>${plan.totals.off_pattern_blocks} planned block${plan.totals.off_pattern_blocks === 1 ? ' sits' : 's sit'}
+      on days ${esc(pv.person.name)}'s working pattern now says are off.</b>
+      This plan was saved before the pattern changed — a saved plan is never rewritten silently.
+      Press <b>Rebuild from allocations</b> to rebuild it around the pattern (answered blocks keep their ground),
+      or drag the stranded blocks to working days yourself.
+    </div></div>` : ''}
+
     ${(() => {
       const wknd = plan.blocks.filter((b) => [0, 6].includes(new Date(`${b.date}T00:00Z`).getUTCDay()));
       const wkndH = wknd.reduce((s2, b) => s2 + b.minutes, 0) / 60;
@@ -1741,6 +1749,19 @@ async function renderSettings() {
         </div>
       </div>
 
+      <div class="card">
+        <header><h2>AI assistant</h2>
+          <p>${st.ai_ready ? '<span class="pill ok">Ready</span>' : '<span class="pill mute">No key</span>'}</p></header>
+        <div class="body">
+          <div class="rowline"><label>Anthropic key</label>
+            <input type="password" id="aiKeyIn" placeholder="${st.ai_ready ? '•••••• stored' : 'sk-ant-…'}" style="flex:1;min-width:180px">
+            <button class="btn primary small" id="aiKeySave">Save</button></div>
+          <p class="muted">Powers <b>✨ Describe your day</b> on the time sheet — everyone types what
+          they did, it drafts the entries, they approve. Create a key at console.anthropic.com.
+          Each draft is one small API call.</p>
+        </div>
+      </div>
+
       <div class="card" style="grid-column:1/-1">
         <header><h2>Slack status sync</h2>
           <p>${st.slack_connected
@@ -1870,6 +1891,14 @@ function wireSettings() {
     S.boot.people = r.people;
     toast('Back to the standard week.'); renderSettings();
   }));
+
+  $('#aiKeySave')?.addEventListener('click', async () => {
+    const key = $('#aiKeyIn').value.trim();
+    if (!key) return toast('Paste the key first.', true);
+    await api('/api/settings', { body: { anthropic_api_key: key } });
+    S.boot = await api(`/api/bootstrap${P()}`);
+    toast('AI assistant ready.'); renderSettings();
+  });
 
   // slack sync
   const skSave = $('#skSave');
@@ -2344,7 +2373,20 @@ function renderTimeDay(v) {
         <button class="btn small" id="teAdd">+ Add</button>
       </div>
     </div>
-    </div>`;
+    </div>
+
+    ${S.boot.settings.ai_ready && v.date <= todayIso() ? `
+    <div class="card">
+      <header><h2>✨ Describe your day</h2>
+        <p>Plain English in, a drafted timesheet out — nothing is logged until you approve it</p></header>
+      <div class="body">
+        <div class="rowline"><textarea id="aiText" rows="3" style="flex:1;min-width:260px;resize:vertical"
+          placeholder="e.g. Spent the morning on Crystal Units on-page fixes, about an hour on NLG ads after lunch, then the Watchdog blog for the rest of the afternoon"></textarea></div>
+        <div class="rowline"><span class="spacer"></span>
+          <button class="btn primary small" id="aiGo">Draft my timesheet</button></div>
+        <div id="aiOut"></div>
+      </div>
+    </div>` : ''}`;
 
   $('#tConfirmDay')?.addEventListener('click', async () => {
     const r = await timeApi('/confirm-day', { body: { date: v.date } });
@@ -2385,6 +2427,42 @@ function renderTimeDay(v) {
     const e = v.entries.find((x) => x.id === Number(b.dataset.e));
     openEntryEditor(e);
   }));
+  $('#aiGo')?.addEventListener('click', async () => {
+    const text = $('#aiText').value.trim();
+    if (!text) return toast('Describe the day first.', true);
+    $('#aiGo').disabled = true; $('#aiGo').textContent = 'Thinking…';
+    let r;
+    try { r = await timeApi('/ai-day', { body: { date: v.date, text } }); }
+    catch (err) { toast(err.message, true); $('#aiGo').disabled = false; $('#aiGo').textContent = 'Draft my timesheet'; return; }
+    $('#aiGo').disabled = false; $('#aiGo').textContent = 'Draft my timesheet';
+    if (!r.entries.length) { $('#aiOut').innerHTML = '<p class="muted">Nothing usable came back — try adding a little more detail.</p>'; return; }
+    $('#aiOut').innerHTML = `
+      <table><tbody>${r.entries.map((x, i) => `
+        <tr><td><input type="checkbox" class="aiPick" data-i="${i}" checked></td>
+          <td class="num">${esc(x.start)}</td>
+          <td>${esc(x.label)}${x.note ? `<span class="sub">“${esc(x.note)}”</span>` : ''}
+            ${x.block_id ? '<span class="pill mute">planned</span>' : '<span class="pill warn">unplanned</span>'}</td>
+          <td class="num"><b>${hm(x.minutes)}</b></td></tr>`).join('')}
+      </tbody></table>
+      ${r.dropped.length ? `<p class="muted">${r.dropped.length} suggestion(s) dropped: ${esc(r.dropped.map((d) => d.reason).join('; '))}.</p>` : ''}
+      <div class="rowline"><span class="spacer"></span>
+        <button class="btn primary small" id="aiLog">Log selected</button></div>`;
+    $('#aiLog').addEventListener('click', async () => {
+      const picked = [...view().querySelectorAll('.aiPick:checked')].map((c) => r.entries[Number(c.dataset.i)]);
+      if (!picked.length) return toast('Nothing ticked.', true);
+      for (const x of picked) {
+        await timeApi('/entries', { body: {
+          block_id: x.block_id || undefined,
+          contract_id: x.block_id ? undefined : x.contract_id,
+          deliverable_id: x.block_id ? undefined : x.deliverable_id,
+          date: v.date, start: x.start, minutes: x.minutes, note: x.note,
+          source: x.block_id ? 'adjust' : 'manual',
+        } });
+      }
+      toast(`${picked.length} logged.`); renderTime();
+    });
+  });
+
   assignSelects(S.timeAssignments || [], 'teC', 'teD').wire();
   $('#teAdd').addEventListener('click', async () => {
     const minutes = Number($('#teMins').value);
@@ -2395,6 +2473,36 @@ function renderTimeDay(v) {
       note: $('#teNote').value.trim(),
     } });
     toast('Added.'); renderTime();
+  });
+}
+
+// --- add a piece of work straight onto the calendar --------------------------
+
+function openAddEntryPanel(date, start) {
+  document.querySelector('.tpanel')?.remove();
+  if (date > todayIso()) return toast("That day hasn't happened yet — log time after the work.", true);
+  const p = document.createElement('div');
+  p.className = 'tpanel card';
+  p.innerHTML = `
+    <header><h2>Log work — ${niceDay(date)}</h2><button class="btn small" id="tpX">✕</button></header>
+    <div class="rowline"><label>What</label>${assignSelects(S.timeAssignments || [], 'naC', 'naD').html}</div>
+    <div class="rowline"><label>Start</label><input type="time" id="naStart" value="${start}"></div>
+    <div class="rowline"><label>Minutes</label><input type="number" id="naMins" value="60" min="15" step="15"></div>
+    <div class="rowline"><label>Note</label><input type="text" id="naNote" placeholder="optional" style="flex:1"></div>
+    <div class="rowline"><span class="spacer"></span>
+      <button class="btn primary small" id="naGo">Log it</button></div>`;
+  view().appendChild(p);
+  assignSelects(S.timeAssignments || [], 'naC', 'naD').wire();
+  $('#tpX').addEventListener('click', () => p.remove());
+  $('#naGo').addEventListener('click', async () => {
+    const minutes = Number($('#naMins').value);
+    if (!minutes) return toast('How many minutes?', true);
+    await timeApi('/entries', { body: {
+      contract_id: Number($('#naC').value), deliverable_id: Number($('#naD').value),
+      date, start: $('#naStart').value || null, minutes,
+      note: $('#naNote').value.trim(),
+    } });
+    p.remove(); toast('Logged.'); renderTime();
   });
 }
 
@@ -2414,6 +2522,7 @@ function openEntryEditor(e) {
       of the record. Override only to correct a mistake.</p>` : ''}
     <div class="rowline"><label>Date</label><input type="date" id="tpDate" value="${e.date}"${locked ? ' disabled' : ''}></div>
     ${e.source !== 'skip' ? `
+    <div class="rowline"><label>Logged to</label>${assignSelects(S.timeAssignments || [], 'tpC', 'tpD').html}</div>
     <div class="rowline"><label>Start</label><input type="time" id="tpStart" value="${e.start || ''}"${locked ? ' disabled' : ''}></div>
     <div class="rowline"><label>Minutes</label><input type="number" id="tpMins" value="${e.minutes}" min="1" step="15"${locked ? ' disabled' : ''}></div>` : ''}
     <div class="rowline"><label>Note</label><input type="text" id="tpNote" value="${esc(e.note || '')}" style="flex:1"${locked ? ' disabled' : ''}></div>
@@ -2423,10 +2532,20 @@ function openEntryEditor(e) {
       <button class="btn primary small hideable${locked ? ' hidden' : ''}" id="tpSave">Save</button></div>`;
   view().appendChild(p);
   const wasLocked = locked;
+  // the identity selects start on the entry's current contract + deliverable
+  if (e.source !== 'skip' && $('#tpC')) {
+    assignSelects(S.timeAssignments || [], 'tpC', 'tpD').wire();
+    if (e.contract_id != null) {
+      $('#tpC').value = String(e.contract_id);
+      $('#tpC').dispatchEvent(new Event('change'));
+      if (e.deliverable_id != null) $('#tpD').value = String(e.deliverable_id);
+    }
+    if (locked) { $('#tpC').disabled = true; $('#tpD').disabled = true; }
+  }
   $('#tpX').addEventListener('click', () => p.remove());
   $('#tpUnlock')?.addEventListener('click', () => {
     locked = false;
-    p.querySelectorAll('input').forEach((i) => { i.disabled = false; });
+    p.querySelectorAll('input, select').forEach((i) => { i.disabled = false; });
     p.querySelectorAll('.hideable').forEach((b) => b.classList.remove('hidden'));
     $('#tpUnlock').remove();
   });
@@ -2439,9 +2558,16 @@ function openEntryEditor(e) {
     if (e.source !== 'skip') {
       body.start = $('#tpStart').value || null;
       body.minutes = Number($('#tpMins').value);
+      const cid = Number($('#tpC')?.value); const did = Number($('#tpD')?.value);
+      if (cid && did && (cid !== e.contract_id || did !== e.deliverable_id)) {
+        body.contract_id = cid; body.deliverable_id = did;
+      }
     }
     if (wasLocked) body.override = true;
-    await timeApi(`/entries/${e.id}`, { method: 'PATCH', body });
+    const saved = await timeApi(`/entries/${e.id}`, { method: 'PATCH', body });
+    if (saved.relabelled && e.block_id) {
+      toast('Relabelled — the planned block it answered is pending again; skip or delete it if it never happened.');
+    }
     p.remove(); toast('Saved.'); await renderTime();
     if (body.minutes && body.minutes !== e.minutes) {
       maybeRebalance(e.contract_id, e.date, body.minutes - e.minutes, e.block_id);
@@ -2570,7 +2696,14 @@ function wireWeekDrag(v, lo) {
 
   body.addEventListener('pointerdown', (ev) => {
     const t = ev.target.closest('[data-kind]');
-    if (!t) return;
+    if (!t) {
+      // empty grid: a plain click here adds a piece of work at that slot
+      const slot = slotOf(ev);
+      if (slot && ev.target.closest('.tw-grid')) {
+        drag = { kind: 'empty', slot, startX: ev.clientX, startY: ev.clientY, moved: false };
+      }
+      return;
+    }
     const kind = t.dataset.kind;
     if (kind === 'tick') {
       // the tick IS the commit — one tap, exactly where the block sits now
@@ -2607,6 +2740,10 @@ function wireWeekDrag(v, lo) {
 
   body.addEventListener('pointermove', (ev) => {
     if (!drag || drag.kind === 'locked') return;
+    if (drag.kind === 'empty') {
+      if (Math.abs(ev.clientX - drag.startX) + Math.abs(ev.clientY - drag.startY) > 4) drag.moved = true;
+      return;
+    }
     if (Math.abs(ev.clientX - (drag.startX ?? ev.clientX)) + Math.abs(ev.clientY - drag.startY) > 4) drag.moved = true;
     if (!drag.moved) return;
     if (drag.kind === 'resize' || drag.kind === 'gresize') {
@@ -2631,6 +2768,10 @@ function wireWeekDrag(v, lo) {
     if (!d) return;
     try {
       if (d.kind === 'locked') { openEntryEditor(d.entry); return; }
+      if (d.kind === 'empty') {
+        if (!d.moved) openAddEntryPanel(d.slot.date, fromMinOfDay(d.slot.min));
+        return;
+      }
       if (!d.moved) {
         // a click, not a drag
         if (d.kind === 'entry') {

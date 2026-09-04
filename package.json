@@ -1,7 +1,7 @@
 {
   "name": "emotio-ledger",
   "version": "1.0.0",
-  "description": "EmotioHours \u2014 capacity and time allocation: contracted units in, team hours out",
+  "description": "EmotioHours — capacity and time allocation: contracted units in, team hours out",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
@@ -10,6 +10,7 @@
     "test": "node test-time.js && node audit.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.123.0",
     "express": "^4.21.2"
   },
   "engines": {

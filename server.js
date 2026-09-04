@@ -9,6 +9,7 @@ const schedule = require('./schedule');
 const time = require('./time');
 const harvest = require('./harvest');
 const slack = require('./slack');
+const ai = require('./ai');
 const seed = require('./seed');
 
 const app = express();
@@ -390,6 +391,13 @@ const personParam = (req) => {
   return id;
 };
 
+/** Free text about the day in, a proposed timesheet out. Nothing is logged
+ *  here — the person reviews the proposal and commits it entry by entry. */
+app.post('/api/time/:id/ai-day', okAsync(async (req, res) => {
+  res.json(await ai.draftDay(personParam(req),
+    String(req.body?.date || ''), String(req.body?.text || '')));
+}));
+
 app.get('/api/time/:id/day', ok((req, res) => {
   res.json(time.dayView(personParam(req), String(req.query.date || '')));
 }));
@@ -542,6 +550,7 @@ app.get('/api/bootstrap', ok((req, res) => {
       slack_status_text: get('slack_status_text') || 'Not working',
       slack_status_emoji: get('slack_status_emoji') || ':no_entry_sign:',
       slack_log: isAdmin(req) ? slack.recentLog().slice(0, 8) : [],
+      ai_ready: ai.configured(),
       last_sync: get('last_sync') || '',
       passcode_set: Boolean(get('passcode_hash')),
       staging: process.env.STAGING === '1',
@@ -1086,7 +1095,7 @@ app.post('/api/settings', ok((req, res) => {
   const allowed = ['standard_rate', 'work_start', 'work_end', 'lunch_start', 'lunch_minutes',
     'max_client_minutes_per_day', 'holidays', 'harvest_account_id', 'harvest_token', 'default_period',
     'slack_enabled', 'slack_override', 'slack_status_text', 'slack_status_emoji', 'slack_token',
-    'slack_client_id', 'slack_client_secret'];
+    'slack_client_id', 'slack_client_secret', 'anthropic_api_key'];
   for (const [k, v] of Object.entries(req.body)) if (allowed.includes(k)) set(k, v);
   res.json({ ok: true });
 }));
@@ -1206,12 +1215,21 @@ app.get('/api/schedule/:id', ok((req, res) => {
     // derived, not remembered: the saved plan versus what the allocations say
     // it should hold — the packer's warning used to vanish on save
     const expected = schedule.expectedPlanHours(id, p);
+    // A saved plan is never rewritten behind anyone's back, so a working
+    // pattern set AFTER the plan was committed leaves blocks stranded on
+    // days that are now off. Count them so the page can say so out loud.
+    const pattern = cap.patternOf(id);
+    const offPattern = pattern ? saved.filter((b) => {
+      const utc = new Date(`${b.date}T00:00:00Z`).getUTCDay();
+      return utc !== 0 && utc !== 6 && !pattern.get(cap.isoDow(b.date)) && !b.accounted;
+    }).length : 0;
     return res.json({
       person, period: p, state, committed: state === 'committed', blocks: saved, unplaced: [],
       totals: {
         scheduled_hours: scheduled,
         unplaced_hours: Math.max(0, cap.round2(expected - scheduled)),
         blocks: saved.length,
+        off_pattern_blocks: offPattern,
       },
     });
   }

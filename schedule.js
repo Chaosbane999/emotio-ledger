@@ -148,7 +148,24 @@ function expand(alloc, recipe, buckets, ceiling) {
     case 'fortnightly': {
       const step = recipe.cadence === 'fortnightly' ? 2 : 1;
       const active = [];
-      for (let w = 0; w < weeks; w += step) active.push(w);
+      for (let w = 0; w < weeks; w += step) { if (buckets[w].length) active.push(w); }
+      if (!active.length) break;
+
+      // The block size is a minimum sitting EVERYWHERE, including here. A
+      // 3h/month task on a weekly cadence used to become 45 minutes every
+      // week — the month was split into weekly shares before the block
+      // minimum ever applied. When the weekly share would fall below the
+      // block, place fewer, full-size sittings on evenly spaced weeks
+      // instead: 180m with a 60m block is 3 x 60m, never 4 x 45m.
+      const block2 = Math.max(15, recipe.block_minutes || 60);
+      if (recipe.distribution !== 'anchored' && totalMin / active.length < block2) {
+        const n = Math.min(active.length, Math.max(1, Math.floor(totalMin / block2) || 1));
+        splitExact(totalMin, n).forEach((m, i) => {
+          sessions.push({ minutes: m, week: active[Math.floor((i * active.length) / n)] });
+        });
+        break;
+      }
+
       // weight each week by its working days, so a 3-day week gets 3 days' worth
       const days = active.map((w) => buckets[w].length);
       const shares = shareExact(totalMin, days);

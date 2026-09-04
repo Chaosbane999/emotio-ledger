@@ -393,6 +393,21 @@ if (D2.slice(0, 7) === RP && D3.slice(0, 7) === RP) {
   }
   // smaller than a block: the whole thing, unavoidably
   eq(expand({ hours: 0.25 }, rec, wk, 240).map((x) => x.minutes).join('+'), '15', 'sub-block totals stay whole');
+
+  // a thin month never shaves sittings below the block: 180m/month on a
+  // weekly cadence with a 60m block is 3 x 60m on spread weeks, not 4 x 45m
+  const month = [
+    ['2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04'],
+    ['2026-09-07', '2026-09-08', '2026-09-09', '2026-09-10', '2026-09-11'],
+    ['2026-09-14', '2026-09-15', '2026-09-16', '2026-09-17', '2026-09-18'],
+    ['2026-09-21', '2026-09-22', '2026-09-23', '2026-09-24', '2026-09-25'],
+  ];
+  const rec60 = { ...rec, block_minutes: 60 };
+  const thin = expand({ hours: 3 }, rec60, month, 240);
+  eq(thin.reduce((s, x) => s + x.minutes, 0), 180, 'thin weekly month conserves the total');
+  ok(thin.every((x) => x.minutes >= 60), `every sitting at least the block (${thin.map((x) => x.minutes).join('+')})`);
+  eq(thin.length, 3, 'three sittings, not four fragments');
+  eq(new Set(thin.map((x) => x.week)).size, 3, 'sittings land on different weeks');
 }
 
 // --- timer ------------------------------------------------------------------
