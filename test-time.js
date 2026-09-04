@@ -506,5 +506,38 @@ eq(Math.round(lh * 60), p1.logged_minutes, 'loggedHours matches variance by-pers
   eq(offUntil(late, at(600, 5), S9, E1730), 13 * 60, 'late starter: status until their start');
 }
 
+// --- fixed commitments land in saved plans, and lift back out ---------------
+{
+  const cap = require('./capacity');
+  const sch = require('./schedule');
+  // a committed plan next month (all dates in the future, so nothing is
+  // skipped as past), then a commitment saved AFTER the plan exists
+  const P = cap.shiftPeriod(cap.thisPeriod(), 1);
+  db.prepare('INSERT OR IGNORE INTO months (period) VALUES (?)').run(P);
+  db.prepare(`INSERT INTO schedule_blocks (person_id, period, contract_id, deliverable_id,
+    label, date, start, minutes, anchored, manual, draft)
+    VALUES (1, ?, 10, 100, 'Client A — SEO', ?, '09:00', 60, 0, 0, 0)`)
+    .run(P, `${P}-15`.replace(/-(\d)$/, '-0$1'));
+  const aid = Number(db.prepare(`INSERT INTO anchors (person_id, contract_id, label, dow, time, minutes, cadence)
+    VALUES (1, 10, 'Weekly call', 1, '11:00', 30, 'weekly')`).run().lastInsertRowid);
+
+  const { placed } = sch.placeAnchor(aid);
+  ok(placed >= 3, `weekly commitment lands once per week (${placed})`);
+  const rows = db.prepare('SELECT * FROM schedule_blocks WHERE anchor_id = ?').all(aid);
+  eq(rows.length, placed, 'every placed block carries its anchor id');
+  ok(rows.every((r) => r.anchored === 1 && r.start === '11:00' && r.minutes === 30),
+    'placed blocks keep the commitment\'s slot and length');
+  // its own day wherever the week has one; a stub week without a Monday
+  // takes its first working day, same as the packer
+  const buckets = cap.weekBuckets(P);
+  const dowOfIso = (iso) => new Date(`${iso}T00:00:00Z`).getUTCDay();
+  ok(rows.every((r) => dowOfIso(r.date) === 1
+    || !buckets.find((wk) => wk.includes(r.date)).some((d2) => dowOfIso(d2) === 1)),
+    'weekly commitment lands on its day whenever the week has one');
+  eq(sch.placeAnchor(aid).placed, 0, 'placing again adds nothing — idempotent');
+  eq(sch.removeAnchorBlocks(aid), placed, 'deleting lifts every unanswered block back out');
+  db.prepare('DELETE FROM anchors WHERE id = ?').run(aid);
+}
+
 console.log(`\n${checks} checks run\nall time identities hold`);
 fs.rmSync(process.env.DATA_DIR, { recursive: true, force: true });

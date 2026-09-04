@@ -1054,13 +1054,20 @@ app.post('/api/anchors', ok((req, res) => {
   }
   const cadence = ['daily', 'weekly', 'fortnightly', 'monthly'].includes(b.cadence) ? b.cadence : 'weekly';
   if (b.id) {
+    // reposition: lift the old placement, save, place afresh
+    schedule.removeAnchorBlocks(Number(b.id));
     db.prepare('UPDATE anchors SET person_id=?, contract_id=?, label=?, dow=?, time=?, minutes=?, cadence=? WHERE id=?')
       .run(b.person_id, b.contract_id || null, b.label, num(b.dow, 2), b.time || '10:00', num(b.minutes, 60), cadence, b.id);
   } else {
-    db.prepare('INSERT INTO anchors (person_id, contract_id, label, dow, time, minutes, cadence) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(b.person_id, b.contract_id || null, b.label, num(b.dow, 2), b.time || '10:00', num(b.minutes, 60), cadence);
+    b.id = Number(db.prepare(
+      'INSERT INTO anchors (person_id, contract_id, label, dow, time, minutes, cadence) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(b.person_id, b.contract_id || null, b.label, num(b.dow, 2), b.time || '10:00', num(b.minutes, 60), cadence)
+      .lastInsertRowid);
   }
-  res.json({ ok: true });
+  // a fixed commitment owns its slot NOW, not at the next rebuild: its blocks
+  // go straight into every already-saved plan from this month forward
+  const { placed } = schedule.placeAnchor(Number(b.id));
+  res.json({ ok: true, placed });
 }));
 
 app.delete('/api/anchors/:id', ok((req, res) => {
@@ -1069,8 +1076,10 @@ app.delete('/api/anchors/:id', ok((req, res) => {
     if (!cur) throw new Error('no such commitment');
     assertOwnContract(req, cur.contract_id);
   }
+  // its unanswered future blocks go with it; answered ones are history
+  const lifted = schedule.removeAnchorBlocks(Number(req.params.id));
   db.prepare('DELETE FROM anchors WHERE id = ?').run(Number(req.params.id));
-  res.json({ ok: true });
+  res.json({ ok: true, lifted });
 }));
 
 /**
@@ -1252,12 +1261,12 @@ app.post('/api/schedule/:id/generate', ok((req, res) => {
     AND NOT EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = schedule_blocks.id)`)
     .run(id, p);
   const ins = db.prepare(`INSERT INTO schedule_blocks
-    (person_id, period, contract_id, deliverable_id, label, date, start, minutes, anchored, manual, draft)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`);
+    (person_id, period, contract_id, deliverable_id, label, date, start, minutes, anchored, manual, draft, anchor_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?)`);
   const fresh = plan.blocks.filter((b) => !b.kept);
   for (const b of fresh) {
     ins.run(id, p, b.contract_id || null, b.deliverable_id || null,
-      b.label, b.date, b.start, Math.round(b.minutes), b.anchored ? 1 : 0);
+      b.label, b.date, b.start, Math.round(b.minutes), b.anchored ? 1 : 0, b.anchor_id || null);
   }
   res.json({
     saved: fresh.length,

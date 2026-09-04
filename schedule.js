@@ -380,6 +380,7 @@ function planPerson(personId, period) {
     const cadence = a.cadence || 'weekly';
     const push = (week, dow) => wanted.push({
       minutes: a.minutes, week, anchored: true, dow, time: a.time,
+      anchor_id: a.id,
       contract_id: a.contract_id, contract_name: a.contract_name || '',
       deliverable_name: a.label, contract_type: 'retainer', allowed,
       label: a.contract_name ? `${a.contract_name} — ${a.label}` : a.label,
@@ -465,6 +466,7 @@ function planPerson(personId, period) {
       contract_name: item.contract_name,
       deliverable: item.deliverable_name,
       anchored: !!item.anchored,
+      anchor_id: item.anchor_id || null,
     });
   };
 
@@ -641,6 +643,88 @@ function planPerson(personId, period) {
 }
 
 // ---------------------------------------------------------------------------
+// Fixed commitments meet saved plans. The packer places anchors when it
+// builds a plan — but a commitment added AFTER a plan was committed used to
+// exist only in the capacity numbers, never on anyone's calendar. Saving a
+// commitment now walks every saved plan it touches, from this month forward,
+// and puts its blocks straight in; deleting one lifts its unanswered blocks
+// back out. A fixed commitment owns its slot — that is what fixed means.
+// ---------------------------------------------------------------------------
+
+const todayLondon = () =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(new Date());
+
+/** The dates one anchor occupies in a period — the same choices the packer makes. */
+function anchorDates(anchor, contract, period) {
+  const pattern = cap.patternOf(anchor.person_id);
+  const worksOn = (iso) => !pattern || Boolean(pattern.get(cap.isoDow(iso)));
+  const allowed = new Set(cap.anchorWindowDates(contract, period).filter(worksOn));
+  if (!allowed.size) return [];
+  const buckets = cap.weekBuckets(period);
+  const dowOf = (iso) => new Date(`${iso}T00:00:00Z`).getUTCDay();
+  const pick = (wk) => wk.find((iso) => allowed.has(iso) && dowOf(iso) === anchor.dow)
+    || wk.find((iso) => allowed.has(iso));
+  const cadence = anchor.cadence || 'weekly';
+  const dates = [];
+  if (cadence === 'daily') {
+    dates.push(...buckets.flat().filter((iso) => allowed.has(iso)));
+  } else if (cadence === 'monthly') {
+    for (const wk of buckets) {
+      const d = wk.find((iso) => allowed.has(iso) && dowOf(iso) === anchor.dow);
+      if (d) { dates.push(d); break; }
+    }
+  } else {
+    const step = cadence === 'fortnightly' ? 2 : 1;
+    for (let w = 0; w < buckets.length; w += step) {
+      const d = pick(buckets[w]);
+      if (d) dates.push(d);
+    }
+  }
+  return dates;
+}
+
+/** Put one commitment's blocks into every saved plan it belongs in. */
+function placeAnchor(anchorId) {
+  const a = db.prepare('SELECT * FROM anchors WHERE id = ?').get(anchorId);
+  if (!a) return { placed: 0 };
+  const contract = a.contract_id
+    ? db.prepare('SELECT * FROM contracts WHERE id = ?').get(a.contract_id) : null;
+  const label = contract ? `${contract.name} — ${a.label}` : a.label;
+  const today = todayLondon();
+  const periods = db.prepare('SELECT period FROM months WHERE period >= ? ORDER BY period')
+    .all(today.slice(0, 7)).map((r) => r.period);
+  const ins = db.prepare(`INSERT INTO schedule_blocks
+    (person_id, period, contract_id, deliverable_id, label, date, start, minutes,
+     anchored, manual, draft, anchor_id)
+    VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 1, 0, ?, ?)`);
+  let placed = 0;
+  for (const p of periods) {
+    const state = db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(draft),0) d
+      FROM schedule_blocks WHERE person_id = ? AND period = ?`).get(a.person_id, p);
+    if (!state.n) continue;              // no plan yet — the packer places it when one is built
+    const draft = state.d === state.n ? 1 : 0;    // a plan still in draft stays a draft
+    for (const date of anchorDates(a, contract, p)) {
+      if (date < today) continue;        // the past is not retro-planned
+      const dupe = db.prepare(`SELECT id FROM schedule_blocks
+        WHERE person_id = ? AND date = ? AND anchored = 1
+          AND (anchor_id = ? OR (start = ? AND label = ?))`)
+        .get(a.person_id, date, a.id, a.time, label);
+      if (dupe) continue;
+      ins.run(a.person_id, p, a.contract_id, label, date, a.time, a.minutes, draft, a.id);
+      placed++;
+    }
+  }
+  return { placed };
+}
+
+/** Lift one commitment's unanswered blocks out of today-and-future plans. */
+function removeAnchorBlocks(anchorId) {
+  return db.prepare(`DELETE FROM schedule_blocks WHERE anchor_id = ? AND date >= ?
+    AND NOT EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = schedule_blocks.id)`)
+    .run(anchorId, todayLondon()).changes;
+}
+
+// ---------------------------------------------------------------------------
 // .ics export — Europe/London, with a VTIMEZONE so BST resolves correctly.
 // ---------------------------------------------------------------------------
 
@@ -762,4 +846,7 @@ function expectedPlanHours(personId, period) {
   return cap.round2((remainMin + keptMin + anchorMin) / 60);
 }
 
-module.exports = { planPerson, toIcs, expand, dayWindows, expectedPlanHours };
+module.exports = {
+  planPerson, toIcs, expand, dayWindows, expectedPlanHours,
+  placeAnchor, removeAnchorBlocks,
+};

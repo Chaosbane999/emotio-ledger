@@ -2332,7 +2332,7 @@ function renderTimeDay(v) {
         ${v.blocks.map((b) => `
           <tr class="tblock ${b.status}" data-b="${b.id}">
             <td class="num" style="white-space:nowrap">${b.start || ''}</td>
-            <td>${esc(b.label)}<span class="sub">${hm(b.minutes)} planned</span></td>
+            <td>${b.anchored ? '📌 ' : ''}${esc(b.label)}<span class="sub">${hm(b.minutes)} planned${b.anchored ? ' · fixed' : ''}</span></td>
             <td class="num">${chip(b)}</td>
             <td class="num" style="white-space:nowrap">${b.status === 'pending' ? (v.date <= todayIso() ? `
               <button class="btn small tCf" data-b="${b.id}" title="Happened exactly as planned">✓</button>
@@ -2643,10 +2643,12 @@ function renderTimeWeek(v) {
       <div class="tw-grid" style="height:${height}px">
         ${hours.slice(0, -1).map((m) => `<div class="tw-hour" style="top:${(m - lo) * T_PPM}px"></div>`).join('')}
         ${ghosts.map((b) => `<div class="tw-ghost ${b.status}" data-kind="ghost" data-id="${b.id}"
-            style="${pos(b.start, b.minutes)}" title="planned: ${esc(b.label)} (${hm(b.minutes)}) — drag to re-plan, tick to commit">
+            style="${pos(b.start, b.minutes)}" title="${b.anchored
+              ? `fixed commitment: ${esc(b.label)} (${hm(b.minutes)}) — it keeps this slot; tick to commit`
+              : `planned: ${esc(b.label)} (${hm(b.minutes)}) — drag to re-plan, tick to commit`}">
           ${b.status === 'pending' && b.date <= todayIso() ? `<button class="tw-tick" data-kind="tick" data-id="${b.id}" title="Commit: this happened as planned here">✓</button>` : ''}
-          <span>${esc(b.label)}</span><em>${hm(b.minutes)}${b.status === 'done' ? ' ✓' : b.status === 'skipped' ? ' ✗' : ''}</em>
-          ${b.status === 'pending' ? `<div class="tw-resize" data-kind="gresize" data-id="${b.id}"></div>` : ''}
+          <span>${b.anchored ? '📌 ' : ''}${esc(b.label)}</span><em>${hm(b.minutes)}${b.status === 'done' ? ' ✓' : b.status === 'skipped' ? ' ✗' : ''}</em>
+          ${b.status === 'pending' && !b.anchored ? `<div class="tw-resize" data-kind="gresize" data-id="${b.id}"></div>` : ''}
         </div>`).join('')}
         ${solids.map((e) => { const locked = e.date < todayIso(); return `<div class="tw-entry ${e.source}${locked ? ' locked' : ''}" data-kind="entry" data-id="${e.id}"
             style="${pos(e.start, e.minutes)}" ${locked ? 'title="This day has passed — its time is fixed. Click to override a mistake."' : ''}>
@@ -2724,6 +2726,15 @@ function wireWeekDrag(v, lo) {
         return;
       }
     }
+    if (kind === 'ghost') {
+      const b = v.blocks.find((x) => x.id === Number(t.dataset.id));
+      if (b && b.anchored) {
+        // fixed commitments don't drag — a click still opens confirm/skip
+        drag = { kind: 'ghostfixed', id: b.id, startX: ev.clientX, startY: ev.clientY, moved: false };
+        ev.preventDefault();
+        return;
+      }
+    }
     if (kind === 'resize') {
       const e = v.entries.find((x) => x.id === Number(t.dataset.id));
       drag = { kind, id: e.id, entry: e, minutes: e.minutes,
@@ -2743,7 +2754,7 @@ function wireWeekDrag(v, lo) {
 
   body.addEventListener('pointermove', (ev) => {
     if (!drag || drag.kind === 'locked') return;
-    if (drag.kind === 'empty') {
+    if (drag.kind === 'empty' || drag.kind === 'ghostfixed') {
       if (Math.abs(ev.clientX - drag.startX) + Math.abs(ev.clientY - drag.startY) > 4) drag.moved = true;
       return;
     }
@@ -2773,6 +2784,16 @@ function wireWeekDrag(v, lo) {
       if (d.kind === 'locked') { openEntryEditor(d.entry); return; }
       if (d.kind === 'empty') {
         if (!d.moved) openAddEntryPanel(d.slot.date, fromMinOfDay(d.slot.min));
+        return;
+      }
+      if (d.kind === 'ghostfixed') {
+        const b = v.blocks.find((x) => x.id === d.id);
+        if (d.moved) toast('📌 Fixed commitments keep their slot — edit them under the contract.', true);
+        else if (b && b.status === 'pending') openGhostMenu(b);
+        else if (b && b.status === 'skipped' && b.entry_ids[0]
+          && confirm('Unskip this fixed commitment?')) {
+          await timeApi(`/entries/${b.entry_ids[0]}`, { method: 'DELETE' }); renderTime();
+        }
         return;
       }
       if (!d.moved) {

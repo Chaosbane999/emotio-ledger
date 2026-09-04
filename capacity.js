@@ -720,5 +720,5 @@ module.exports = {
   personCapacity, activePeople,
   contractSummary,
   agencySummary, personView,
-  anchorMinutes, anchorLines,
+  anchorMinutes, anchorLines, anchorWindowDates,
 };

@@ -322,6 +322,22 @@ try { db.exec("ALTER TABLE contracts ADD COLUMN department TEXT NOT NULL DEFAULT
 catch (e) { /* already there */ }
 
 
+// migration: a block that exists because of a fixed commitment remembers which
+// one, so saving or deleting the commitment can place or lift its own blocks
+// in already-saved plans without guessing by label.
+try { db.exec('ALTER TABLE schedule_blocks ADD COLUMN anchor_id INTEGER'); }
+catch (e) { /* already there */ }
+// backfill: anchored blocks the packer placed before the column existed are
+// matched to their commitment by person, time and label
+db.exec(`
+  UPDATE schedule_blocks SET anchor_id = (
+    SELECT an.id FROM anchors an
+     WHERE an.person_id = schedule_blocks.person_id
+       AND an.time = schedule_blocks.start
+       AND (schedule_blocks.label = an.label OR schedule_blocks.label LIKE '% — ' || an.label))
+   WHERE anchored = 1 AND anchor_id IS NULL;
+`);
+
 // migration: the Slack member id ties a person to their Slack account so the
 // working-pattern sync can set their status. Blank means not connected.
 try { db.exec("ALTER TABLE people ADD COLUMN slack_user_id TEXT NOT NULL DEFAULT ''"); }

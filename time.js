@@ -374,8 +374,11 @@ function deleteEntry(personId, entryId, override) {
  * Dragging on the calendar arranges the PLAN — it commits nothing. The block
  * moves; the tick is still the only thing that turns plan into record.
  */
+const FIXED_MSG = 'A fixed commitment keeps its slot — change or remove it under the contract\'s Fixed commitments. If it ran differently this once, log it with “edit” instead.';
+
 function moveBlock(personId, blockId, date, start) {
   const b = blockGuard(personId, blockId);
+  if (b.anchored) throw new Error(FIXED_MSG);
   const state = entryStateOf(b.id);
   if (state.hasWork || state.hasSkip) {
     throw new Error('This block is already accounted for — move the logged entry instead.');
@@ -416,6 +419,7 @@ function growthRoom(personId, block) {
 /** Resize a still-pending planned block. Same rules as moving one. */
 function resizeBlock(personId, blockId, minutes) {
   const b = blockGuard(personId, blockId);
+  if (b.anchored) throw new Error(FIXED_MSG);
   const state = entryStateOf(b.id);
   if (state.hasWork || state.hasSkip) {
     throw new Error('This block is already accounted for — resize the logged entry instead.');
@@ -562,6 +566,7 @@ function findFreeSlot(personId, date, minutes, excludeId, afterMin) {
  */
 function bumpBlock(personId, blockId) {
   const b = blockGuard(personId, blockId);
+  if (b.anchored) throw new Error(FIXED_MSG);
   const state = entryStateOf(b.id);
   if (state.hasWork || state.hasSkip) throw new Error('This block is already accounted for.');
   const days = [b.date, ...cap.workingDates(b.period).filter((d) => d > b.date)];
