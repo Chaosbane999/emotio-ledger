@@ -881,8 +881,9 @@ async function renderContractDetail(id) {
       </table></div>
       <div class="body" style="border-top:1px solid var(--rule)">
         <div class="rowline"><label>Add</label>
-          <select id="naP">${people.filter((p) => p.active).map((p) =>
+          <select id="naP" multiple size="4" title="Cmd/Ctrl-click for several people — one commitment each">${people.filter((p) => p.active).map((p) =>
             `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+          <button class="btn small" id="naAll" title="Select everyone">All</button>
           <input type="text" id="naLabel" placeholder="e.g. Weekly call" style="width:150px">
           <select id="naCad">${cadenceOptions}</select>
           <select id="naDow">${[1, 2, 3, 4, 5].map((x) => `<option value="${x}">${DOW_NAMES[x]}</option>`).join('')}</select>
@@ -986,15 +987,24 @@ function wireContractDetail(id, deliverables) {
   $('#naCad')?.addEventListener('change', (e) => {
     $('#naDow').style.display = ['daily', 'alternate'].includes(e.target.value) ? 'none' : '';
   });
+  $('#naAll')?.addEventListener('click', () => {
+    [...$('#naP').options].forEach((o) => { o.selected = true; });
+  });
   const addA = $('#addAnchor');
   if (addA) addA.addEventListener('click', async () => {
     const label = $('#naLabel').value.trim();
     if (!label) return toast('What is the commitment?', true);
-    const r = await api('/api/anchors', { body: {
-      person_id: Number($('#naP').value), contract_id: id, label,
-      cadence: $('#naCad').value,
-      dow: Number($('#naDow').value), time: $('#naTime').value, minutes: Number($('#naMin').value) } });
-    toast(r.placed ? `Commitment added — ${r.placed} block(s) placed on the saved plan.` : 'Commitment added.');
+    const ids = [...$('#naP').selectedOptions].map((o) => Number(o.value));
+    if (!ids.length) return toast('Pick at least one person.', true);
+    let placed = 0;
+    for (const pid of ids) {
+      const r = await api('/api/anchors', { body: {
+        person_id: pid, contract_id: id, label,
+        cadence: $('#naCad').value,
+        dow: Number($('#naDow').value), time: $('#naTime').value, minutes: Number($('#naMin').value) } });
+      placed += r.placed || 0;
+    }
+    toast(`${ids.length} commitment${ids.length > 1 ? 's' : ''} added${placed ? ` — ${placed} block(s) placed on saved plans` : ''}.`);
     reload();
   });
 
@@ -1215,8 +1225,9 @@ async function renderInternal() {
       </table></div>
       <div class="body" style="border-top:1px solid var(--rule)">
         <div class="rowline"><label>Add</label>
-          <select id="niP">${S.boot.people.filter((p) => p.active && !p.archived).map((p) =>
+          <select id="niP" multiple size="4" title="Cmd/Ctrl-click for several people — one commitment each">${S.boot.people.filter((p) => p.active && !p.archived).map((p) =>
             `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+          <button class="btn small" id="niAll" title="Select everyone">All</button>
           <input type="text" id="niLabel" placeholder="e.g. Team call" style="width:150px">
           <select id="niCad">${cadenceOptions}</select>
           <select id="niDow">${[1, 2, 3, 4, 5].map((x) => `<option value="${x}">${DOW_NAMES[x]}</option>`).join('')}</select>
@@ -1244,14 +1255,23 @@ async function renderInternal() {
   $('#niCad').addEventListener('change', (e) => {
     $('#niDow').style.display = ['daily', 'alternate'].includes(e.target.value) ? 'none' : '';
   });
+  $('#niAll').addEventListener('click', () => {
+    [...$('#niP').options].forEach((o) => { o.selected = true; });
+  });
   $('#addIntAnchor').addEventListener('click', async () => {
     const label = $('#niLabel').value.trim();
     if (!label) return toast('What is the commitment?', true);
-    const r = await api('/api/anchors', { body: {
-      person_id: Number($('#niP').value), contract_id: contract.id, label,
-      cadence: $('#niCad').value,
-      dow: Number($('#niDow').value), time: $('#niTime').value, minutes: Number($('#niMin').value) } });
-    toast(r.placed ? `Commitment added — ${r.placed} block(s) placed on the saved plan.` : 'Commitment added.');
+    const ids = [...$('#niP').selectedOptions].map((o) => Number(o.value));
+    if (!ids.length) return toast('Pick at least one person.', true);
+    let placed = 0;
+    for (const pid of ids) {
+      const r = await api('/api/anchors', { body: {
+        person_id: pid, contract_id: contract.id, label,
+        cadence: $('#niCad').value,
+        dow: Number($('#niDow').value), time: $('#niTime').value, minutes: Number($('#niMin').value) } });
+      placed += r.placed || 0;
+    }
+    toast(`${ids.length} commitment${ids.length > 1 ? 's' : ''} added${placed ? ` — ${placed} block(s) placed on saved plans` : ''}.`);
     renderInternal();
   });
 }
@@ -2372,6 +2392,24 @@ function renderTimerBar(timer) {
 
 // --- day view: the confirm loop ---------------------------------------------
 
+/**
+ * "1:30 of 3:00 used this month · 1:30 left" for a block or entry's task —
+ * the allocation line where there is one, the whole contract otherwise.
+ */
+function usageTitle(cid, did, usage) {
+  if (!usage || !cid) return '';
+  const say = (u, what) => {
+    const left = u.allocated_minutes - u.logged_minutes;
+    return `\n${what}: ${hm(u.logged_minutes)} of ${hm(u.allocated_minutes)} used this month · `
+      + (left >= 0 ? `${hm(left)} left` : `${hm(-left)} over`);
+  };
+  const line = usage[`${cid}:${did}`];
+  if (line && line.allocated_minutes) return say(line, 'this task');
+  const tot = usage[`c:${cid}`];
+  if (tot && tot.allocated_minutes) return say(tot, 'this client');
+  return '';
+}
+
 function renderTimeDay(v) {
   const chip = (b) => b.status === 'done'
     ? `<span class="pill ok">✓ ${hm(b.logged_minutes)}</span>`
@@ -2388,7 +2426,7 @@ function renderTimeDay(v) {
         ${v.blocks.map((b) => `
           <tr class="tblock ${b.status}" data-b="${b.id}">
             <td class="num" style="white-space:nowrap">${b.start || ''}</td>
-            <td>${b.anchored ? '📌 ' : ''}${esc(b.label)}<span class="sub">${hm(b.minutes)} planned${b.anchored ? ' · fixed' : ''}</span></td>
+            <td title="${esc(b.label)}${esc(usageTitle(b.contract_id, b.deliverable_id, v.usage))}">${b.anchored ? '📌 ' : ''}${esc(b.label)}<span class="sub">${hm(b.minutes)} planned${b.anchored ? ' · fixed' : ''}</span></td>
             <td class="num">${chip(b)}</td>
             <td class="num" style="white-space:nowrap">${b.status === 'pending' ? (v.date <= todayIso() ? `
               <button class="btn small tCf" data-b="${b.id}" title="Happened exactly as planned">✓</button>
@@ -2413,7 +2451,7 @@ function renderTimeDay(v) {
         ${v.entries.map((e) => `
           <tr class="tentry ${e.source}" data-e="${e.id}">
             <td class="num" style="white-space:nowrap">${e.start || '—'}</td>
-            <td>${esc(e.contract_name || '')}${e.deliverable_name ? ` — ${esc(e.deliverable_name)}` : ''}
+            <td title="${esc(e.contract_name || '')}${esc(usageTitle(e.contract_id, e.deliverable_id, v.usage))}">${esc(e.contract_name || '')}${e.deliverable_name ? ` — ${esc(e.deliverable_name)}` : ''}
               ${e.note ? `<span class="sub">“${esc(e.note)}”</span>` : ''}</td>
             <td class="num">${e.source === 'skip' ? '<span class="pill mute">skipped</span>'
               : `<b>${hm(e.minutes)}</b>`}<span class="sub">${SRC_LABEL[e.source] || ''}</span></td>
@@ -2701,13 +2739,15 @@ function renderTimeWeek(v) {
         ${ghosts.map((b) => `<div class="tw-ghost ${b.status}" data-kind="ghost" data-id="${b.id}"
             style="${pos(b.start, b.minutes)}" title="${b.anchored
               ? `fixed commitment: ${esc(b.label)} (${hm(b.minutes)}) — it keeps this slot; tick to commit`
-              : `planned: ${esc(b.label)} (${hm(b.minutes)}) — drag to re-plan, tick to commit`}">
+              : `planned: ${esc(b.label)} (${hm(b.minutes)}) — drag to re-plan, tick to commit`}${esc(usageTitle(b.contract_id, b.deliverable_id, v.usage))}">
           ${b.status === 'pending' && b.date <= todayIso() ? `<button class="tw-tick" data-kind="tick" data-id="${b.id}" title="Commit: this happened as planned here">✓</button>` : ''}
           <span>${b.anchored ? '📌 ' : ''}${esc(b.label)}</span><em>${hm(b.minutes)}${b.status === 'done' ? ' ✓' : b.status === 'skipped' ? ' ✗' : ''}</em>
           ${b.status === 'pending' && !b.anchored ? `<div class="tw-resize" data-kind="gresize" data-id="${b.id}"></div>` : ''}
         </div>`).join('')}
         ${solids.map((e) => { const locked = e.date < todayIso(); return `<div class="tw-entry ${e.source}${locked ? ' locked' : ''}" data-kind="entry" data-id="${e.id}"
-            style="${pos(e.start, e.minutes)}" ${locked ? 'title="This day has passed — its time is fixed. Click to override a mistake."' : ''}>
+            style="${pos(e.start, e.minutes)}" title="${locked
+              ? 'This day has passed — its time is fixed. Click to override a mistake.'
+              : `logged: ${esc(e.contract_name || '')} (${hm(e.minutes)})`}${esc(usageTitle(e.contract_id, e.deliverable_id, v.usage))}">
           <span>${locked ? '🔒 ' : ''}${esc(e.contract_name || '')}${e.deliverable_name ? ` — ${esc(e.deliverable_name)}` : ''}</span>
           <em>${hm(e.minutes)}</em>${e.note ? `<i>“${esc(e.note)}”</i>` : ''}
           ${locked ? '' : `<div class="tw-resize" data-kind="resize" data-id="${e.id}"></div>`}

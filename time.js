@@ -125,6 +125,34 @@ function assignmentsFor(personId, period) {
   return [...m.values()];
 }
 
+/**
+ * Where each of this person's allocation lines stands this month — allocated
+ * vs logged, per task and per contract — so a block's tooltip can say "1:30
+ * of 3:00 used · 1:30 left" without another request.
+ */
+function usageFor(personId, period) {
+  const out = {};
+  const add = (key, alloc, logged) => {
+    const u = out[key] || (out[key] = { allocated_minutes: 0, logged_minutes: 0 });
+    u.allocated_minutes += alloc;
+    u.logged_minutes += logged;
+  };
+  for (const l of db.prepare(`SELECT a.contract_id, a.deliverable_id, a.hours
+      FROM allocations a JOIN contracts c ON c.id = a.contract_id
+     WHERE a.person_id = ? AND a.period = ? AND c.archived = 0`).all(personId, period)) {
+    add(`${l.contract_id}:${l.deliverable_id}`, Math.round(l.hours * 60), 0);
+    add(`c:${l.contract_id}`, Math.round(l.hours * 60), 0);
+  }
+  for (const l of db.prepare(`SELECT contract_id, deliverable_id, SUM(minutes) m
+      FROM time_entries WHERE person_id = ? AND date LIKE ? AND source != 'skip'
+     GROUP BY contract_id, deliverable_id`).all(personId, `${period}-%`)) {
+    if (l.contract_id == null) continue;
+    add(`${l.contract_id}:${l.deliverable_id}`, 0, l.m);
+    add(`c:${l.contract_id}`, 0, l.m);
+  }
+  return out;
+}
+
 function dayView(personId, date) {
   if (!isDate(date)) throw new Error('bad date');
   const entries = entriesFor(personId, date, date);
@@ -137,6 +165,7 @@ function dayView(personId, date) {
     entries,
     timer: currentTimer(personId),
     assignments: assignmentsFor(personId, date.slice(0, 7)),
+    usage: usageFor(personId, date.slice(0, 7)),
     totals: {
       planned_minutes: blocks.reduce((s, b) => s + b.minutes, 0),
       logged_minutes: worked.reduce((s, e) => s + e.minutes, 0),
@@ -177,6 +206,7 @@ function weekView(personId, date) {
     person_id: personId, start, days, blocks, entries,
     timer: currentTimer(personId),
     assignments: assignmentsFor(personId, date.slice(0, 7)),
+    usage: usageFor(personId, date.slice(0, 7)),
     totals: {
       planned_minutes: perDay.reduce((s, d) => s + d.planned_minutes, 0),
       logged_minutes: perDay.reduce((s, d) => s + d.logged_minutes, 0),
