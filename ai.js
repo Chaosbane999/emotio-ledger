@@ -1,4 +1,3 @@
-const Anthropic = require('@anthropic-ai/sdk');
 const { db, get } = require('./db');
 const T = require('./time');
 
@@ -14,15 +13,15 @@ const T = require('./time');
 // logs.
 // ---------------------------------------------------------------------------
 
-const apiKey = () => (process.env.ANTHROPIC_API_KEY || get('anthropic_api_key') || '').trim();
+const apiKey = () => (process.env.OPENAI_API_KEY || get('openai_api_key') || '').trim();
 const configured = () => Boolean(apiKey());
+const model = () => get('openai_model') || 'gpt-5.1';
 
-// strict tool: the arguments come back schema-valid, so parsing is a formality
-const LOG_DAY_TOOL = {
+// strict JSON schema: the reply comes back schema-valid, so parsing is a formality
+const LOG_DAY_SCHEMA = {
   name: 'log_day',
-  description: 'Record the proposed timesheet entries for the day described.',
   strict: true,
-  input_schema: {
+  schema: {
     type: 'object',
     additionalProperties: false,
     required: ['entries'],
@@ -48,7 +47,7 @@ const LOG_DAY_TOOL = {
 };
 
 const SYSTEM = `You turn a person's plain-English description of their working day into
-timesheet entries for a marketing agency's time system. Use the log_day tool to answer.
+timesheet entries for a marketing agency's time system. Answer with the log_day JSON.
 
 Rules:
 - Only use contract_id + deliverable_id pairs from the assignments list. Internal work
@@ -84,7 +83,7 @@ function dayContext(personId, date) {
  * rather than silently kept — the person sees exactly what will be logged.
  */
 async function draftDay(personId, date, text) {
-  if (!configured()) throw new Error('Add an Anthropic API key in Settings first.');
+  if (!configured()) throw new Error('Add an OpenAI API key in Settings first.');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('bad date');
   text = String(text || '').trim().slice(0, 4000);
   if (!text) throw new Error('Describe the day first.');
@@ -100,29 +99,41 @@ async function draftDay(personId, date, text) {
     deliverables: a.deliverables.map((d) => ({ deliverable_id: d.id, name: d.name })),
   }));
 
-  const client = new Anthropic({ apiKey: apiKey() });
-  const response = await client.messages.create({
-    model: 'claude-opus-5',
-    max_tokens: 8000,
-    system: SYSTEM,
-    tools: [LOG_DAY_TOOL],
-    messages: [{
-      role: 'user',
-      content: `Date: ${date}\n`
-        + `Working window: ${JSON.stringify(ctx.working_window)}\n`
-        + `Assignments (the only valid contract/deliverable pairs):\n${JSON.stringify(assignments)}\n`
-        + `Planned blocks still pending today:\n${JSON.stringify(pendingBlocks)}\n`
-        + `Already logged today (do not duplicate or overlap):\n${JSON.stringify(logged)}\n\n`
-        + `${ctx.person.name} describes the day:\n"""${text}"""\n\n`
-        + 'Use the log_day tool to propose the entries.',
-    }],
-  });
+  const userMessage = `Date: ${date}\n`
+    + `Working window: ${JSON.stringify(ctx.working_window)}\n`
+    + `Assignments (the only valid contract/deliverable pairs):\n${JSON.stringify(assignments)}\n`
+    + `Planned blocks still pending today:\n${JSON.stringify(pendingBlocks)}\n`
+    + `Already logged today (do not duplicate or overlap):\n${JSON.stringify(logged)}\n\n`
+    + `${ctx.person.name} describes the day:\n"""${text}"""\n\n`
+    + 'Propose the entries as log_day JSON.';
 
-  const call = response.content.find((b) => b.type === 'tool_use' && b.name === 'log_day');
-  if (!call) {
-    const said = response.content.find((b) => b.type === 'text');
-    throw new Error(said && said.text ? said.text.slice(0, 300) : 'The assistant returned no entries — try rephrasing.');
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey()}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: model(),
+      messages: [
+        { role: 'system', content: SYSTEM },
+        { role: 'user', content: userMessage },
+      ],
+      response_format: { type: 'json_schema', json_schema: LOG_DAY_SCHEMA },
+    }),
+    signal: AbortSignal.timeout(90000),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error?.message
+      ? `OpenAI: ${String(data.error.message).slice(0, 200)}`
+      : `OpenAI returned ${res.status}.`);
   }
+  const msg = data.choices?.[0]?.message || {};
+  if (msg.refusal) throw new Error(String(msg.refusal).slice(0, 300));
+  let call;
+  try { call = { input: JSON.parse(msg.content) }; }
+  catch (e) { throw new Error('The assistant returned no usable entries — try rephrasing.'); }
 
   const valid = [];
   const dropped = [];

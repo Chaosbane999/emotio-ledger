@@ -1095,7 +1095,7 @@ app.post('/api/settings', ok((req, res) => {
   const allowed = ['standard_rate', 'work_start', 'work_end', 'lunch_start', 'lunch_minutes',
     'max_client_minutes_per_day', 'holidays', 'harvest_account_id', 'harvest_token', 'default_period',
     'slack_enabled', 'slack_override', 'slack_status_text', 'slack_status_emoji', 'slack_token',
-    'slack_client_id', 'slack_client_secret', 'anthropic_api_key'];
+    'slack_client_id', 'slack_client_secret', 'openai_api_key'];
   for (const [k, v] of Object.entries(req.body)) if (allowed.includes(k)) set(k, v);
   res.json({ ok: true });
 }));

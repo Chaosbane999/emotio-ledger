@@ -10,7 +10,6 @@
     "test": "node test-time.js && node audit.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.123.0",
     "express": "^4.21.2"
   },
   "engines": {

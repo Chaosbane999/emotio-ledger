@@ -1753,11 +1753,11 @@ async function renderSettings() {
         <header><h2>AI assistant</h2>
           <p>${st.ai_ready ? '<span class="pill ok">Ready</span>' : '<span class="pill mute">No key</span>'}</p></header>
         <div class="body">
-          <div class="rowline"><label>Anthropic key</label>
-            <input type="password" id="aiKeyIn" placeholder="${st.ai_ready ? '•••••• stored' : 'sk-ant-…'}" style="flex:1;min-width:180px">
+          <div class="rowline"><label>OpenAI key</label>
+            <input type="password" id="aiKeyIn" placeholder="${st.ai_ready ? '•••••• stored' : 'sk-…'}" style="flex:1;min-width:180px">
             <button class="btn primary small" id="aiKeySave">Save</button></div>
           <p class="muted">Powers <b>✨ Describe your day</b> on the time sheet — everyone types what
-          they did, it drafts the entries, they approve. Create a key at console.anthropic.com.
+          they did, it drafts the entries, they approve. Create a key at platform.openai.com → API keys.
           Each draft is one small API call.</p>
         </div>
       </div>
@@ -1895,7 +1895,7 @@ function wireSettings() {
   $('#aiKeySave')?.addEventListener('click', async () => {
     const key = $('#aiKeyIn').value.trim();
     if (!key) return toast('Paste the key first.', true);
-    await api('/api/settings', { body: { anthropic_api_key: key } });
+    await api('/api/settings', { body: { openai_api_key: key } });
     S.boot = await api(`/api/bootstrap${P()}`);
     toast('AI assistant ready.'); renderSettings();
   });

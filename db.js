@@ -428,7 +428,7 @@ const defaults = {
   slack_override: '0',              // replace an existing status? off by default
   slack_status_text: 'Not working',
   slack_status_emoji: ':no_entry_sign:',
-  anthropic_api_key: '',           // powers "describe your day" on the time sheet
+  openai_api_key: '',              // powers "describe your day" on the time sheet
 };
 const putSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
 for (const [k, v] of Object.entries(defaults)) putSetting.run(k, v);
