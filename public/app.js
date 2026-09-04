@@ -2376,16 +2376,19 @@ function renderTimeDay(v) {
     </div>
 
     ${S.boot.settings.ai_ready && v.date <= todayIso() ? `
-    <div class="card">
-      <header><h2>✨ Describe your day</h2>
-        <p>Plain English in, a drafted timesheet out — nothing is logged until you approve it</p></header>
-      <div class="body">
-        <div class="rowline"><textarea id="aiText" rows="3" style="flex:1;min-width:260px;resize:vertical"
-          placeholder="e.g. Spent the morning on Crystal Units on-page fixes, about an hour on NLG ads after lunch, then the Watchdog blog for the rest of the afternoon"></textarea></div>
-        <div class="rowline"><span class="spacer"></span>
-          <button class="btn primary small" id="aiGo">Draft my timesheet</button></div>
-        <div id="aiOut"></div>
+    <div class="grid2">
+      <div class="card">
+        <header><h2>✨ Describe your day</h2>
+          <p>Plain English in, a drafted timesheet out — nothing is logged until you approve it</p></header>
+        <div class="body">
+          <div class="rowline"><textarea id="aiText" rows="4" style="flex:1;min-width:260px;resize:vertical;font-size:16px;line-height:1.45"
+            placeholder="e.g. Spent the morning on Crystal Units on-page fixes, about an hour on NLG ads after lunch, then the Watchdog blog for the rest of the afternoon"></textarea></div>
+          <div class="rowline"><span class="spacer"></span>
+            <button class="btn primary small" id="aiGo">Draft my timesheet</button></div>
+          <div id="aiOut"></div>
+        </div>
       </div>
+      <div id="tvHere"></div>
     </div>` : ''}`;
 
   $('#tConfirmDay')?.addEventListener('click', async () => {
@@ -2866,10 +2869,19 @@ async function renderVariance(personId) {
     </table></div></div>`;
   const el = document.getElementById('tVariance');
   if (!el) return;
+  const banner = v.totals.pending_blocks ? `<div class="banner"><div>
+    <b>${v.totals.pending_blocks} past blocks still unconfirmed.</b>
+    Their time is planned but nobody has said what happened yet.</div></div>` : '';
+  // the day view offers a slot beside the describe-your-day box; when it is
+  // there, By contract sits in it rather than on its own half-empty row
+  const slot = personId ? document.getElementById('tvHere') : null;
+  if (slot) {
+    slot.innerHTML = table(v.by_contract, 'By contract');
+    el.innerHTML = banner;
+    return;
+  }
   el.innerHTML = `
-    ${v.totals.pending_blocks ? `<div class="banner"><div>
-      <b>${v.totals.pending_blocks} past blocks still unconfirmed.</b>
-      Their time is planned but nobody has said what happened yet.</div></div>` : ''}
+    ${banner}
     ${personId
       ? `<div class="grid2">${table(v.by_contract, 'By contract')}<div></div></div>`
       : `<div class="grid2">${table(v.by_contract, 'By contract')}${table(v.by_person, 'By person')}</div>`}`;
