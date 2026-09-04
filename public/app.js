@@ -1900,7 +1900,7 @@ function wireSettings() {
     $('#skRun').addEventListener('click', async () => {
       const r = await api('/api/slack/run', { body: {} });
       if (r.skipped && !r.checked) toast(`Nothing to do: ${r.skipped}.`);
-      else toast(`Checked ${r.checked || 0} — set ${r.applied || 0}, skipped ${r.skipped || 0}.`);
+      else toast(`Checked ${r.checked || 0} — set ${r.applied || 0}, cleared ${r.cleared || 0}, skipped ${r.skipped || 0}.`);
       S.boot = await api(`/api/bootstrap${P()}`);
       renderSettings();
     });

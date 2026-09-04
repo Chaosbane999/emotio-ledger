@@ -175,13 +175,32 @@ async function tick(force = false) {
   const people = db.prepare(
     "SELECT id, name, slack_user_id FROM people WHERE active = 1 AND archived = 0 AND slack_user_id != ''").all();
 
-  const result = { applied: 0, skipped: 0, checked: people.length };
+  const result = { applied: 0, cleared: 0, skipped: 0, checked: people.length };
   for (const person of people) {
     const until = offUntil(cap.patternOf(person.id), now, agencyStart, agencyEnd);
-    if (until === null) continue;
+
+    if (until === null) {
+      // They are at work. If one of OUR statuses is still on them — a pattern
+      // change, or a status set against the wrong member id and since
+      // corrected — take it off now rather than leaving it to expire.
+      if (force || applied[person.id]) {
+        const prof = await slackCall('users.profile.get', { user: person.slack_user_id });
+        if (prof.ok && (prof.profile || {}).status_text === statusText) {
+          const r = await slackCall('users.profile.set', {
+            user: person.slack_user_id,
+            profile: JSON.stringify({ status_text: '', status_emoji: '', status_expiration: 0 }),
+          });
+          if (r.ok) { log('info', `${person.name}: working now — status cleared.`); result.cleared++; }
+          else log('error', `${person.name}: could not clear the status (${r.error || 'unknown'}).`);
+        }
+        delete applied[person.id];
+      }
+      continue;
+    }
 
     const key = `${now.iso}:${until}`;
-    if (applied[person.id] === key) { result.skipped++; continue; }
+    // Apply now re-runs everyone deliberately; only the timed sync dedupes
+    if (!force && applied[person.id] === key) { result.skipped++; continue; }
 
     if (!override) {
       const prof = await slackCall('users.profile.get', { user: person.slack_user_id });
