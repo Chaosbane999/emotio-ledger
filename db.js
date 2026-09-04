@@ -205,6 +205,18 @@ CREATE TABLE IF NOT EXISTS timers (
   started_at     TEXT    NOT NULL
 );
 
+-- Individual working patterns. A row per working day (dow 1=Mon .. 5=Fri);
+-- a person with no rows works the agency-standard week. Someone on 3.5 days
+-- has rows only for the days they work, with a short day where the half falls.
+-- Capacity, the scheduler and the Slack status sync all read this.
+CREATE TABLE IF NOT EXISTS person_days (
+  person_id  INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+  dow        INTEGER NOT NULL,
+  start_time TEXT    NOT NULL,
+  end_time   TEXT    NOT NULL,
+  PRIMARY KEY (person_id, dow)
+);
+
 -- Fixed calendar commitments a person already has (weekly calls etc).
 CREATE TABLE IF NOT EXISTS anchors (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -310,6 +322,11 @@ try { db.exec("ALTER TABLE contracts ADD COLUMN department TEXT NOT NULL DEFAULT
 catch (e) { /* already there */ }
 
 
+// migration: the Slack member id ties a person to their Slack account so the
+// working-pattern sync can set their status. Blank means not connected.
+try { db.exec("ALTER TABLE people ADD COLUMN slack_user_id TEXT NOT NULL DEFAULT ''"); }
+catch (e) { /* already there */ }
+
 // migration: a private token per person lets their calendar app subscribe to
 // their schedule without a login — the token IS the credential, so it is
 // random, revocable, and never derived from anything guessable.
@@ -403,6 +420,12 @@ const defaults = {
   round_display: '0.25',
   harvest_account_id: '',
   harvest_token: '',
+  // Slack working-pattern sync. Off until a token is added and it is enabled.
+  slack_token: '',
+  slack_enabled: '0',
+  slack_override: '0',              // replace an existing status? off by default
+  slack_status_text: 'Not working',
+  slack_status_emoji: ':no_entry_sign:',
 };
 const putSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
 for (const [k, v] of Object.entries(defaults)) putSetting.run(k, v);

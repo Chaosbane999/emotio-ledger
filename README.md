@@ -81,6 +81,35 @@ reported rather than silently dropped.
 Export is one `.ics` per person per month (`Europe/London`, with a VTIMEZONE so
 BST resolves). Nothing writes to anyone's calendar — they import or subscribe.
 
+## Working patterns
+
+Settings → Working patterns. By default everyone works the agency-standard week
+(`weekly_hours / 5` a day, Monday to Friday). A pattern replaces that for one
+person: a row per working day with its own start and end, blank for a day off —
+so 3.5 days is three full days, one morning, and a blank Friday. Lunch is
+deducted the same way as everywhere else.
+
+A pattern flows through everything: capacity is summed date by date (a person
+off every Friday loses five days in a five-Friday month), the scheduler places
+nothing on their days off and caps each day at that day's hours, fixed
+commitments cost what the person can actually attend, and saving a pattern
+re-derives their hours/week. The audit checks all of it.
+
+## Slack status sync
+
+Settings → Slack status sync. During the agency working window, anyone whose
+pattern says they are off gets a Slack status (default 🚫 **Not working**) with
+an expiry, so Slack clears it by itself. Evenings, weekends and bank holidays
+get nothing, and an existing status — holiday, illness, anything set by hand —
+is never replaced unless the override is ticked.
+
+It needs each person's Slack member ID (People card; Slack profile → ⋮ → Copy
+member ID) and a **user token** (`xoxp-`) from a private Slack app with
+`users.profile:read` + `users.profile:write` user scopes, installed by a
+workspace owner or admin — Slack only lets an admin on a paid plan set someone
+else's status. The token can live in Settings or in a `SLACK_TOKEN` env var.
+The sync runs every five minutes inside the app; no cron needed.
+
 ## Harvest
 
 Settings → Harvest. Account id and personal access token from

@@ -1503,8 +1503,18 @@ async function renderSchedTeam() {
 async function renderSettings() {
   const recipes = await api('/api/recipes');
   const anchors = await api('/api/anchors');
+  const patterns = await api('/api/person-days');
   const st = S.boot.settings;
   const DOW = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+
+  // one cell per weekday: "09:00-17:30", or blank for a day off
+  const patternCell = (p, dow) => {
+    const own = (patterns[p.id] || []).find((d) => d.dow === dow);
+    const std = `${st.work_start}-${st.work_end}`;
+    const val = patterns[p.id] ? (own ? `${own.start}-${own.end}` : '') : std;
+    return `<td><input type="text" class="wpd" data-dow="${dow}" value="${esc(val)}"
+      placeholder="off" style="width:96px;text-align:center"></td>`;
+  };
 
   view().innerHTML = `
     <div class="card">
@@ -1513,7 +1523,7 @@ async function renderSettings() {
       </header>
       <div class="scroll"><table>
         <thead><tr><th>Name</th><th>Initials</th><th>Department</th><th class="num">Hours/week</th><th class="num">Rate £/h</th>
-          <th class="num">Utilisation</th><th class="num">Units/h</th><th>Active</th><th></th></tr></thead>
+          <th class="num">Utilisation</th><th class="num">Units/h</th><th>Slack ID</th><th>Active</th><th></th></tr></thead>
         <tbody>${S.boot.people.map((p) => `<tr data-p="${p.id}" class="${p.archived ? 'archived' : ''}">
           <td><input type="text" class="pn" value="${esc(p.name)}" style="width:150px"></td>
           <td><input type="text" class="pi" value="${esc(p.initials)}" style="width:56px"></td>
@@ -1525,6 +1535,8 @@ async function renderSettings() {
           <td class="num"><input type="number" class="pr" step="0.1" min="0" value="${h(p.rate)}"></td>
           <td class="num"><input type="number" class="pu" step="1" min="0" max="100" value="${Math.round(p.utilisation * 100)}"></td>
           <td class="num">${h(p.rate / st.standard_rate)}</td>
+          <td><input type="text" class="psl" value="${esc(p.slack_user_id || '')}" placeholder="U012ABCDEF"
+            title="Slack profile → ⋮ → Copy member ID" style="width:110px"></td>
           <td><input type="checkbox" class="pa"${p.active ? ' checked' : ''}></td>
           <td class="num" style="white-space:nowrap">
             <button class="btn small primary savep">Save</button>
@@ -1544,6 +1556,33 @@ async function renderSettings() {
           <input type="number" id="npUtil" value="87" step="1" title="utilisation %">
           <button class="btn small primary" id="addPerson">Add</button></div>
       </div>
+    </div>
+
+    <div class="card">
+      <header><h2>Working patterns</h2>
+        <p>Who works when. Capacity, the scheduler and the Slack status all follow this</p></header>
+      <div class="body" style="border-bottom:1px solid var(--rule)">
+        <p class="muted">Each cell is a day's hours as <span class="mono">09:00-17:30</span>; blank
+        means a day off. Lunch comes out automatically, the same as everywhere else. Saving a pattern
+        re-derives the person's hours/week; <b>Reset</b> returns them to the standard week (then set
+        their hours/week above yourself — it keeps the pattern's figure). Someone on
+        3.5 days might be <span class="mono">09:00-17:30</span> Monday to Wednesday and
+        <span class="mono">09:00-13:00</span> on Thursday, with Friday blank.</p>
+      </div>
+      <div class="scroll"><table>
+        <thead><tr><th>Person</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th>
+          <th class="num">Hours/wk</th><th></th></tr></thead>
+        <tbody>${S.boot.people.filter((p) => !p.archived && p.active).map((p) => `<tr data-wp="${p.id}">
+          <td class="name">${esc(p.name)}
+            ${patterns[p.id] ? '<span class="pill ok">custom</span>' : '<span class="pill mute">standard</span>'}</td>
+          ${[1, 2, 3, 4, 5].map((d) => patternCell(p, d)).join('')}
+          <td class="num">${h(p.weekly_hours)}</td>
+          <td class="num" style="white-space:nowrap">
+            <button class="btn small primary wpSave">Save</button>
+            ${patterns[p.id] ? '<button class="btn small wpReset">Reset</button>' : ''}
+          </td>
+        </tr>`).join('')}</tbody>
+      </table></div>
     </div>
 
     <div class="card">
@@ -1692,6 +1731,43 @@ async function renderSettings() {
           ${st.last_sync ? `<p class="muted">Last actuals sync: ${esc(new Date(st.last_sync).toLocaleString('en-GB'))}</p>` : ''}
         </div>
       </div>
+
+      <div class="card" style="grid-column:1/-1">
+        <header><h2>Slack status sync</h2>
+          <p>${st.slack_connected
+            ? (st.slack_enabled ? '<span class="pill ok">On</span>' : '<span class="pill warn">Connected, not enabled</span>')
+            : '<span class="pill mute">Not connected</span>'}</p></header>
+        <div class="body">
+          <p class="muted">During the agency working day, anyone whose pattern says they are off gets a
+          Slack status — ${esc(st.slack_status_emoji)} <b>${esc(st.slack_status_text)}</b> — with an expiry,
+          so Slack clears it by itself when they are back. Evenings, weekends and bank holidays are left
+          alone, and an existing status (holiday, illness) is never replaced unless you say so below.
+          Needs each person's Slack member ID on the People card, and a working pattern.</p>
+          <div class="rowline"><label>Token</label>
+            <input type="password" id="skTok" placeholder="${st.slack_connected ? '•••••• stored' : 'xoxp- user token'}" style="flex:1;min-width:220px"></div>
+          <div class="rowline"><label>Status</label>
+            <input type="text" id="skText" value="${esc(st.slack_status_text)}" maxlength="100" style="width:180px">
+            <input type="text" id="skEmoji" value="${esc(st.slack_status_emoji)}" style="width:140px" title="an emoji name like :no_entry_sign:"></div>
+          <div class="rowline">
+            <label class="tick"><input type="checkbox" id="skOn"${st.slack_enabled ? ' checked' : ''}> Sync every five minutes</label>
+            <label class="tick"><input type="checkbox" id="skOver"${st.slack_override ? ' checked' : ''}> Replace an existing status</label></div>
+          <div class="rowline">
+            <button class="btn primary small" id="skSave">Save</button>
+            <button class="btn small" id="skTest">Test connection</button>
+            <button class="btn small" id="skRun">Apply now</button></div>
+          <p class="muted">The token is a <b>user token</b> (<span class="mono">xoxp-</span>) from a private
+          Slack app with <span class="mono">users.profile:read</span> and
+          <span class="mono">users.profile:write</span> user scopes, installed by a workspace owner or
+          admin — Slack only lets an admin on a paid plan set someone else's status.</p>
+          ${(st.slack_log || []).length ? `<div class="scroll"><table>
+            <thead><tr><th>When</th><th>What</th></tr></thead>
+            <tbody>${st.slack_log.map((l) => `<tr>
+              <td style="white-space:nowrap">${esc(new Date(l.time).toLocaleString('en-GB'))}</td>
+              <td>${l.level === 'error' ? '<span class="pill bad">error</span> ' : ''}${esc(l.message)}</td>
+            </tr>`).join('')}</tbody>
+          </table></div>` : ''}
+        </div>
+      </div>
     </div>
 
     <div class="card">
@@ -1711,7 +1787,7 @@ function wireSettings() {
       name: $('.pn', tr).value, initials: $('.pi', tr).value,
       weekly_hours: Number($('.pw', tr).value), rate: Number($('.pr', tr).value),
       utilisation: Number($('.pu', tr).value) / 100, active: $('.pa', tr).checked,
-      department: $('.pd', tr).value } });
+      department: $('.pd', tr).value, slack_user_id: $('.psl', tr).value.trim() } });
     toast('Person saved.'); renderSettings();
   }));
 
@@ -1754,6 +1830,58 @@ function wireSettings() {
       rate: Number($('#npRate').value), utilisation: Number($('#npUtil').value) / 100, active: true } });
     toast('Person added.'); renderSettings();
   });
+
+  // working patterns: each cell "HH:MM-HH:MM" or blank for a day off
+  view().querySelectorAll('.wpSave').forEach((btn) => btn.addEventListener('click', async () => {
+    const tr = btn.closest('tr');
+    const days = [];
+    for (const inp of tr.querySelectorAll('.wpd')) {
+      const v = inp.value.trim();
+      if (!v) continue;
+      const m = v.match(/^(\d{2}:\d{2})\s*[-–]\s*(\d{2}:\d{2})$/);
+      if (!m) return toast(`Use 09:00-17:30 or leave the day blank (${['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'][inp.dataset.dow]}).`, true);
+      days.push({ dow: Number(inp.dataset.dow), start: m[1], end: m[2] });
+    }
+    const r = await api(`/api/person-days/${tr.dataset.wp}`, { body: { days } });
+    S.boot.people = r.people;
+    toast(`Pattern saved — ${r.weekly_hours}h/week.`); renderSettings();
+  }));
+  view().querySelectorAll('.wpReset').forEach((btn) => btn.addEventListener('click', async () => {
+    const tr = btn.closest('tr');
+    const r = await api(`/api/person-days/${tr.dataset.wp}`, { body: { clear: true } });
+    S.boot.people = r.people;
+    toast('Back to the standard week.'); renderSettings();
+  }));
+
+  // slack sync
+  const skSave = $('#skSave');
+  if (skSave) {
+    skSave.addEventListener('click', async () => {
+      const body = {
+        slack_enabled: $('#skOn').checked ? '1' : '0',
+        slack_override: $('#skOver').checked ? '1' : '0',
+        slack_status_text: $('#skText').value.trim() || 'Not working',
+        slack_status_emoji: $('#skEmoji').value.trim() || ':no_entry_sign:',
+      };
+      const tok = $('#skTok').value.trim();
+      if (tok) body.slack_token = tok;      // blank keeps the stored token
+      await api('/api/settings', { body });
+      S.boot = await api(`/api/bootstrap${P()}`);
+      toast('Slack settings saved.'); renderSettings();
+    });
+    $('#skTest').addEventListener('click', async () => {
+      const r = await api('/api/slack/test', { body: {} });
+      if (r.ok) toast(`Connected to ${r.team} as ${r.user}.`);
+      else toast(r.error || 'Slack rejected the connection.', true);
+    });
+    $('#skRun').addEventListener('click', async () => {
+      const r = await api('/api/slack/run', { body: {} });
+      if (r.skipped && !r.checked) toast(`Nothing to do: ${r.skipped}.`);
+      else toast(`Checked ${r.checked || 0} — set ${r.applied || 0}, skipped ${r.skipped || 0}.`);
+      S.boot = await api(`/api/bootstrap${P()}`);
+      renderSettings();
+    });
+  }
 
   view().querySelectorAll('.savet').forEach((btn) => btn.addEventListener('click', async () => {
     const tr = btn.closest('tr');

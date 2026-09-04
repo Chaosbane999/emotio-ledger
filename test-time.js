@@ -440,5 +440,56 @@ const lh = T.loggedHours(1, '2026-08');
 const p1 = v.by_person.find((r) => r.id === 1);
 eq(Math.round(lh * 60), p1.logged_minutes, 'loggedHours matches variance by-person');
 
+// --- working patterns: capacity, scheduler and the Slack window -------------
+{
+  const cap = require('./capacity');
+  const sch = require('./schedule');
+
+  // 3.5 days: Mon-Wed 09:00-17:30 (7.5h net of the fixture's hour lunch),
+  // Thu 09:00-12:30 (3.5h, ends at lunch), Friday off
+  db.prepare("INSERT INTO people (id, name, initials, weekly_hours) VALUES (3, 'Part Timer', 'PT', 37.5)").run();
+  const pd = db.prepare('INSERT INTO person_days (person_id, dow, start_time, end_time) VALUES (3, ?, ?, ?)');
+  for (const dow of [1, 2, 3]) pd.run(dow, '09:00', '17:30');
+  pd.run(4, '09:00', '12:30');
+
+  const pat = cap.patternOf(3);
+  eq(pat.get(1).minutes, 450, 'a full pattern day is 7.5h net of lunch');
+  eq(pat.get(4).minutes, 210, 'the half day is 3.5h');
+  eq(pat.get(5), undefined, 'Friday is off');
+
+  // September 2026: 4 Mondays, 5 Tuesdays, 5 Wednesdays, 4 Thursdays, 4 Fridays
+  const p3 = db.prepare('SELECT * FROM people WHERE id = 3').get();
+  eq(cap.personCapacity(p3, '2026-09').gross_hours, 119, 'gross sums the pattern date by date: 14x7.5 + 4x3.5');
+
+  // the scheduler keeps every fresh block inside the pattern
+  db.prepare(`INSERT INTO allocations (contract_id, period, person_id, deliverable_id, hours)
+    VALUES (10, '2026-09', 3, 100, 20)`).run();
+  const plan = sch.planPerson(3, '2026-09');
+  const isoDow = (iso) => ((new Date(`${iso}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;
+  const byDay = {};
+  for (const b of plan.blocks) byDay[b.date] = (byDay[b.date] || 0) + b.minutes;
+  for (const [d, m] of Object.entries(byDay)) {
+    const dow = isoDow(d);
+    ok(dow <= 5 ? Boolean(pat.get(dow)) : true, `no block on a day off (${d})`);
+    if (dow <= 5) ok(m <= pat.get(dow).minutes, `${d} within the pattern's day (${m} vs ${pat.get(dow).minutes})`);
+  }
+  eq(Math.round((plan.totals.scheduled_hours + plan.totals.unplaced_hours) * 60), 20 * 60,
+    'pattern plan still conserves the allocation');
+
+  // the Slack off-window: only during agency hours, only when the pattern says off
+  const { offUntil } = require('./slack')._internal;
+  const at = (min, dow = 5) => ({ iso: '2026-09-04', dow, min });
+  const S9 = 9 * 60, E1730 = 17 * 60 + 30;
+  eq(offUntil(null, at(600), S9, E1730), null, 'standard week: never flagged');
+  eq(offUntil(pat, at(600, 5), S9, E1730), E1730, 'day off: status until end of agency day');
+  eq(offUntil(pat, at(600, 2), S9, E1730), null, 'working: no status');
+  eq(offUntil(pat, at(14 * 60, 4), S9, E1730), E1730, 'half day, afternoon: status until end of day');
+  eq(offUntil(pat, at(10 * 60, 4), S9, E1730), null, 'half day, morning: working');
+  eq(offUntil(pat, at(8 * 60, 5), S9, E1730), null, 'before the agency day: nothing');
+  eq(offUntil(pat, at(18 * 60, 5), S9, E1730), null, 'after the agency day: nothing');
+  const late = new Map([[5, { start: '13:00', end: '17:30', minutes: 270 }]]);
+  eq(offUntil(late, at(600, 5), S9, E1730), 13 * 60, 'late starter: status until their start');
+}
+
 console.log(`\n${checks} checks run\nall time identities hold`);
 fs.rmSync(process.env.DATA_DIR, { recursive: true, force: true });

@@ -8,6 +8,7 @@ const cap = require('./capacity');
 const schedule = require('./schedule');
 const time = require('./time');
 const harvest = require('./harvest');
+const slack = require('./slack');
 const seed = require('./seed');
 
 const app = express();
@@ -332,8 +333,9 @@ const okAsync = (fn) => async (req, res) => {
 };
 
 const listPeople = (withArchived) => db.prepare(
-  `SELECT id, harvest_user_id, name, initials, weekly_hours, rate, utilisation, colour,
+  `SELECT id, harvest_user_id, slack_user_id, name, initials, weekly_hours, rate, utilisation, colour,
           active, sort_order, archived, email, role, department,
+          EXISTS (SELECT 1 FROM person_days pd WHERE pd.person_id = people.id) AS has_pattern,
           password_hash != '' AS has_login
      FROM people ${withArchived ? '' : 'WHERE archived = 0'}
     ORDER BY archived, active = 0, sort_order, name`).all();
@@ -532,6 +534,12 @@ app.get('/api/bootstrap', ok((req, res) => {
       holidays: get('holidays') || '',
       harvest_connected: harvest.configured(),
       harvest_account_id: get('harvest_account_id') || '',
+      slack_connected: slack.configured(),
+      slack_enabled: get('slack_enabled') === '1',
+      slack_override: get('slack_override') === '1',
+      slack_status_text: get('slack_status_text') || 'Not working',
+      slack_status_emoji: get('slack_status_emoji') || ':no_entry_sign:',
+      slack_log: isAdmin(req) ? slack.recentLog().slice(0, 8) : [],
       last_sync: get('last_sync') || '',
       passcode_set: Boolean(get('passcode_hash')),
       staging: process.env.STAGING === '1',
@@ -777,14 +785,23 @@ app.delete('/api/months/:period', ok((req, res) => {
 // write — settings CRUD
 // ---------------------------------------------------------------------------
 
+/** A Slack member id looks like U0123ABCDEF (or W… on Enterprise). */
+const slackId = (v) => {
+  const s = String(v || '').trim().toUpperCase();
+  if (!s) return '';
+  if (!/^[UW][A-Z0-9]{6,}$/.test(s)) throw new Error('That does not look like a Slack member ID (e.g. U012ABCDEF).');
+  return s;
+};
+
 app.post('/api/people', ok((req, res) => {
   const b = req.body;
   const pDept = ['design', 'management'].includes(b.department) ? b.department : 'marketing';
   if (b.id) {
     db.prepare(`UPDATE people SET name=?, initials=?, weekly_hours=?, rate=?, utilisation=?, active=?,
-      archived=?, harvest_user_id=?, department=? WHERE id=?`).run(b.name, b.initials || '', num(b.weekly_hours, 37.5),
+      archived=?, harvest_user_id=?, department=?, slack_user_id=? WHERE id=?`).run(b.name, b.initials || '', num(b.weekly_hours, 37.5),
       num(b.rate, 100), Math.min(1, Math.max(0, num(b.utilisation, 0.87))), b.active ? 1 : 0,
-      b.archived ? 1 : 0, b.harvest_user_id ? Number(b.harvest_user_id) : null, pDept, b.id);
+      b.archived ? 1 : 0, b.harvest_user_id ? Number(b.harvest_user_id) : null, pDept,
+      slackId(b.slack_user_id), b.id);
   } else {
     db.prepare(`INSERT INTO people (name, initials, weekly_hours, rate, utilisation, active, harvest_user_id, department, sort_order)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 50)`).run(b.name, b.initials || '', num(b.weekly_hours, 37.5),
@@ -1065,9 +1082,73 @@ app.post('/api/passcode', ok((req, res) => {
 
 app.post('/api/settings', ok((req, res) => {
   const allowed = ['standard_rate', 'work_start', 'work_end', 'lunch_start', 'lunch_minutes',
-    'max_client_minutes_per_day', 'holidays', 'harvest_account_id', 'harvest_token', 'default_period'];
+    'max_client_minutes_per_day', 'holidays', 'harvest_account_id', 'harvest_token', 'default_period',
+    'slack_enabled', 'slack_override', 'slack_status_text', 'slack_status_emoji', 'slack_token'];
   for (const [k, v] of Object.entries(req.body)) if (allowed.includes(k)) set(k, v);
   res.json({ ok: true });
+}));
+
+// ---------------------------------------------------------------------------
+// working patterns + the Slack status sync they drive
+// ---------------------------------------------------------------------------
+
+const HHMM = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+
+const allPatterns = () => {
+  const out = {};
+  for (const r of db.prepare('SELECT person_id, dow, start_time, end_time FROM person_days ORDER BY person_id, dow').all()) {
+    (out[r.person_id] = out[r.person_id] || []).push({ dow: r.dow, start: r.start_time, end: r.end_time });
+  }
+  return out;
+};
+
+app.get('/api/person-days', ok((req, res) => res.json(allPatterns())));
+
+/**
+ * Replace one person's working pattern. days: [{dow 1-5, start, end}] sets it;
+ * clear: true removes it, returning them to the agency-standard week.
+ * weekly_hours is re-derived from the pattern so capacity keeps agreeing with
+ * what the calendar can actually hold.
+ */
+app.post('/api/person-days/:id', ok((req, res) => {
+  const id = Number(req.params.id);
+  if (!db.prepare('SELECT id FROM people WHERE id = ?').get(id)) throw new Error('no such person');
+  const b = req.body || {};
+
+  if (b.clear) {
+    db.prepare('DELETE FROM person_days WHERE person_id = ?').run(id);
+    return res.json({ ok: true, days: [], people: listPeople() });
+  }
+
+  const days = Array.isArray(b.days) ? b.days : [];
+  const seen = new Set();
+  for (const d of days) {
+    const dow = Number(d.dow);
+    if (!Number.isInteger(dow) || dow < 1 || dow > 5) throw new Error('Days run Monday (1) to Friday (5).');
+    if (seen.has(dow)) throw new Error('Each day appears once.');
+    seen.add(dow);
+    if (!HHMM.test(d.start) || !HHMM.test(d.end)) throw new Error('Times are HH:MM, e.g. 09:00.');
+    if (d.start >= d.end) throw new Error('A day must end after it starts.');
+  }
+  if (!days.length) throw new Error('Pick at least one working day, or reset to the standard week.');
+
+  db.prepare('DELETE FROM person_days WHERE person_id = ?').run(id);
+  const ins = db.prepare('INSERT INTO person_days (person_id, dow, start_time, end_time) VALUES (?, ?, ?, ?)');
+  for (const d of days) ins.run(id, Number(d.dow), d.start, d.end);
+
+  // weekly_hours follows the pattern — one source of truth for the week
+  const person = db.prepare('SELECT * FROM people WHERE id = ?').get(id);
+  const pattern = cap.patternOf(id);
+  const weekly = cap.round2([...(pattern || new Map()).values()].reduce((s, d) => s + d.minutes, 0) / 60);
+  db.prepare('UPDATE people SET weekly_hours = ? WHERE id = ?').run(weekly || person.weekly_hours, id);
+
+  res.json({ ok: true, days, weekly_hours: weekly, people: listPeople() });
+}));
+
+app.post('/api/slack/test', okAsync(async (req, res) => res.json(await slack.test())));
+app.post('/api/slack/run', okAsync(async (req, res) => {
+  const summary = await slack.tick(true);
+  res.json({ ...summary, log: slack.recentLog().slice(0, 10) });
 }));
 
 // ---------------------------------------------------------------------------
@@ -1301,3 +1382,10 @@ if (!get('seeded_at')) {
 }
 
 app.listen(PORT, () => console.log(`EmotioHours on http://localhost:${PORT}`));
+
+// The Slack sync runs on the app's own clock — no external cron. Every five
+// minutes it asks "is anyone off right now who looks present?", which is also
+// how quickly a pattern change reaches Slack. tick() itself refuses to run
+// unless the sync is enabled and a token is set.
+setInterval(() => slack.tick().catch((e) => console.error('slack sync:', e.message)), 5 * 60 * 1000);
+setTimeout(() => slack.tick().catch((e) => console.error('slack sync:', e.message)), 20 * 1000);

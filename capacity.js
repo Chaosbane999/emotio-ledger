@@ -43,6 +43,48 @@ function workingDates(period) {
 
 const workingDays = (period) => workingDates(period).length;
 
+// ---------------------------------------------------------------------------
+// Individual working patterns. A person with rows in person_days works only
+// those days, for those hours; everyone else works the agency-standard week.
+// ---------------------------------------------------------------------------
+
+const toMinutes = (hhmm) => {
+  const [hh, mm] = String(hhmm).split(':').map(Number);
+  return (hh || 0) * 60 + (mm || 0);
+};
+
+/** ISO day-of-week for a 'YYYY-MM-DD': 1=Mon .. 7=Sun. */
+const isoDow = (iso) => ((new Date(`${iso}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;
+
+/**
+ * A person's pattern as Map(dow -> { start, end, minutes }), or null for the
+ * standard week. Minutes are net of lunch, the same way weekly_hours already
+ * is — a 09:00–17:30 day with an hour's lunch is 7.5h, not 8.5.
+ */
+function patternOf(personId) {
+  const rows = db.prepare(
+    'SELECT dow, start_time, end_time FROM person_days WHERE person_id = ? ORDER BY dow')
+    .all(personId);
+  if (!rows.length) return null;
+  const lunchS = toMinutes(get('lunch_start') || '13:00');
+  const lunchE = lunchS + Number(get('lunch_minutes') || 30);
+  const days = new Map();
+  for (const r of rows) {
+    const s = toMinutes(r.start_time), e = toMinutes(r.end_time);
+    if (e <= s) continue;
+    const lunchOverlap = Math.max(0, Math.min(e, lunchE) - Math.max(s, lunchS));
+    days.set(r.dow, { start: r.start_time, end: r.end_time, minutes: (e - s) - lunchOverlap });
+  }
+  return days.size ? days : null;
+}
+
+/** Net working minutes this person has on this date. */
+function dayMinutes(person, iso, pattern) {
+  if (!pattern) return (person.weekly_hours / 5) * 60;
+  const d = pattern.get(isoDow(iso));
+  return d ? d.minutes : 0;
+}
+
 /**
  * A normal working month for one full-time person — working days x a standard
  * day. This is what the month picker shows, because "how long is this month" is
@@ -56,8 +98,11 @@ function monthHours(period) {
 
 /** Total client-facing hours the whole team has, across everyone. */
 function teamHours(period) {
-  const days = workingDays(period);
-  return round2(activePeople().reduce((s, p) => s + days * (p.weekly_hours / 5), 0));
+  const dates = workingDates(period);
+  return round2(activePeople().reduce((s, p) => {
+    const pattern = patternOf(p.id);
+    return s + dates.reduce((s2, iso) => s2 + dayMinutes(p, iso, pattern), 0) / 60;
+  }, 0));
 }
 
 /** ISO week index (0-based) of each working date within the period. */
@@ -112,9 +157,14 @@ const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 // ---------------------------------------------------------------------------
 
 function personCapacity(person, period) {
-  const days = workingDays(period);
-  const perDay = person.weekly_hours / 5;
-  const gross = days * perDay;
+  const dates = workingDates(period);
+  const days = dates.length;
+  const pattern = patternOf(person.id);
+  // With a pattern the month is summed date by date — a person off every
+  // Friday loses five days in a five-Friday month, not an average four.
+  const gross = pattern
+    ? dates.reduce((s, iso) => s + dayMinutes(person, iso, pattern), 0) / 60
+    : days * (person.weekly_hours / 5);
 
   const lv = db.prepare('SELECT annual_hours, sick_hours FROM leave WHERE person_id = ? AND period = ?')
     .get(person.id, period) || { annual_hours: 0, sick_hours: 0 };
@@ -187,7 +237,12 @@ function anchorWindowDates(contract, period) {
 
 /** Minutes one anchor consumes in a period, mirroring the scheduler. */
 function anchorMinutes(anchor, contract, period) {
-  const allowed = new Set(anchorWindowDates(contract, period));
+  // The scheduler only sees the days this person actually works, so the
+  // budget must count the same days — a daily stand-up costs a 3-day person
+  // three sittings a week, not five.
+  const pattern = anchor.person_id ? patternOf(anchor.person_id) : null;
+  const worksOn = (iso) => !pattern || Boolean(pattern.get(isoDow(iso)));
+  const allowed = new Set(anchorWindowDates(contract, period).filter(worksOn));
   if (!allowed.size) return 0;
   const buckets = weekBuckets(period);
   const cadence = anchor.cadence || 'weekly';
@@ -660,6 +715,7 @@ function personView(personId, period) {
 module.exports = {
   periodOf, thisPeriod, parsePeriod, shiftPeriod,
   workingDates, workingDays, weekBuckets, monthHours, teamHours,
+  patternOf, dayMinutes, isoDow, toMinutes,
   standardRate, toUnits, toHours, round2,
   personCapacity, activePeople,
   contractSummary,

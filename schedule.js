@@ -22,10 +22,26 @@ const fromMin = (mins) => {
 function dayWindows() {
   const start = toMin(get('work_start') || '09:00');
   const end = toMin(get('work_end') || '17:30');
+  return carveLunch(start, end);
+}
+
+function carveLunch(start, end) {
   const lunch = toMin(get('lunch_start') || '13:00');
   const lunchLen = Number(get('lunch_minutes') || 30);
   if (lunch <= start || lunch >= end) return [[start, end]];
   return [[start, lunch], [Math.min(end, lunch + lunchLen), end]];
+}
+
+/**
+ * Free intervals for one person on one date. A working pattern narrows the
+ * day to their own hours; no pattern means the agency-standard day. A day
+ * the pattern leaves out has no window at all.
+ */
+function personWindows(pattern, iso) {
+  if (!pattern) return dayWindows();
+  const d = pattern.get(cap.isoDow(iso));
+  if (!d) return [];
+  return carveLunch(toMin(d.start), toMin(d.end));
 }
 
 // A backstop against confetti, not a design constraint. It only bites when the
@@ -223,16 +239,36 @@ function planPerson(personId, period) {
   const person = db.prepare('SELECT * FROM people WHERE id = ?').get(personId);
   if (!person) return null;
 
-  const buckets = cap.weekBuckets(period);
+  // The pattern decides which days exist for this person at all. Buckets keep
+  // the month's week structure (indices must agree with anchors and shares)
+  // but each week holds only the days this person works — a week they are
+  // entirely off is an empty bucket, and takes no share of anything.
+  const pattern = cap.patternOf(personId);
+  const worksOn = (iso) => !pattern || Boolean(pattern.get(cap.isoDow(iso)));
+  const buckets = cap.weekBuckets(period).map((wk) => wk.filter(worksOn));
   const weeks = buckets.length;
-  const dayOf = new Map();          // iso -> { free: [[s,e]], used: 0, byContract: Map }
-  const perDayCapMin = (person.weekly_hours / 5) * 60;
+  const dayOf = new Map();          // iso -> { free: [[s,e]], capMin, used: 0, byContract: Map }
+  const perDayCapMin = pattern
+    ? Math.max(...[...pattern.values()].map((d) => d.minutes))
+    : (person.weekly_hours / 5) * 60;
   const maxClientMin = Number(get('max_client_minutes_per_day') || 240);
 
   for (const week of buckets) {
     for (const iso of week) {
-      dayOf.set(iso, { iso, free: dayWindows().map(([a, b]) => [a, b]), used: 0, byContract: new Map() });
+      dayOf.set(iso, {
+        iso,
+        free: personWindows(pattern, iso).map(([a, b]) => [a, b]),
+        capMin: pattern ? cap.dayMinutes(person, iso, pattern) : perDayCapMin,
+        used: 0,
+        byContract: new Map(),
+      });
     }
+  }
+  if (!dayOf.size) {
+    return {
+      person: { id: person.id, name: person.name }, period, blocks: [], unplaced: [],
+      totals: { scheduled_hours: 0, unplaced_hours: 0, blocks: 0 },
+    };
   }
 
   const rows = db.prepare(`
@@ -387,7 +423,7 @@ function planPerson(personId, period) {
   };
 
   const fits = (day, minutes, item) => {
-    if (day.used + minutes > perDayCapMin + 0.01) return false;
+    if (day.used + minutes > day.capMin + 0.01) return false;
     if (item.contract_type !== 'internal') {
       const already = day.byContract.get(item.contract_id) || 0;
       if (already + minutes > maxClientMin + 0.01) return false;
@@ -700,8 +736,12 @@ function expectedPlanHours(personId, period) {
   const keptMin = db.prepare(`SELECT COALESCE(SUM(b.minutes),0) m FROM schedule_blocks b
     WHERE b.person_id = ? AND b.period = ?
       AND EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = b.id)`).get(personId, period).m;
-  const anchorMin = db.prepare('SELECT COALESCE(SUM(minutes),0) m FROM anchors WHERE person_id = ?')
-    .get(personId).m * cap.weekBuckets(period).length;
+  // per anchor, honouring cadence, contract window and the person's working
+  // pattern — the same arithmetic the scheduler and the audit both use
+  const contractOf = db.prepare('SELECT * FROM contracts WHERE id = ?');
+  const anchorMin = db.prepare('SELECT * FROM anchors WHERE person_id = ?').all(personId)
+    .reduce((s, an) => s + cap.anchorMinutes(
+      an, an.contract_id ? contractOf.get(an.contract_id) : null, period), 0);
   return cap.round2((remainMin + keptMin + anchorMin) / 60);
 }
 

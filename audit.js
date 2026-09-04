@@ -17,6 +17,23 @@ const onQuarter = (n) => near(n * 4, Math.round(n * 4), 1e-6);
 const periods = db.prepare('SELECT period FROM months ORDER BY period').all().map((m) => m.period);
 const STD = Number(get('standard_rate') || 100);
 
+// Independent recompute of a working pattern — from the raw person_days rows,
+// not through capacity.js, so the two implementations check each other.
+const hm = (t) => { const [h2, m2] = String(t).split(':').map(Number); return (h2 || 0) * 60 + (m2 || 0); };
+const LUNCH_S = hm(get('lunch_start') || '13:00');
+const LUNCH_E = LUNCH_S + Number(get('lunch_minutes') || 30);
+const isoDow = (iso) => ((new Date(`${iso}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;
+function patternMinutes(personId) {
+  const rows = db.prepare('SELECT dow, start_time, end_time FROM person_days WHERE person_id = ?').all(personId);
+  const byDow = new Map();
+  for (const r of rows) {
+    const s = hm(r.start_time), e = hm(r.end_time);
+    if (e <= s) continue;
+    byDow.set(r.dow, (e - s) - Math.max(0, Math.min(e, LUNCH_E) - Math.max(s, LUNCH_S)));
+  }
+  return byDow.size ? byDow : null;
+}
+
 console.log(`auditing ${periods.length} month(s): ${periods.join(', ')}\n`);
 
 for (const P of periods) {
@@ -29,8 +46,13 @@ for (const P of periods) {
     const lv = db.prepare('SELECT annual_hours, sick_hours FROM leave WHERE person_id = ? AND period = ?')
       .get(p.person_id, P) || { annual_hours: 0, sick_hours: 0 };
 
-    const gross = days * (row.weekly_hours / 5);
-    ok(near(p.gross_hours, gross, 0.02), `${P} ${p.name}: gross = days x weekly/5 (${p.gross_hours} vs ${gross.toFixed(2)})`);
+    // a working pattern replaces the flat days x weekly/5 with a date-by-date
+    // sum of the days the pattern actually contains
+    const pat = patternMinutes(p.person_id);
+    const gross = pat
+      ? cap.workingDates(P).reduce((s, iso) => s + (pat.get(isoDow(iso)) || 0), 0) / 60
+      : days * (row.weekly_hours / 5);
+    ok(near(p.gross_hours, gross, 0.02), `${P} ${p.name}: gross matches the working pattern (${p.gross_hours} vs ${gross.toFixed(2)})`);
     ok(near(p.available_hours, Math.max(0, gross - lv.annual_hours - lv.sick_hours), 0.02),
       `${P} ${p.name}: available = gross - leave - sick`);
     ok(near(p.client_hours, p.available_hours * row.utilisation, 0.02),
@@ -135,7 +157,8 @@ for (const P of periods) {
   const maxClient = Number(get('max_client_minutes_per_day') || 240);
   for (const p of db.prepare('SELECT id, name, weekly_hours FROM people WHERE active = 1 AND archived = 0').all()) {
     const plan = sch.planPerson(p.id, P);
-    const perDay = (p.weekly_hours / 5) * 60;
+    const pat = patternMinutes(p.id);
+    const perDayOf = (iso) => (pat ? (pat.get(isoDow(iso)) || 0) : (p.weekly_hours / 5) * 60);
 
     // The plan covers what is still to do: each allocation line less what is
     // already logged against it (a remainder under the 15-minute grain is
@@ -167,12 +190,15 @@ for (const P of periods) {
     ok(near(accounted, expect, 0.02),
       `${P} ${p.name}: scheduled + unplaced = remaining + kept + anchors (${accounted} vs ${expect.toFixed(2)})`);
 
-    const byDay = {}, byDayContract = {};
+    const byDay = {}, byDayKept = {}, byDayContract = {};
     for (const b of plan.blocks) {
       ok(b.minutes % 15 === 0, `${P} ${p.name}: block on a quarter hour (${b.minutes}m)`);
       ok(b.start < b.end, `${P} ${p.name}: block start before end`);
       ok(b.minutes > 0, `${P} ${p.name}: block has duration`);
       byDay[b.date] = (byDay[b.date] || 0) + b.minutes;
+      // committed blocks are history: a pattern set after they were committed
+      // must not condemn them, so they sit outside the capacity ceiling
+      if (b.kept) byDayKept[b.date] = (byDayKept[b.date] || 0) + b.minutes;
       const k = `${b.date}|${b.contract_id}`;
       byDayContract[k] = (byDayContract[k] || 0) + b.minutes;
     }
@@ -181,10 +207,13 @@ for (const P of periods) {
     // so they answer only to the length of the day itself.
     const isWeekend = (d) => [0, 6].includes(new Date(`${d}T00:00:00Z`).getUTCDay());
     for (const [d, m] of Object.entries(byDay)) {
+      const fresh = m - (byDayKept[d] || 0);
       if (isWeekend(d)) {
         ok(m <= 24 * 60, `${P} ${p.name}: ${d} weekend overflow fits the day (${m})`);
       } else {
-        ok(m <= perDay + 0.5, `${P} ${p.name}: ${d} within daily capacity (${m} vs ${perDay})`);
+        ok(fresh <= perDayOf(d) + 0.5, `${P} ${p.name}: ${d} within daily capacity (${fresh} vs ${perDayOf(d)})`);
+        // nothing NEW lands on a day the pattern says they do not work
+        ok(perDayOf(d) > 0 || fresh === 0, `${P} ${p.name}: ${d} is a non-working day, only history sits there`);
       }
     }
     for (const [k, m] of Object.entries(byDayContract)) {
