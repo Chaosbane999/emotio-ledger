@@ -126,6 +126,15 @@ select {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23647975' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat; background-position: right 9px center;
 }
+/* a multi-select is a listbox, not a dropdown: let it show its rows,
+   and drop the painted arrow that only makes sense on a closed select */
+select[multiple] {
+  height: auto; min-height: 96px;
+  padding: 4px; padding-right: 4px;
+  background-image: none;
+}
+select[multiple] option { padding: 3px 6px; border-radius: 3px; }
+
 select:focus-visible, input:focus-visible, button:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 1px;
 }

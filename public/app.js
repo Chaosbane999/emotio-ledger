@@ -881,7 +881,8 @@ async function renderContractDetail(id) {
       </table></div>
       <div class="body" style="border-top:1px solid var(--rule)">
         <div class="rowline"><label>Add</label>
-          <select id="naP" multiple size="4" title="Cmd/Ctrl-click for several people — one commitment each">${people.filter((p) => p.active).map((p) =>
+          <select id="naP" multiple size="${Math.min(10, people.filter((p) => p.active).length)}"
+            title="Cmd/Ctrl-click for several people — one commitment each">${people.filter((p) => p.active).map((p) =>
             `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
           <button class="btn small" id="naAll" title="Select everyone">All</button>
           <input type="text" id="naLabel" placeholder="e.g. Weekly call" style="width:150px">
@@ -1225,7 +1226,8 @@ async function renderInternal() {
       </table></div>
       <div class="body" style="border-top:1px solid var(--rule)">
         <div class="rowline"><label>Add</label>
-          <select id="niP" multiple size="4" title="Cmd/Ctrl-click for several people — one commitment each">${S.boot.people.filter((p) => p.active && !p.archived).map((p) =>
+          <select id="niP" multiple size="${Math.min(10, S.boot.people.filter((p) => p.active && !p.archived).length)}"
+            title="Cmd/Ctrl-click for several people — one commitment each">${S.boot.people.filter((p) => p.active && !p.archived).map((p) =>
             `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
           <button class="btn small" id="niAll" title="Select everyone">All</button>
           <input type="text" id="niLabel" placeholder="e.g. Team call" style="width:150px">
