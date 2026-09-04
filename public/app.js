@@ -41,6 +41,19 @@ const uTd = (n) => (showsMoney() ? `<td class="num">${units(n)}</td>` : '');
 const pct = (n) => `${Math.round(Number(n) || 0)}%`;
 const DOW_NAMES = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
+/** "When" of a fixed commitment, in words. */
+const anchorWhen = (x) => `${x.cadence === 'daily' ? 'Every day'
+  : x.cadence === 'alternate' ? 'Every other day'
+    : `${x.cadence === 'fortnightly' ? 'Every other ' : x.cadence === 'monthly' ? 'Monthly, ' : ''}${DOW_NAMES[x.dow]}`} ${x.time}`;
+
+/** The cadence picker every Fixed commitments card shares. */
+const cadenceOptions = `
+  <option value="daily">Daily</option>
+  <option value="alternate">Every other day</option>
+  <option value="weekly" selected>Weekly</option>
+  <option value="fortnightly">Fortnightly</option>
+  <option value="monthly">Monthly</option>`;
+
 async function api(path, opts) {
   const r = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -861,8 +874,7 @@ async function renderContractDetail(id) {
         <thead><tr><th>Who</th><th>What</th><th>When</th><th class="num">Length</th><th></th></tr></thead>
         <tbody>${anchors.length ? anchors.map((x) => `<tr>
           <td>${esc(x.person_name)}</td><td>${esc(x.label)}</td>
-          <td>${x.cadence === 'daily' ? 'Every day'
-            : `${x.cadence === 'fortnightly' ? 'Every other ' : x.cadence === 'monthly' ? 'Monthly, ' : ''}${DOW_NAMES[x.dow]}`} ${esc(x.time)}</td>
+          <td>${esc(anchorWhen(x))}</td>
           <td class="num">${hrs(x.minutes / 60)}</td>
           <td class="num"><button class="btn small danger dela" data-a="${x.id}">Remove</button></td>
         </tr>`).join('') : '<tr><td colspan="5" class="muted">None on this contract.</td></tr>'}</tbody>
@@ -872,11 +884,7 @@ async function renderContractDetail(id) {
           <select id="naP">${people.filter((p) => p.active).map((p) =>
             `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
           <input type="text" id="naLabel" placeholder="e.g. Weekly call" style="width:150px">
-          <select id="naCad">
-            <option value="daily">Daily</option>
-            <option value="weekly" selected>Weekly</option>
-            <option value="fortnightly">Fortnightly</option>
-            <option value="monthly">Monthly</option></select>
+          <select id="naCad">${cadenceOptions}</select>
           <select id="naDow">${[1, 2, 3, 4, 5].map((x) => `<option value="${x}">${DOW_NAMES[x]}</option>`).join('')}</select>
           <input type="time" id="naTime" value="10:00" style="width:100px">
           <input type="number" id="naMin" value="60" step="15" min="15"><span class="muted">min</span>
@@ -976,17 +984,17 @@ function wireContractDetail(id, deliverables) {
   }));
 
   $('#naCad')?.addEventListener('change', (e) => {
-    $('#naDow').style.display = e.target.value === 'daily' ? 'none' : '';
+    $('#naDow').style.display = ['daily', 'alternate'].includes(e.target.value) ? 'none' : '';
   });
   const addA = $('#addAnchor');
   if (addA) addA.addEventListener('click', async () => {
     const label = $('#naLabel').value.trim();
     if (!label) return toast('What is the commitment?', true);
-    await api('/api/anchors', { body: {
+    const r = await api('/api/anchors', { body: {
       person_id: Number($('#naP').value), contract_id: id, label,
       cadence: $('#naCad').value,
       dow: Number($('#naDow').value), time: $('#naTime').value, minutes: Number($('#naMin').value) } });
-    toast('Commitment added.');
+    toast(r.placed ? `Commitment added — ${r.placed} block(s) placed on the saved plan.` : 'Commitment added.');
     reload();
   });
 
@@ -1125,6 +1133,7 @@ async function renderInternal() {
   const contract = S.boot.contracts.find((c) => c.type === 'internal');
   if (!contract) { view().innerHTML = '<p class="muted">No internal contract set up.</p>'; return; }
   const summary = a.contracts.find((c) => c.type === 'internal');
+  const anchors = (await api('/api/anchors')).filter((x) => x.contract_id === contract.id);
 
   const kinds = S.boot.deliverables.filter((d) => d.internal);
   const hoursOf = (pid, did) => summary.lines
@@ -1190,6 +1199,34 @@ async function renderInternal() {
         ${busiest && busiest.alloc ? `${esc(busiest.name)} carries the most at ${hrs(busiest.alloc)}.` : ''}
         Sellable hours are governed separately by each person's utilisation target on the Settings page.</p>
       </div>
+    </div>
+
+    <div class="card">
+      <header><h2>Fixed commitments</h2>
+        <p>Standing internal calls and meetings — on the schedule, pinned on the time sheet</p></header>
+      <div class="scroll"><table>
+        <thead><tr><th>Who</th><th>What</th><th>When</th><th class="num">Length</th><th></th></tr></thead>
+        <tbody>${anchors.length ? anchors.map((x) => `<tr>
+          <td>${esc(x.person_name)}</td><td>${esc(x.label)}</td>
+          <td>${esc(anchorWhen(x))}</td>
+          <td class="num">${hrs(x.minutes / 60)}</td>
+          <td class="num"><button class="btn small danger delia" data-a="${x.id}">Remove</button></td>
+        </tr>`).join('') : '<tr><td colspan="5" class="muted">None yet — a daily stand-up or team call belongs here.</td></tr>'}</tbody>
+      </table></div>
+      <div class="body" style="border-top:1px solid var(--rule)">
+        <div class="rowline"><label>Add</label>
+          <select id="niP">${S.boot.people.filter((p) => p.active && !p.archived).map((p) =>
+            `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+          <input type="text" id="niLabel" placeholder="e.g. Team call" style="width:150px">
+          <select id="niCad">${cadenceOptions}</select>
+          <select id="niDow">${[1, 2, 3, 4, 5].map((x) => `<option value="${x}">${DOW_NAMES[x]}</option>`).join('')}</select>
+          <input type="time" id="niTime" value="10:00" style="width:100px">
+          <input type="number" id="niMin" value="30" step="15" min="15"><span class="muted">min</span>
+          <button class="btn small primary" id="addIntAnchor">Add</button></div>
+        <p class="muted">One row per person: a team call everyone joins is one commitment each, so it
+        lands on every schedule and draws down each person's internal time. "Every other day" runs
+        Monday, Wednesday, Friday one week and Tuesday, Thursday the next.</p>
+      </div>
     </div>`;
 
   view().querySelectorAll('.inh').forEach((el) => el.addEventListener('change', async () => {
@@ -1198,6 +1235,25 @@ async function renderInternal() {
       deliverable_id: Number(el.dataset.d), hours: Number(el.value) } });
     renderInternal();
   }));
+
+  view().querySelectorAll('.delia').forEach((el) => el.addEventListener('click', async () => {
+    await api(`/api/anchors/${el.dataset.a}`, { method: 'DELETE' });
+    toast('Commitment removed — its planned blocks lift out too.');
+    renderInternal();
+  }));
+  $('#niCad').addEventListener('change', (e) => {
+    $('#niDow').style.display = ['daily', 'alternate'].includes(e.target.value) ? 'none' : '';
+  });
+  $('#addIntAnchor').addEventListener('click', async () => {
+    const label = $('#niLabel').value.trim();
+    if (!label) return toast('What is the commitment?', true);
+    const r = await api('/api/anchors', { body: {
+      person_id: Number($('#niP').value), contract_id: contract.id, label,
+      cadence: $('#niCad').value,
+      dow: Number($('#niDow').value), time: $('#niTime').value, minutes: Number($('#niMin').value) } });
+    toast(r.placed ? `Commitment added — ${r.placed} block(s) placed on the saved plan.` : 'Commitment added.');
+    renderInternal();
+  });
 }
 
 const cap2 = (n) => Math.round((Number(n) || 0) * 100) / 100;

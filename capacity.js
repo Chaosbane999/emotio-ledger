@@ -250,6 +250,9 @@ function anchorMinutes(anchor, contract, period) {
   let hits = 0;
   if (cadence === 'daily') {
     hits = buckets.flat().filter((iso) => allowed.has(iso)).length;
+  } else if (cadence === 'alternate') {
+    // every other working day this person has, first one included
+    hits = buckets.flat().filter((iso) => allowed.has(iso)).filter((x, i) => i % 2 === 0).length;
   } else if (cadence === 'monthly') {
     hits = buckets.some((wk) => wk.some((iso) => allowed.has(iso) && dow(iso) === anchor.dow)) ? 1 : 0;
   } else {

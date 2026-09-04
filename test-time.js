@@ -537,6 +537,22 @@ eq(Math.round(lh * 60), p1.logged_minutes, 'loggedHours matches variance by-pers
   eq(sch.placeAnchor(aid).placed, 0, 'placing again adds nothing — idempotent');
   eq(sch.removeAnchorBlocks(aid), placed, 'deleting lifts every unanswered block back out');
   db.prepare('DELETE FROM anchors WHERE id = ?').run(aid);
+
+  // every-other-day: placement and the capacity budget count the same days
+  const aid2 = Number(db.prepare(`INSERT INTO anchors (person_id, contract_id, label, dow, time, minutes, cadence)
+    VALUES (1, 10, 'Team call', 1, '09:30', 30, 'alternate')`).run().lastInsertRowid);
+  const alt = sch.placeAnchor(aid2);
+  const anchor2 = db.prepare('SELECT * FROM anchors WHERE id = ?').get(aid2);
+  const contract10 = db.prepare('SELECT * FROM contracts WHERE id = 10').get();
+  eq(alt.placed * 30, cap.anchorMinutes(anchor2, contract10, P),
+    'every-other-day blocks match the minutes the budget charges');
+  const days = db.prepare('SELECT date FROM schedule_blocks WHERE anchor_id = ? ORDER BY date').all(aid2)
+    .map((r) => r.date);
+  const working = cap.workingDates(P);
+  ok(days.every((d, i) => i === 0 || working.indexOf(d) - working.indexOf(days[i - 1]) === 2),
+    'alternate blocks land two working days apart');
+  sch.removeAnchorBlocks(aid2);
+  db.prepare('DELETE FROM anchors WHERE id = ?').run(aid2);
 }
 
 console.log(`\n${checks} checks run\nall time identities hold`);

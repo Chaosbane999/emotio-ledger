@@ -367,7 +367,7 @@ function planPerson(personId, period) {
 
   // fixed commitments the person already has
   const anchorRows = db.prepare(`
-    SELECT an.*, c.name AS contract_name FROM anchors an
+    SELECT an.*, c.name AS contract_name, c.type AS c_type FROM anchors an
       LEFT JOIN contracts c ON c.id = an.contract_id
      WHERE an.person_id = ?`).all(personId);
   for (const a of anchorRows) {
@@ -382,14 +382,16 @@ function planPerson(personId, period) {
       minutes: a.minutes, week, anchored: true, dow, time: a.time,
       anchor_id: a.id,
       contract_id: a.contract_id, contract_name: a.contract_name || '',
-      deliverable_name: a.label, contract_type: 'retainer', allowed,
+      deliverable_name: a.label, contract_type: a.c_type || 'retainer', allowed,
       label: a.contract_name ? `${a.contract_name} — ${a.label}` : a.label,
     });
-    if (cadence === 'daily') {
-      // one sitting every working day inside the window
+    if (cadence === 'daily' || cadence === 'alternate') {
+      // one sitting every working day inside the window — or every other one
+      let nth = 0;
       for (let w = 0; w < weeks; w++) {
         for (const iso of buckets[w]) {
           if (!allowed.has(iso)) continue;
+          if (cadence === 'alternate' && nth++ % 2 !== 0) continue;
           push(w, new Date(`${iso}T00:00:00Z`).getUTCDay());
         }
       }
@@ -668,6 +670,8 @@ function anchorDates(anchor, contract, period) {
   const dates = [];
   if (cadence === 'daily') {
     dates.push(...buckets.flat().filter((iso) => allowed.has(iso)));
+  } else if (cadence === 'alternate') {
+    dates.push(...buckets.flat().filter((iso) => allowed.has(iso)).filter((x, i) => i % 2 === 0));
   } else if (cadence === 'monthly') {
     for (const wk of buckets) {
       const d = wk.find((iso) => allowed.has(iso) && dowOf(iso) === anchor.dow);

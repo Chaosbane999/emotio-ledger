@@ -1052,7 +1052,7 @@ app.post('/api/anchors', ok((req, res) => {
       assertOwnContract(req, cur.contract_id);
     }
   }
-  const cadence = ['daily', 'weekly', 'fortnightly', 'monthly'].includes(b.cadence) ? b.cadence : 'weekly';
+  const cadence = ['daily', 'alternate', 'weekly', 'fortnightly', 'monthly'].includes(b.cadence) ? b.cadence : 'weekly';
   if (b.id) {
     // reposition: lift the old placement, save, place afresh
     schedule.removeAnchorBlocks(Number(b.id));
