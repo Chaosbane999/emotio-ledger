@@ -98,11 +98,8 @@ function monthHours(period) {
 
 /** Total client-facing hours the whole team has, across everyone. */
 function teamHours(period) {
-  const dates = workingDates(period);
-  return round2(activePeople().reduce((s, p) => {
-    const pattern = patternOf(p.id);
-    return s + dates.reduce((s2, iso) => s2 + dayMinutes(p, iso, pattern), 0) / 60;
-  }, 0));
+  const days = workingDays(period);
+  return round2(activePeople().reduce((s, p) => s + days * (p.weekly_hours / 5), 0));
 }
 
 /** ISO week index (0-based) of each working date within the period. */
@@ -159,12 +156,11 @@ const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 function personCapacity(person, period) {
   const dates = workingDates(period);
   const days = dates.length;
-  const pattern = patternOf(person.id);
-  // With a pattern the month is summed date by date — a person off every
-  // Friday loses five days in a five-Friday month, not an average four.
-  const gross = pattern
-    ? dates.reduce((s, iso) => s + dayMinutes(person, iso, pattern), 0) / 60
-    : days * (person.weekly_hours / 5);
+  // Weekly hours are the capacity — how much work can be allocated into the
+  // month. The working pattern says WHEN someone is around, and only governs
+  // where the scheduler places blocks and which days commitments land on; it
+  // never overrides the number of allocatable hours.
+  const gross = days * (person.weekly_hours / 5);
 
   const lv = db.prepare('SELECT annual_hours, sick_hours FROM leave WHERE person_id = ? AND period = ?')
     .get(person.id, period) || { annual_hours: 0, sick_hours: 0 };

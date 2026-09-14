@@ -474,7 +474,8 @@ eq(Math.round(lh * 60), p1.logged_minutes, 'loggedHours matches variance by-pers
 
   // September 2026: 4 Mondays, 5 Tuesdays, 5 Wednesdays, 4 Thursdays, 4 Fridays
   const p3 = db.prepare('SELECT * FROM people WHERE id = 3').get();
-  eq(cap.personCapacity(p3, '2026-09').gross_hours, 119, 'gross sums the pattern date by date: 14x7.5 + 4x3.5');
+  // capacity comes from weekly hours; the pattern only shapes placement
+  eq(cap.personCapacity(p3, '2026-09').gross_hours, 165, 'gross = 22 days x 37.5/5, pattern does not cap it');
 
   // the scheduler keeps every fresh block inside the pattern
   db.prepare(`INSERT INTO allocations (contract_id, period, person_id, deliverable_id, hours)
