@@ -38,7 +38,7 @@ const tools = [
     description: 'Planning months that exist, with working days and clock hours each.',
     inputSchema: { type: 'object', properties: {} } },
   { name: 'list_people',
-    description: 'People with id, department, weekly hours and target. Includes archived people only when asked.',
+    description: 'People with id, department, weekly hours and rate. Utilisation is derived per month (see person_month), not stored. Includes archived people only when asked.',
     inputSchema: { type: 'object', properties: {
       include_archived: { type: 'boolean' } } } },
   { name: 'list_contracts',
@@ -96,7 +96,7 @@ const impl = {
         clock_hours: cap.monthHours(m.period) }));
   },
   list_people({ include_archived } = {}) {
-    return db.prepare(`SELECT id, name, initials, department, weekly_hours, utilisation, rate,
+    return db.prepare(`SELECT id, name, initials, department, weekly_hours, rate,
       active, archived FROM people ${include_archived ? '' : 'WHERE archived = 0'} ORDER BY name`).all();
   },
   list_contracts({ include_archived } = {}) {

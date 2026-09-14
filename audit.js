@@ -55,8 +55,10 @@ for (const P of periods) {
     ok(near(p.gross_hours, gross, 0.02), `${P} ${p.name}: gross matches the working pattern (${p.gross_hours} vs ${gross.toFixed(2)})`);
     ok(near(p.available_hours, Math.max(0, gross - lv.annual_hours - lv.sick_hours), 0.02),
       `${P} ${p.name}: available = gross - leave - sick`);
-    ok(near(p.client_hours, p.available_hours * row.utilisation, 0.02),
-      `${P} ${p.name}: client = available x utilisation`);
+    ok(near(p.client_hours, p.available_hours - p.internal_hours, 0.02),
+      `${P} ${p.name}: sellable = available - internal allocated`);
+    ok(p.available_hours === 0 || near(p.utilisation, p.client_hours / p.available_hours, 0.01),
+      `${P} ${p.name}: utilisation is derived, sellable over available`);
     ok(near(p.client_hours + p.internal_hours, p.available_hours, 0.02),
       `${P} ${p.name}: client + unsold = available`);
     ok(p.available_hours >= -0.001, `${P} ${p.name}: available not negative`);

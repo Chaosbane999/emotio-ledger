@@ -808,15 +808,15 @@ app.post('/api/people', ok((req, res) => {
   const b = req.body;
   const pDept = ['design', 'management'].includes(b.department) ? b.department : 'marketing';
   if (b.id) {
-    db.prepare(`UPDATE people SET name=?, initials=?, weekly_hours=?, rate=?, utilisation=?, active=?,
+    db.prepare(`UPDATE people SET name=?, initials=?, weekly_hours=?, rate=?, active=?,
       archived=?, harvest_user_id=?, department=?, slack_user_id=? WHERE id=?`).run(b.name, b.initials || '', num(b.weekly_hours, 37.5),
-      num(b.rate, 100), Math.min(1, Math.max(0, num(b.utilisation, 0.87))), b.active ? 1 : 0,
+      num(b.rate, 100), b.active ? 1 : 0,
       b.archived ? 1 : 0, b.harvest_user_id ? Number(b.harvest_user_id) : null, pDept,
       slackId(b.slack_user_id), b.id);
   } else {
-    db.prepare(`INSERT INTO people (name, initials, weekly_hours, rate, utilisation, active, harvest_user_id, department, sort_order)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 50)`).run(b.name, b.initials || '', num(b.weekly_hours, 37.5),
-      num(b.rate, 100), Math.min(1, Math.max(0, num(b.utilisation, 0.87))), b.active ? 1 : 0,
+    db.prepare(`INSERT INTO people (name, initials, weekly_hours, rate, active, harvest_user_id, department, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 50)`).run(b.name, b.initials || '', num(b.weekly_hours, 37.5),
+      num(b.rate, 100), b.active ? 1 : 0,
       b.harvest_user_id ? Number(b.harvest_user_id) : null, pDept);
   }
   res.json(listPeople());

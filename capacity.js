@@ -170,22 +170,33 @@ function personCapacity(person, period) {
     .get(person.id, period) || { annual_hours: 0, sick_hours: 0 };
 
   const available = Math.max(0, gross - lv.annual_hours - lv.sick_hours);
-  const clientHours = available * person.utilisation;
-  const internalHours = available - clientHours;
+
+  // Internal time is an input, not a percentage: whatever has actually been
+  // allocated to internal contracts (fixed commitments included) this month
+  // comes off the top, sellable is simply what is left, and utilisation is
+  // derived from that split — nobody sets a target in admin.
+  const internalAlloc = db.prepare(`SELECT COALESCE(SUM(a.hours),0) h
+      FROM allocations a JOIN contracts c ON c.id = a.contract_id
+     WHERE a.person_id = ? AND a.period = ? AND c.archived = 0
+       AND c.status = 'live' AND c.type = 'internal'`).get(person.id, period).h
+    + db.prepare(`SELECT an.minutes, an.dow, an.cadence, c.* FROM anchors an
+        JOIN contracts c ON c.id = an.contract_id
+       WHERE an.person_id = ? AND c.archived = 0 AND c.status = 'live'
+         AND c.type = 'internal'`).all(person.id)
+      .reduce((sum, an) => sum + anchorMinutes(an, an, period) / 60, 0);
+  const internalHours = Math.min(available, internalAlloc);
+  const clientHours = available - internalHours;
 
   return {
     person_id: person.id,
     name: person.name,
     rate: person.rate,
-    utilisation: person.utilisation,
+    utilisation: available > 0 ? round2(clientHours / available) : 0,
     working_days: days,
     gross_hours: round2(gross),
     annual_hours: round2(lv.annual_hours),
     sick_hours: round2(lv.sick_hours),
     available_hours: round2(available),
-    // The utilisation target still governs how much is sellable — that is what
-    // protects headroom. What is left over is simply unsold time, not a budget
-    // internal work is measured against.
     client_hours: round2(clientHours),
     unsold_hours: round2(internalHours),
     internal_hours: round2(internalHours),
@@ -673,7 +684,7 @@ function personView(personId, period) {
   return {
     person: {
       id: person.id, name: person.name, rate: person.rate,
-      utilisation: person.utilisation, weekly_hours: person.weekly_hours,
+      utilisation: cap.utilisation, weekly_hours: person.weekly_hours,
     },
     period,
     capacity: cap,

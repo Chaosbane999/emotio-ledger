@@ -371,15 +371,15 @@ async function renderAgency() {
         <thead><tr>
           <th>Person</th><th class="num">Rate</th>
           <th class="num" title="Working hours this month, after leave and sick">Available</th>
-          <th class="num" title="The share of available hours we sell to clients — available hours x their utilisation target. The rest is internal and training time.">Sellable hours</th>
+          <th class="num" title="Available hours less the internal time allocated to them this month. Change their internal allocations and this moves.">Sellable hours</th>
           <th class="num">Allocated</th>
           <th class="num" title="Hours booked to internal work and training">Internal</th>
-          <th class="num" title="Hours genuinely left: available less client work less internal. Internal counts at whichever is larger — booked, or the allowance the utilisation target sets aside.">Spare</th>
+          <th class="num" title="Hours genuinely left: available less client work less internal.">Spare</th>
           <th style="width:140px">Load</th>
         </tr></thead>
         <tbody>${a.staff.map((p) => `<tr>
           <td><button class="linky" data-person="${p.person_id}">${esc(p.name)}</button>
-            <span class="sub">${pct(p.utilisation * 100)} target${p.shared ? ' · shared with both departments' : ''}</span></td>
+            <span class="sub">${pct(p.utilisation * 100)} utilisation${p.shared ? ' · shared with both departments' : ''}</span></td>
           <td class="num">£${h(p.rate)}</td>
           <td class="num">${hrs(p.available_hours)}</td>
           <td class="num">${hrs(p.client_hours)}</td>
@@ -522,16 +522,16 @@ async function renderPerson() {
       <label for="personPick">Person</label>
       <select id="personPick">${people.map((p) =>
         `<option value="${p.id}"${p.id === S.personId ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
-      <span class="pill mute">${showsMoney() ? `£${h(v.person.rate)}/h · ` : ''}${pct(v.person.utilisation * 100)} target</span>
+      <span class="pill mute">${showsMoney() ? `£${h(v.person.rate)}/h · ` : ''}${pct(v.person.utilisation * 100)} utilisation</span>
       <span class="spacer"></span>
       <button class="btn small" data-goto-schedule="${S.personId}">View schedule</button>
     </div>
 
     <div class="stats">
-      <div class="stat" title="The share of available hours we sell to clients — available hours x their utilisation target. The rest is internal and training time.">
+      <div class="stat" title="Available hours less the internal time allocated to them this month.">
         <span class="k">Sellable hours</span>
         <span class="v">${pairH(c.client_hours)}</span>
-        <span class="s">${pct(c.utilisation * 100)} of ${hrs(c.available_hours)} available after leave</span></div>
+        <span class="s">${hrs(c.available_hours)} available less ${hrs(c.internal_hours)} internal</span></div>
       <div class="stat"><span class="k">Allocated</span>
         <span class="v">${pairH(t.client_hours)}</span>
         <span class="s">${pct(t.load_pct)} of their sellable hours</span></div>
@@ -1208,7 +1208,7 @@ async function renderInternal() {
         <p class="muted">Internal time is not sold, so it has no contracted value and nothing to
         balance against — these are simply the hours booked.
         ${busiest && busiest.alloc ? `${esc(busiest.name)} carries the most at ${hrs(busiest.alloc)}.` : ''}
-        Sellable hours are governed separately by each person's utilisation target on the Settings page.</p>
+        Every hour allocated here comes straight off that person's sellable hours for the month.</p>
       </div>
     </div>
 
@@ -1618,7 +1618,7 @@ async function renderSettings() {
       </header>
       <div class="scroll"><table>
         <thead><tr><th>Name</th><th>Initials</th><th>Department</th><th class="num">Hours/week</th><th class="num">Rate £/h</th>
-          <th class="num">Utilisation</th><th class="num">Units/h</th><th>Slack ID</th><th>Active</th><th></th></tr></thead>
+          <th class="num">Units/h</th><th>Slack ID</th><th>Active</th><th></th></tr></thead>
         <tbody>${S.boot.people.map((p) => `<tr data-p="${p.id}" class="${p.archived ? 'archived' : ''}">
           <td><input type="text" class="pn" value="${esc(p.name)}" style="width:150px"></td>
           <td><input type="text" class="pi" value="${esc(p.initials)}" style="width:56px"></td>
@@ -1628,7 +1628,6 @@ async function renderSettings() {
             <option value="management"${p.department === 'management' ? ' selected' : ''}>Management — shared</option></select></td>
           <td class="num"><input type="number" class="pw" step="0.5" min="0" value="${h(p.weekly_hours)}"></td>
           <td class="num"><input type="number" class="pr" step="0.1" min="0" value="${h(p.rate)}"></td>
-          <td class="num"><input type="number" class="pu" step="1" min="0" max="100" value="${Math.round(p.utilisation * 100)}"></td>
           <td class="num">${h(p.rate / st.standard_rate)}</td>
           <td><input type="text" class="psl" value="${esc(p.slack_user_id || '')}" placeholder="U012ABCDEF"
             title="Slack profile → ⋮ → Copy member ID" style="width:110px"></td>
@@ -1648,7 +1647,6 @@ async function renderSettings() {
           <input type="text" id="npIni" placeholder="Ini" style="width:56px">
           <input type="number" id="npWk" value="37.5" step="0.5" title="hours/week">
           <input type="number" id="npRate" value="100" step="0.1" title="£/hour">
-          <input type="number" id="npUtil" value="87" step="1" title="utilisation %">
           <button class="btn small primary" id="addPerson">Add</button></div>
       </div>
     </div>
@@ -1903,7 +1901,7 @@ function wireSettings() {
       id: Number(tr.dataset.p),
       name: $('.pn', tr).value, initials: $('.pi', tr).value,
       weekly_hours: Number($('.pw', tr).value), rate: Number($('.pr', tr).value),
-      utilisation: Number($('.pu', tr).value) / 100, active: $('.pa', tr).checked,
+      active: $('.pa', tr).checked,
       department: $('.pd', tr).value, slack_user_id: $('.psl', tr).value.trim() } });
     toast('Person saved.'); renderSettings();
   }));
@@ -1944,7 +1942,7 @@ function wireSettings() {
     if (!name) return toast('Name required.', true);
     S.boot.people = await api('/api/people', { body: {
       name, initials: $('#npIni').value.trim(), weekly_hours: Number($('#npWk').value),
-      rate: Number($('#npRate').value), utilisation: Number($('#npUtil').value) / 100, active: true } });
+      rate: Number($('#npRate').value), active: true } });
     toast('Person added.'); renderSettings();
   });
 
