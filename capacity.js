@@ -179,7 +179,7 @@ function personCapacity(person, period) {
       FROM allocations a JOIN contracts c ON c.id = a.contract_id
      WHERE a.person_id = ? AND a.period = ? AND c.archived = 0
        AND c.status = 'live' AND c.type = 'internal'`).get(person.id, period).h
-    + db.prepare(`SELECT an.minutes, an.dow, an.cadence, c.* FROM anchors an
+    + db.prepare(`SELECT an.person_id, an.minutes, an.dow, an.cadence, c.* FROM anchors an
         JOIN contracts c ON c.id = an.contract_id
        WHERE an.person_id = ? AND c.archived = 0 AND c.status = 'live'
          AND c.type = 'internal'`).all(person.id)
