@@ -587,6 +587,10 @@ async function renderPerson() {
               data-d="${d.id}" value="${h(line ? line.hours : 0)}"></td>
             <td class="num">${line ? units(line.units) : ''}</td></tr>`;
         }).join('')}
+        ${internalLines.filter((l) => l.anchor).map((l) => `<tr>
+          <td>${esc(l.deliverable_name)} <span class="sub" title="Edited on the contract's Fixed commitments">from Fixed commitments</span></td>
+          <td class="num">${hrs(l.hours)}</td>
+          <td class="num">${units(l.units)}</td></tr>`).join('')}
         <tr class="total"><td>Total</td><td class="num">${hrs(t.internal_hours)}</td><td></td></tr></tbody>
       </table></div>
     </div>
