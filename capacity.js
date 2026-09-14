@@ -675,6 +675,23 @@ function personView(personId, period) {
     units: round2(toUnits(r.hours, person.rate)),
   }));
 
+  // Fixed commitments are load like any allocation — the agency page counts
+  // them, so this page must too, or the two disagree about spare. They join
+  // the lines as read-only rows, which keeps every visible total honest.
+  const anchorRows = db.prepare(`SELECT an.person_id, an.minutes, an.dow, an.cadence,
+      an.label AS anchor_label, c.*
+      FROM anchors an JOIN contracts c ON c.id = an.contract_id
+     WHERE an.person_id = ? AND c.archived = 0 AND c.status = 'live'`).all(personId);
+  for (const an of anchorRows) {
+    const hours = round2(anchorMinutes(an, an, period) / 60);
+    if (!hours) continue;
+    lines.push({
+      contract_id: an.id, contract_name: an.name, type: an.type,
+      deliverable_id: null, deliverable_name: `${an.anchor_label} (fixed)`,
+      hours, units: round2(toUnits(hours, person.rate)), anchor: true,
+    });
+  }
+
   const clientHours = lines.filter((l) => l.type !== 'internal').reduce((s, l) => s + l.hours, 0);
   const internalHours = lines.filter((l) => l.type === 'internal').reduce((s, l) => s + l.hours, 0);
   const actualTotal = db.prepare(

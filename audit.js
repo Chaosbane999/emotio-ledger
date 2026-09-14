@@ -59,6 +59,9 @@ for (const P of periods) {
       `${P} ${p.name}: sellable = available - internal allocated`);
     ok(p.available_hours === 0 || near(p.utilisation, p.client_hours / p.available_hours, 0.01),
       `${P} ${p.name}: utilisation is derived, sellable over available`);
+    const pv = cap.personView(p.person_id, P);
+    ok(near(pv.totals.spare_hours, p.spare_hours, 0.01),
+      `${P} ${p.name}: person page spare agrees with the agency page (${pv.totals.spare_hours} vs ${p.spare_hours})`);
     ok(near(p.client_hours + p.internal_hours, p.available_hours, 0.02),
       `${P} ${p.name}: client + unsold = available`);
     ok(p.available_hours >= -0.001, `${P} ${p.name}: available not negative`);
