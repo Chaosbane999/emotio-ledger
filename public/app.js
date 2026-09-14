@@ -1157,8 +1157,14 @@ async function renderInternal() {
     .filter((p) => withHours.has(p.id) && !a.staff.some((s) => s.person_id === p.id))
     .map((p) => ({ person_id: p.id, name: p.name, available_hours: 0, gone: true }));
 
+  // fixed commitments on the internal contract (deliverable-less anchor lines)
+  const anchorOf = (pid) => summary.lines
+    .filter((l) => l.person_id === pid && l.deliverable_id === null)
+    .reduce((s, l) => s + l.hours, 0);
+
   const rows = [...a.staff, ...extra].map((p) => ({
-    ...p, alloc: kinds.reduce((s, d) => s + hoursOf(p.person_id, d.id), 0),
+    ...p, anchor: anchorOf(p.person_id),
+    alloc: kinds.reduce((s, d) => s + hoursOf(p.person_id, d.id), 0) + anchorOf(p.person_id),
   }));
 
   const total = rows.reduce((s, r) => s + r.alloc, 0);
@@ -1174,6 +1180,9 @@ async function renderInternal() {
         return `<div class="stat"><span class="k">${esc(d.name)}</span><span class="v">${hrs(dh)}</span>
           <span class="s">${pct(total ? (dh / total) * 100 : 0)} of internal time</span></div>`;
       }).join('')}
+      ${rows.some((r) => r.anchor) ? `<div class="stat"><span class="k">Fixed commitments</span>
+        <span class="v">${hrs(rows.reduce((s, r) => s + r.anchor, 0))}</span>
+        <span class="s">${pct(total ? (rows.reduce((s, r) => s + r.anchor, 0) / total) * 100 : 0)} of internal time</span></div>` : ''}
     </div>
 
     ${stale.length ? `<div class="banner"><div>
@@ -1188,12 +1197,14 @@ async function renderInternal() {
         <thead><tr>
           <th>Person</th>
           ${kinds.map((d) => `<th class="num person">${esc(d.name)}</th>`).join('')}
+          <th class="num" title="From this contract's Fixed commitments — edit them on the contract page">Fixed commitments</th>
           <th class="num">Total</th><th class="num">Share of their month</th>
         </tr></thead>
         <tbody>${rows.map((r) => `<tr class="${r.gone ? 'archived' : ''}">
           <td><button class="linky" data-person="${r.person_id}">${esc(r.name)}</button></td>
           ${kinds.map((d) => `<td class="num person"><input type="number" class="inh" step="0.25" min="0"
             data-p="${r.person_id}" data-d="${d.id}" value="${h(hoursOf(r.person_id, d.id))}"></td>`).join('')}
+          <td class="num muted">${r.anchor ? hrs(r.anchor) : '—'}</td>
           <td class="num"><b>${hrs(r.alloc)}</b></td>
           <td class="num">${r.gone || !r.available_hours ? '—'
             : pct((r.alloc / r.available_hours) * 100)}</td>
@@ -1201,6 +1212,7 @@ async function renderInternal() {
         <tr class="total">
           <td>Total</td>
           ${kinds.map((d) => `<td class="num person">${hrs(rows.reduce((s, r) => s + hoursOf(r.person_id, d.id), 0))}</td>`).join('')}
+          <td class="num">${hrs(rows.reduce((s, r) => s + r.anchor, 0))}</td>
           <td class="num">${hrs(total)}</td><td class="num"></td>
         </tr></tbody>
       </table></div>
