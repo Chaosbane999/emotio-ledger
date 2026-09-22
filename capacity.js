@@ -457,6 +457,7 @@ function agencySummary(period, department) {
   // department; people have a home. Management people are shared — both
   // departments can call on them, so they appear (and their capacity counts)
   // in each tab, marked as such. Unscoped remains the whole agency.
+  const allActiveIds = new Set(activePeople().map((p) => p.id));
   const people = activePeople().filter((p) =>
     !department
     || (p.department || 'marketing') === department
@@ -528,7 +529,7 @@ function agencySummary(period, department) {
         if (workDept !== department) {
           elsewhereByPerson.set(r.person_id, (elsewhereByPerson.get(r.person_id) || 0) + r.h);
         }
-      } else if (workDept === department) {
+      } else if (workDept === department && allActiveIds.has(r.person_id)) {
         borrowedBy.set(r.person_id, (borrowedBy.get(r.person_id) || 0) + r.h);
       }
     }
@@ -623,11 +624,17 @@ function agencySummary(period, department) {
       // clock hours on the live book, whoever holds them
       contracted_hours: round2(live.reduce((s, x) => s + x.summary.people_hours, 0)),
 
-      // Hours on live contracts held by someone no longer in the capacity list.
-      // They inflate the clock-hours figure while contributing no capacity,
-      // which is exactly the gap that made the two tiles disagree.
+      // Hours on live contracts held by someone genuinely off the team —
+      // archived or inactive. They inflate the clock-hours figure while
+      // contributing no capacity, which is the gap that made the two tiles
+      // disagree. An active person from the OTHER department is not an
+      // orphan: that is a borrowed hand, listed in its own card.
       orphan_hours: round2(live.reduce((s, x) => s + x.summary.lines
-        .filter((l) => !staff.some((p) => p.person_id === l.person_id))
+        .filter((l) => l.person_id && !allActiveIds.has(l.person_id))
+        .reduce((n, l) => n + l.hours, 0), 0)),
+      borrowed_hours: round2(live.reduce((s, x) => s + x.summary.lines
+        .filter((l) => l.person_id && allActiveIds.has(l.person_id)
+          && !staff.some((p) => p.person_id === l.person_id))
         .reduce((n, l) => n + l.hours, 0), 0)),
       // hours sitting on the contracts that breach their value
       overrun_hours: round2(live.filter((x) => x.summary.variance < -0.005)

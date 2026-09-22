@@ -455,7 +455,7 @@ async function renderAgency() {
     $('#gridCount').textContent = label ? `${shown} shown · ${label}` : '';
   };
 
-  const activeIds = new Set(a.staff.map((p) => p.person_id));
+  const activeIds = new Set(S.boot.people.filter((p) => p.active && !p.archived).map((p) => p.id));
   const idsFor = (kind) => new Set((
     kind === 'over' ? overrun
       : kind === 'under' ? underrun

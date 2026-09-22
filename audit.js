@@ -139,6 +139,22 @@ for (const P of periods) {
   // the clock-hours tiles must reconcile through the orphan figure
   ok(near(t.contracted_hours - t.orphan_hours, t.allocated_hours, 0.02),
     `${P} totals: live clock hours - orphan = allocated (${t.contracted_hours} - ${t.orphan_hours} vs ${t.allocated_hours})`);
+  ok(t.borrowed_hours === 0, `${P} totals: nobody is borrowed on the unscoped view`);
+  for (const dept of ['marketing', 'design']) {
+    const d = cap.agencySummary(P, dept);
+    const held = d.contracts.filter((c) => c.status === 'live' && c.type !== 'internal')
+      .reduce((s, c) => s + c.lines.filter((l) => l.person_id && d.staff.some((p) => p.person_id === l.person_id))
+        .reduce((n, l) => n + l.hours, 0), 0);
+    ok(near(d.totals.contracted_hours, d.totals.orphan_hours + d.totals.borrowed_hours + held, 0.02),
+      `${P} ${dept}: live clock hours = orphan + borrowed + held by this tab's staff`);
+    const listed = d.borrowed.reduce((s, b) => s + b.hours, 0);
+    ok(listed <= d.totals.borrowed_hours + 0.02,
+      `${P} ${dept}: borrowed hands card never exceeds borrowed hours (${listed} vs ${d.totals.borrowed_hours})`);
+    for (const b of d.borrowed) {
+      ok(db.prepare('SELECT active, archived FROM people WHERE id = ?').get(b.person_id)?.active === 1,
+        `${P} ${dept}: borrowed hand ${b.name} is an active person`);
+    }
+  }
 
   // and on a book where every retainer balances, contracted must equal assigned
   if (retainers.every((c) => c.balanced)) {
