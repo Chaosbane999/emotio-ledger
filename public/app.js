@@ -568,7 +568,7 @@ async function renderPerson() {
             ${uTd(g.units)}
             <td>${cx ? `<div class="dual"><span class="k">Contract</span>${capBar(cx.logged_hours, cx.allocated_hours)}
                 <span class="sub">${hrs(cx.logged_hours)} of ${hrs(cx.allocated_hours)}</span></div>
-              <div class="dual"><span class="k">${S.me?.person_id === v.person.id ? 'You' : 'Them'}</span>${capBar(cx.my_logged_hours, g.hours)}
+              <div class="dual"><span class="k">You</span>${capBar(cx.my_logged_hours, g.hours)}
                 <span class="sub ${cx.my_logged_hours > g.hours ? 'bad' : ''}">${hrs(cx.my_logged_hours)} of ${hrs(g.hours)} · <b>${cx.my_logged_hours > g.hours
                   ? `${hrs(cx.my_logged_hours - g.hours)} over` : `${hrs(g.hours - cx.my_logged_hours)} left`}</b> this month</span></div>` : ''}</td>
             <td>${cx ? cx.people.map((tp) => `<span class="tmate" title="${esc(tp.name)} — ${hrs(tp.hours)}">${esc(tp.initials || tp.name.slice(0, 2))}</span>`).join('') : ''}</td>
