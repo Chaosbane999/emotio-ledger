@@ -37,10 +37,14 @@ function carveLunch(start, end) {
  * day to their own hours; no pattern means the agency-standard day. A day
  * the pattern leaves out has no window at all.
  */
-function personWindows(pattern, iso) {
-  if (!pattern) return dayWindows();
+function personWindows(pattern, iso, noLunch = false) {
+  if (!pattern) {
+    if (!noLunch) return dayWindows();
+    return [[toMin(get('work_start') || '09:00'), toMin(get('work_end') || '17:30')]];
+  }
   const d = pattern.get(cap.isoDow(iso));
   if (!d) return [];
+  if (pattern.noLunch || noLunch) return [[toMin(d.start), toMin(d.end)]];
   return carveLunch(toMin(d.start), toMin(d.end));
 }
 
@@ -274,7 +278,7 @@ function planPerson(personId, period) {
     for (const iso of week) {
       dayOf.set(iso, {
         iso,
-        free: personWindows(pattern, iso).map(([a, b]) => [a, b]),
+        free: personWindows(pattern, iso, Boolean(person.no_lunch)).map(([a, b]) => [a, b]),
         capMin: pattern ? cap.dayMinutes(person, iso, pattern) : perDayCapMin,
         used: 0,
         byContract: new Map(),

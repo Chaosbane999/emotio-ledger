@@ -335,7 +335,7 @@ const okAsync = (fn) => async (req, res) => {
 
 const listPeople = (withArchived) => db.prepare(
   `SELECT id, harvest_user_id, slack_user_id, name, initials, weekly_hours, rate, utilisation, colour,
-          active, sort_order, archived, email, role, department,
+          active, sort_order, archived, email, role, department, no_lunch,
           EXISTS (SELECT 1 FROM person_days pd WHERE pd.person_id = people.id) AS has_pattern,
           password_hash != '' AS has_login
      FROM people ${withArchived ? '' : 'WHERE archived = 0'}
@@ -1136,6 +1136,9 @@ app.post('/api/person-days/:id', ok((req, res) => {
   if (!db.prepare('SELECT id FROM people WHERE id = ?').get(id)) throw new Error('no such person');
   const b = req.body || {};
 
+  if (b.no_lunch !== undefined) {
+    db.prepare('UPDATE people SET no_lunch = ? WHERE id = ?').run(b.no_lunch ? 1 : 0, id);
+  }
   if (b.clear) {
     db.prepare('DELETE FROM person_days WHERE person_id = ?').run(id);
     return res.json({ ok: true, days: [], people: listPeople() });

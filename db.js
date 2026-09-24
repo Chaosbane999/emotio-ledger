@@ -287,6 +287,11 @@ db.exec(`
    WHERE deliverable_id IS NULL AND block_id IS NOT NULL;
 `);
 
+// migration: a person whose day has no lunch break in it — mornings only, say —
+// keeps the whole of their pattern; the agency lunch is not carved out.
+try { db.exec('ALTER TABLE people ADD COLUMN no_lunch INTEGER NOT NULL DEFAULT 0'); }
+catch (e) { /* already there */ }
+
 // migration: people belong to a department too, so the agency view can show
 // capacity and load per department, not just contracts.
 try { db.exec("ALTER TABLE people ADD COLUMN department TEXT NOT NULL DEFAULT 'marketing'"); }

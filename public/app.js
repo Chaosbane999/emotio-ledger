@@ -229,6 +229,12 @@ function shiftPeriodClient(period, delta) {
 // 1 — Agency. Units lead.
 // ---------------------------------------------------------------------------
 
+/** Person pickers start on whoever is signed in, when they are in the list. */
+function defaultPersonId(people) {
+  const me = S.me?.person_id;
+  return (me && people.some((p) => p.id === me)) ? me : people[0]?.id;
+}
+
 function capBar(usedH, capH) {
   const over = Math.max(0, usedH - capH);
   const used = Math.min(usedH, capH);
@@ -490,7 +496,7 @@ async function renderAgency() {
 async function renderPerson() {
   const all = S.boot.people.filter((p) => p.active);
   const people = S.me?.role === 'admin' ? all : all.filter((p) => p.id === S.me.person_id);
-  if (!S.personId || !people.some((p) => p.id === S.personId)) S.personId = people[0]?.id;
+  if (!S.personId || !people.some((p) => p.id === S.personId)) S.personId = defaultPersonId(people);
   if (!S.personId) { view().innerHTML = '<p class="muted">No active people yet — add some in Settings.</p>'; return; }
 
   const v = await api(`/api/person/${S.personId}${P()}`);
@@ -550,7 +556,7 @@ async function renderPerson() {
       <header><h2>Client work</h2><p>One row per contract — click to see the deliverables inside</p></header>
       <div class="scroll"><table>
         <thead><tr><th></th><th>Contract</th><th class="num">My hours</th>${uTh()}
-          <th style="width:150px" title="The whole contract's month — everyone's logged hours against everyone's allocated hours">Contract progress</th>
+          <th style="width:190px" title="Top: the whole contract's month — everyone's logged hours against everyone's allocated. Bottom: this person's own logged hours against their allocation, with what they have left.">Progress</th>
           <th title="Everyone working this contract this month">Team</th></tr></thead>
         <tbody>${byContract.length ? byContract.map((g) => {
           const cx = v.contract_context?.[g.contract_id];
@@ -560,8 +566,11 @@ async function renderPerson() {
             <td><button class="linky" data-contract="${g.contract_id}">${esc(g.name)}</button></td>
             <td class="num"><b>${hrs(g.hours)}</b></td>
             ${uTd(g.units)}
-            <td>${cx ? `${capBar(cx.logged_hours, cx.allocated_hours)}
-              <span class="sub">${hrs(cx.logged_hours)} of ${hrs(cx.allocated_hours)}</span>` : ''}</td>
+            <td>${cx ? `<div class="dual"><span class="k">Contract</span>${capBar(cx.logged_hours, cx.allocated_hours)}
+                <span class="sub">${hrs(cx.logged_hours)} of ${hrs(cx.allocated_hours)}</span></div>
+              <div class="dual"><span class="k">${S.me?.person_id === v.person.id ? 'You' : 'Them'}</span>${capBar(cx.my_logged_hours, g.hours)}
+                <span class="sub ${cx.my_logged_hours > g.hours ? 'bad' : ''}">${hrs(cx.my_logged_hours)} of ${hrs(g.hours)} · <b>${cx.my_logged_hours > g.hours
+                  ? `${hrs(cx.my_logged_hours - g.hours)} over` : `${hrs(g.hours - cx.my_logged_hours)} left`}</b> this month</span></div>` : ''}</td>
             <td>${cx ? cx.people.map((tp) => `<span class="tmate" title="${esc(tp.name)} — ${hrs(tp.hours)}">${esc(tp.initials || tp.name.slice(0, 2))}</span>`).join('') : ''}</td>
           </tr>`;
         }).map((x, i) => x + `
@@ -1303,7 +1312,7 @@ const cap2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 async function renderSchedule() {
   const everyone = S.boot.people.filter((p) => p.active && !p.archived);
   const people = S.me?.role === 'admin' ? everyone : everyone.filter((p) => p.id === S.me.person_id);
-  if (!S.personId || !people.some((p) => p.id === S.personId)) S.personId = people[0]?.id;
+  if (!S.personId || !people.some((p) => p.id === S.personId)) S.personId = defaultPersonId(people);
   if (!S.personId) { view().innerHTML = '<p class="muted">No active people.</p>'; return; }
 
   const plan = await api(`/api/schedule/${S.personId}${P()}`);
@@ -1672,19 +1681,22 @@ async function renderSettings() {
         <p>Who works when. Capacity, the scheduler and the Slack status all follow this</p></header>
       <div class="body" style="border-bottom:1px solid var(--rule)">
         <p class="muted">Each cell is a day's hours as <span class="mono">09:00-17:30</span>; blank
-        means a day off. Lunch comes out automatically, the same as everywhere else. Saving a pattern
-        re-derives the person's hours/week; <b>Reset</b> returns them to the standard week (then set
-        their hours/week above yourself — it keeps the pattern's figure). Someone on
-        3.5 days might be <span class="mono">09:00-17:30</span> Monday to Wednesday and
+        means a day off. The agency lunch is carved out of every day unless <b>No lunch</b> is ticked —
+        for someone on mornings only, say. The pattern says <em>when</em> a person is around; their
+        hours/week (set on the People row above) say how much work they can take. <b>Reset</b>
+        returns them to the standard week. Someone on 3.5 days might be
+        <span class="mono">09:00-17:30</span> Monday to Wednesday and
         <span class="mono">09:00-13:00</span> on Thursday, with Friday blank.</p>
       </div>
       <div class="scroll"><table>
         <thead><tr><th>Person</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th>
+          <th title="Tick for someone whose day has no lunch break in it">No lunch</th>
           <th class="num">Hours/wk</th><th></th></tr></thead>
         <tbody>${S.boot.people.filter((p) => !p.archived && p.active).map((p) => `<tr data-wp="${p.id}">
           <td class="name">${esc(p.name)}
             ${patterns[p.id] ? '<span class="pill ok">custom</span>' : '<span class="pill mute">standard</span>'}</td>
           ${[1, 2, 3, 4, 5].map((d) => patternCell(p, d)).join('')}
+          <td><input type="checkbox" class="wpNL"${p.no_lunch ? ' checked' : ''}></td>
           <td class="num">${h(p.weekly_hours)}</td>
           <td class="num" style="white-space:nowrap">
             <button class="btn small primary wpSave">Save</button>
@@ -1973,7 +1985,7 @@ function wireSettings() {
       if (!m) return toast(`Use 09:00-17:30 or leave the day blank (${['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'][inp.dataset.dow]}).`, true);
       days.push({ dow: Number(inp.dataset.dow), start: m[1], end: m[2] });
     }
-    const r = await api(`/api/person-days/${tr.dataset.wp}`, { body: { days } });
+    const r = await api(`/api/person-days/${tr.dataset.wp}`, { body: { days, no_lunch: $('.wpNL', tr).checked } });
     S.boot.people = r.people;
     toast('Pattern saved. Weekly hours are unchanged — set those on the People row.'); renderSettings();
   }));
@@ -2242,7 +2254,7 @@ function assignSelects(assignments, cId, dId) {
 async function renderTime() {
   const all = S.boot.people.filter((p) => p.active);
   const people = S.me?.role === 'admin' ? all : all.filter((p) => p.id === S.me.person_id);
-  if (!S.personId || !people.some((p) => p.id === S.personId)) S.personId = people[0]?.id;
+  if (!S.personId || !people.some((p) => p.id === S.personId)) S.personId = defaultPersonId(people);
   if (!S.personId) { view().innerHTML = '<p class="muted">No active people yet.</p>'; return; }
   if (!S.timeDate) S.timeDate = todayIso();
   // the page carries one month at a time: showing a day from August under a
@@ -2760,13 +2772,11 @@ function renderTimeWeek(v) {
           <span>${b.anchored ? '📌 ' : ''}${esc(b.label)}</span><em>${hm(b.minutes)}${b.status === 'done' ? ' ✓' : b.status === 'skipped' ? ' ✗' : ''}</em>
           ${b.status === 'pending' && !b.anchored ? `<div class="tw-resize" data-kind="gresize" data-id="${b.id}"></div>` : ''}
         </div>`).join('')}
-        ${solids.map((e) => { const locked = e.date < todayIso(); return `<div class="tw-entry ${e.source}${locked ? ' locked' : ''}" data-kind="entry" data-id="${e.id}"
-            style="${pos(e.start, e.minutes)}" title="${locked
-              ? 'This day has passed — its time is fixed. Click to override a mistake.'
-              : `logged: ${esc(e.contract_name || '')} (${hm(e.minutes)})`}${esc(usageTitle(e.contract_id, e.deliverable_id, v.usage))}">
-          <span>${locked ? '🔒 ' : ''}${esc(e.contract_name || '')}${e.deliverable_name ? ` — ${esc(e.deliverable_name)}` : ''}</span>
+        ${solids.map((e) => { const past = e.date < todayIso(); return `<div class="tw-entry ${e.source}${past ? ' locked' : ''}" data-kind="entry" data-id="${e.id}"
+            style="${pos(e.start, e.minutes)}" title="logged: ${esc(e.contract_name || '')} (${hm(e.minutes)})${past ? ' — a past day: drag or resize to correct it' : ''}${esc(usageTitle(e.contract_id, e.deliverable_id, v.usage))}">
+          <span>${esc(e.contract_name || '')}${e.deliverable_name ? ` — ${esc(e.deliverable_name)}` : ''}</span>
           <em>${hm(e.minutes)}</em>${e.note ? `<i>“${esc(e.note)}”</i>` : ''}
-          ${locked ? '' : `<div class="tw-resize" data-kind="resize" data-id="${e.id}"></div>`}
+          <div class="tw-resize" data-kind="resize" data-id="${e.id}"></div>
         </div>`; }).join('')}
       </div>
     </div>`;
@@ -2828,15 +2838,6 @@ function wireWeekDrag(v, lo) {
       timeApi('/confirm', { body: { block_id: Number(t.dataset.id) } })
         .then(() => renderTime()).catch((err) => toast(err.message, true));
       return;
-    }
-    if (kind === 'entry') {
-      const e = v.entries.find((x) => x.id === Number(t.dataset.id));
-      if (e && e.date < todayIso()) {
-        // the past doesn't drag — it opens, locked, for a deliberate override
-        drag = { kind: 'locked', entry: e, startY: ev.clientY, moved: false };
-        ev.preventDefault();
-        return;
-      }
     }
     if (kind === 'ghost') {
       const b = v.blocks.find((x) => x.id === Number(t.dataset.id));
@@ -2927,7 +2928,8 @@ function wireWeekDrag(v, lo) {
       }
       if (d.kind === 'resize' && d.mins) {
         const delta = d.mins - d.entry.minutes;
-        await timeApi(`/entries/${d.id}`, { method: 'PATCH', body: { minutes: d.mins } });
+        await timeApi(`/entries/${d.id}`, { method: 'PATCH',
+          body: { minutes: d.mins, override: d.entry.date < todayIso() } });
         await renderTime();
         maybeRebalance(d.entry.contract_id, d.entry.date, delta, d.entry.block_id);
       } else if (d.kind === 'gresize' && d.mins) {
@@ -2935,8 +2937,11 @@ function wireWeekDrag(v, lo) {
         await renderTime();
         maybeRebalance(d.block.contract_id, d.block.date, r.delta, d.block.id);
       } else if (d.kind === 'entry' && d.slot) {
+        const e = v.entries.find((x) => x.id === d.id);
+        // a past day still drags — the drop is the deliberate correction
         await timeApi(`/entries/${d.id}`, { method: 'PATCH',
-          body: { date: d.slot.date, start: fromMinOfDay(d.slot.min) } });
+          body: { date: d.slot.date, start: fromMinOfDay(d.slot.min),
+            override: Boolean(e && e.date < todayIso()) || d.slot.date < todayIso() } });
         renderTime();
       } else if (d.kind === 'ghost' && d.slot) {
         const b = v.blocks.find((x) => x.id === d.id);

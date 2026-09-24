@@ -477,6 +477,15 @@ eq(Math.round(lh * 60), p1.logged_minutes, 'loggedHours matches variance by-pers
   // capacity comes from weekly hours; the pattern only shapes placement
   eq(cap.personCapacity(p3, '2026-09').gross_hours, 165, 'gross = 22 days x 37.5/5, pattern does not cap it');
 
+  // no lunch: the day stays whole for capacity-per-day and for the scheduler
+  db.prepare('UPDATE people SET no_lunch = 1 WHERE id = 3').run();
+  const patNL = cap.patternOf(3);
+  eq(patNL.get(1).minutes, 510, 'no-lunch pattern day keeps the full 8.5h');
+  eq(patNL.get(4).minutes, 210, 'the half day is unchanged by the lunch rule');
+  const winNL = sch._internal ? sch._internal.personWindows(patNL, '2026-09-07') : null;
+  if (winNL) eq(winNL.length, 1, 'no-lunch day is one unbroken window');
+  db.prepare('UPDATE people SET no_lunch = 0 WHERE id = 3').run();
+
   // the scheduler keeps every fresh block inside the pattern
   db.prepare(`INSERT INTO allocations (contract_id, period, person_id, deliverable_id, hours)
     VALUES (10, '2026-09', 3, 100, 20)`).run();

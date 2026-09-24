@@ -424,7 +424,11 @@ tr.tentry.skip td { opacity: 0.5; }
   width: 18px; height: 18px; font-size: 11px; line-height: 1; cursor: pointer;
   opacity: 0; transition: opacity .12s; }
 .tw-ghost:hover .tw-tick { opacity: 1; }
-.tw-entry.locked { cursor: pointer; opacity: 0.82;
+.dual { display: flex; align-items: center; gap: 6px; }
+.dual .k { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); width: 52px; flex: none; }
+.dual .bar { flex: 1; }
+.dual .sub { white-space: nowrap; }
+.tw-entry.locked { opacity: 0.82;
   background: color-mix(in srgb, var(--accent) 70%, #555); }
 
 .rebrow { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 13px; cursor: pointer; }

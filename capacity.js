@@ -68,14 +68,17 @@ function patternOf(personId) {
   if (!rows.length) return null;
   const lunchS = toMinutes(get('lunch_start') || '13:00');
   const lunchE = lunchS + Number(get('lunch_minutes') || 30);
+  const noLunch = Boolean(db.prepare('SELECT no_lunch FROM people WHERE id = ?').get(personId)?.no_lunch);
   const days = new Map();
   for (const r of rows) {
     const s = toMinutes(r.start_time), e = toMinutes(r.end_time);
     if (e <= s) continue;
-    const lunchOverlap = Math.max(0, Math.min(e, lunchE) - Math.max(s, lunchS));
+    const lunchOverlap = noLunch ? 0 : Math.max(0, Math.min(e, lunchE) - Math.max(s, lunchS));
     days.set(r.dow, { start: r.start_time, end: r.end_time, minutes: (e - s) - lunchOverlap });
   }
-  return days.size ? days : null;
+  if (!days.size) return null;
+  days.noLunch = noLunch;   // the scheduler reads this to leave the day whole
+  return days;
 }
 
 /** Net working minutes this person has on this date. */
@@ -721,9 +724,13 @@ function personView(personId, period) {
         const loggedMin = db.prepare(`SELECT COALESCE(SUM(minutes),0) m FROM time_entries
            WHERE contract_id = ? AND date LIKE ? AND source != 'skip'`)
           .get(cid, `${period}-%`).m;
+        const myMin = db.prepare(`SELECT COALESCE(SUM(minutes),0) m FROM time_entries
+           WHERE contract_id = ? AND person_id = ? AND date LIKE ? AND source != 'skip'`)
+          .get(cid, personId, `${period}-%`).m;
         return [cid, {
           allocated_hours: round2(alloc.reduce((s2, a2) => s2 + a2.h, 0)),
           logged_hours: round2(loggedMin / 60),
+          my_logged_hours: round2(myMin / 60),
           people: alloc.map((a2) => ({ id: a2.id, name: a2.name, initials: a2.initials, hours: round2(a2.h) })),
         }];
       })),
