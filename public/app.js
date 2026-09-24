@@ -1627,6 +1627,23 @@ async function renderSettings() {
   const st = S.boot.settings;
   const DOW = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
+  // what the pattern is worth in a week — net of the agency lunch unless the
+  // person has no lunch. Shown beside their hours/week so the two can be
+  // compared, and adopted with one click; never applied silently.
+  const toMin = (t) => { const [hh, mm] = String(t).split(':').map(Number); return hh * 60 + mm; };
+  const patternWeekHours = (p) => {
+    const std = [{ start: st.work_start, end: st.work_end }];
+    const days = patterns[p.id] || [1, 2, 3, 4, 5].map(() => std[0]);
+    const lS = toMin(st.lunch_start || '13:00'); const lE = lS + Number(st.lunch_minutes || 30);
+    let mins = 0;
+    for (const d of days) {
+      const a = toMin(d.start); const b = toMin(d.end);
+      if (b <= a) continue;
+      mins += (b - a) - (p.no_lunch ? 0 : Math.max(0, Math.min(b, lE) - Math.max(a, lS)));
+    }
+    return Math.round(mins / 60 * 100) / 100;
+  };
+
   // one cell per weekday: "09:00-17:30", or blank for a day off
   const patternCell = (p, dow) => {
     const own = (patterns[p.id] || []).find((d) => d.dow === dow);
@@ -1691,13 +1708,16 @@ async function renderSettings() {
       <div class="scroll"><table>
         <thead><tr><th>Person</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th>
           <th title="Tick for someone whose day has no lunch break in it">No lunch</th>
-          <th class="num">Hours/wk</th><th></th></tr></thead>
+          <th class="num" title="What the pattern adds up to, net of lunch unless No lunch is ticked">Pattern</th>
+          <th class="num" title="Allocatable hours/week — set on the People row, or adopt the pattern's figure">Hours/wk</th><th></th></tr></thead>
         <tbody>${S.boot.people.filter((p) => !p.archived && p.active).map((p) => `<tr data-wp="${p.id}">
           <td class="name">${esc(p.name)}
             ${patterns[p.id] ? '<span class="pill ok">custom</span>' : '<span class="pill mute">standard</span>'}</td>
           ${[1, 2, 3, 4, 5].map((d) => patternCell(p, d)).join('')}
           <td><input type="checkbox" class="wpNL"${p.no_lunch ? ' checked' : ''}></td>
-          <td class="num">${h(p.weekly_hours)}</td>
+          <td class="num muted">${h(patternWeekHours(p))} h</td>
+          <td class="num">${h(p.weekly_hours)} h${Math.abs(patternWeekHours(p) - p.weekly_hours) > 0.01
+            ? `<br><button class="linky wpAdopt" data-h="${patternWeekHours(p)}" title="Set hours/week to what the pattern adds up to">use ${h(patternWeekHours(p))}</button>` : ''}</td>
           <td class="num" style="white-space:nowrap">
             <button class="btn small primary wpSave">Save</button>
             ${patterns[p.id] ? '<button class="btn small wpReset">Reset</button>' : ''}
@@ -1988,6 +2008,12 @@ function wireSettings() {
     const r = await api(`/api/person-days/${tr.dataset.wp}`, { body: { days, no_lunch: $('.wpNL', tr).checked } });
     S.boot.people = r.people;
     toast('Pattern saved. Weekly hours are unchanged — set those on the People row.'); renderSettings();
+  }));
+  view().querySelectorAll('.wpAdopt').forEach((btn) => btn.addEventListener('click', async () => {
+    const tr = btn.closest('tr');
+    const p = S.boot.people.find((x) => x.id === Number(tr.dataset.wp));
+    S.boot.people = await api('/api/people', { body: { ...p, weekly_hours: Number(btn.dataset.h), active: Boolean(p.active) } });
+    toast(`${p.name}: hours/week set to ${btn.dataset.h}.`); renderSettings();
   }));
   view().querySelectorAll('.wpReset').forEach((btn) => btn.addEventListener('click', async () => {
     const tr = btn.closest('tr');
