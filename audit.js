@@ -48,10 +48,16 @@ for (const P of periods) {
     const lv = db.prepare('SELECT annual_hours, sick_hours FROM leave WHERE person_id = ? AND period = ?')
       .get(p.person_id, P) || { annual_hours: 0, sick_hours: 0 };
 
-    // weekly hours are the capacity; the working pattern only shapes where
-    // the scheduler may place work, never the allocatable total
-    const gross = days * (row.weekly_hours / 5);
-    ok(near(p.gross_hours, gross, 0.02), `${P} ${p.name}: gross = working days x weekly hours / 5 (${p.gross_hours} vs ${gross.toFixed(2)})`);
+    // weekly hours are the capacity, spread over the pattern's days in
+    // proportion to their length; a flat fifth per day with no pattern
+    const pat = patternMinutes(p.person_id);
+    const patTotal = pat ? [...pat.values()].reduce((s, m) => s + m, 0) : 0;
+    const gross = cap.workingDates(P).reduce((s, iso) => {
+      if (!pat) return s + row.weekly_hours / 5;
+      const m = pat.get(isoDow(iso)) || 0;
+      return s + (patTotal ? row.weekly_hours * (m / patTotal) : 0);
+    }, 0);
+    ok(near(p.gross_hours, gross, 0.02), `${P} ${p.name}: gross = weekly hours spread over the pattern's days (${p.gross_hours} vs ${gross.toFixed(2)})`);
     ok(near(p.available_hours, Math.max(0, gross - lv.annual_hours - lv.sick_hours), 0.02),
       `${P} ${p.name}: available = gross - leave - sick`);
     ok(near(p.client_hours, p.available_hours - p.internal_hours, 0.02),

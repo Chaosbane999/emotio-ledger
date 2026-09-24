@@ -474,8 +474,19 @@ eq(Math.round(lh * 60), p1.logged_minutes, 'loggedHours matches variance by-pers
 
   // September 2026: 4 Mondays, 5 Tuesdays, 5 Wednesdays, 4 Thursdays, 4 Fridays
   const p3 = db.prepare('SELECT * FROM people WHERE id = 3').get();
-  // capacity comes from weekly hours; the pattern only shapes placement
-  eq(cap.personCapacity(p3, '2026-09').gross_hours, 165, 'gross = 22 days x 37.5/5, pattern does not cap it');
+  // capacity is the weekly figure spread over the pattern's days by length:
+  // 37.5h over 1560 pattern minutes; Sept has 14 full days and 4 Thursdays
+  const gPT = cap.personCapacity(p3, '2026-09').gross_hours;
+  ok(Math.abs(gPT - (14 * (37.5 * 450 / 1560) + 4 * (37.5 * 210 / 1560))) < 0.02,
+    `gross spreads the week over the pattern (${gPT})`);
+
+  // the everyday case: a 30h week of four 7.5h days is 7.5h a day, nothing on
+  // the day off — 18 such days in Sept 2026 (Mon 4, Tue 5, Wed 5, Fri 4)
+  db.prepare("INSERT INTO people (id, name, initials, weekly_hours) VALUES (4, 'Four Days', 'FD', 30)").run();
+  const pd4 = db.prepare('INSERT INTO person_days (person_id, dow, start_time, end_time) VALUES (4, ?, ?, ?)');
+  for (const dow of [1, 2, 3, 5]) pd4.run(dow, '09:00', '17:30');
+  const p4 = db.prepare('SELECT * FROM people WHERE id = 4').get();
+  eq(cap.personCapacity(p4, '2026-09').gross_hours, 135, 'four-day week: 18 days x 7.5h, Thursdays count for nothing');
 
   // no lunch: the day stays whole for capacity-per-day and for the scheduler
   db.prepare('UPDATE people SET no_lunch = 1 WHERE id = 3').run();

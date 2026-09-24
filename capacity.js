@@ -89,6 +89,22 @@ function dayMinutes(person, iso, pattern) {
 }
 
 /**
+ * Allocatable minutes on one date: the person's weekly hours spread across
+ * the days their pattern says they work, in proportion to each day's length.
+ * Four 7.5h days on a 30h week is 7.5h a day and nothing on the day off, so a
+ * month with five of their off-days is genuinely shorter for them. No
+ * pattern: a flat fifth of the week on every working day.
+ */
+function capacityMinutes(person, iso, pattern) {
+  const weekMin = person.weekly_hours * 60;
+  if (!pattern) return weekMin / 5;
+  const d = pattern.get(isoDow(iso));
+  if (!d) return 0;
+  const total = [...pattern.values()].reduce((s, x) => s + x.minutes, 0);
+  return total ? weekMin * (d.minutes / total) : 0;
+}
+
+/**
  * A normal working month for one full-time person — working days x a standard
  * day. This is what the month picker shows, because "how long is this month" is
  * a question about the calendar, not about how many people happen to be on the
@@ -101,8 +117,11 @@ function monthHours(period) {
 
 /** Total client-facing hours the whole team has, across everyone. */
 function teamHours(period) {
-  const days = workingDays(period);
-  return round2(activePeople().reduce((s, p) => s + days * (p.weekly_hours / 5), 0));
+  const dates = workingDates(period);
+  return round2(activePeople().reduce((s, p) => {
+    const pattern = patternOf(p.id);
+    return s + dates.reduce((s2, iso) => s2 + capacityMinutes(p, iso, pattern), 0) / 60;
+  }, 0));
 }
 
 /** ISO week index (0-based) of each working date within the period. */
@@ -159,11 +178,12 @@ const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 function personCapacity(person, period) {
   const dates = workingDates(period);
   const days = dates.length;
-  // Weekly hours are the capacity — how much work can be allocated into the
-  // month. The working pattern says WHEN someone is around, and only governs
-  // where the scheduler places blocks and which days commitments land on; it
-  // never overrides the number of allocatable hours.
-  const gross = days * (person.weekly_hours / 5);
+  // Weekly hours are the capacity — how much work can be allocated in a week.
+  // The pattern says WHICH days that week is made of: the hours are spread
+  // over those days date by date, so a month heavy in someone's off-day is
+  // shorter for them, and it never overrides the weekly figure itself.
+  const pattern = patternOf(person.id);
+  const gross = dates.reduce((sum, iso) => sum + capacityMinutes(person, iso, pattern), 0) / 60;
 
   const lv = db.prepare('SELECT annual_hours, sick_hours FROM leave WHERE person_id = ? AND period = ?')
     .get(person.id, period) || { annual_hours: 0, sick_hours: 0 };
@@ -756,7 +776,7 @@ function personView(personId, period) {
 module.exports = {
   periodOf, thisPeriod, parsePeriod, shiftPeriod,
   workingDates, workingDays, weekBuckets, monthHours, teamHours,
-  patternOf, dayMinutes, isoDow, toMinutes,
+  patternOf, dayMinutes, capacityMinutes, isoDow, toMinutes,
   standardRate, toUnits, toHours, round2,
   personCapacity, activePeople,
   contractSummary,
