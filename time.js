@@ -972,7 +972,9 @@ function report({ from, to, contractId, contractIds, personId, department, deliv
   // with allocation but no entries still appears: 0 h of 32 h is the point.
   const periods = [];
   for (let cur = from.slice(0, 7); cur <= to.slice(0, 7); cur = cap.shiftPeriod(cur, 1)) periods.push(cur);
-  const aWhere = [`a.period IN (${periods.map(() => '?').join(',')})`, 'c.archived = 0'];
+  // no archived filter: a report is history, and a contract archived since
+  // still had its allocation in the months being reported on
+  const aWhere = [`a.period IN (${periods.map(() => '?').join(',')})`];
   const aArgs = [...periods];
   if (contractId) { aWhere.push('a.contract_id = ?'); aArgs.push(contractId); }
   if (contractIds) {
@@ -992,7 +994,7 @@ function report({ from, to, contractId, contractIds, personId, department, deliv
      WHERE ${aWhere.join(' AND ')}`).all(...aArgs);
   // fixed commitments are allocation too; their entries carry the block label
   if (!deliverableId) {
-    const anWhere = ['c.archived = 0', "c.status = 'live'"];
+    const anWhere = ["c.status = 'live'"];
     const anArgs = [];
     if (contractId) { anWhere.push('an.contract_id = ?'); anArgs.push(contractId); }
     if (contractIds) {
