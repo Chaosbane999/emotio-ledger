@@ -25,11 +25,13 @@ const LUNCH_E = LUNCH_S + Number(get('lunch_minutes') || 30);
 const isoDow = (iso) => ((new Date(`${iso}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;
 function patternMinutes(personId) {
   const rows = db.prepare('SELECT dow, start_time, end_time FROM person_days WHERE person_id = ?').all(personId);
+  // no_lunch keeps the day whole — the same rule capacity.patternOf applies
+  const noLunch = Boolean(db.prepare('SELECT no_lunch FROM people WHERE id = ?').get(personId)?.no_lunch);
   const byDow = new Map();
   for (const r of rows) {
     const s = hm(r.start_time), e = hm(r.end_time);
     if (e <= s) continue;
-    byDow.set(r.dow, (e - s) - Math.max(0, Math.min(e, LUNCH_E) - Math.max(s, LUNCH_S)));
+    byDow.set(r.dow, (e - s) - (noLunch ? 0 : Math.max(0, Math.min(e, LUNCH_E) - Math.max(s, LUNCH_S))));
   }
   return byDow.size ? byDow : null;
 }
