@@ -1975,7 +1975,7 @@ function wireSettings() {
     }
     const r = await api(`/api/person-days/${tr.dataset.wp}`, { body: { days } });
     S.boot.people = r.people;
-    toast(`Pattern saved — ${r.weekly_hours}h/week.`); renderSettings();
+    toast('Pattern saved. Weekly hours are unchanged — set those on the People row.'); renderSettings();
   }));
   view().querySelectorAll('.wpReset').forEach((btn) => btn.addEventListener('click', async () => {
     const tr = btn.closest('tr');

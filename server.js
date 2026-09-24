@@ -1128,8 +1128,8 @@ app.get('/api/person-days', ok((req, res) => res.json(allPatterns())));
 /**
  * Replace one person's working pattern. days: [{dow 1-5, start, end}] sets it;
  * clear: true removes it, returning them to the agency-standard week.
- * weekly_hours is re-derived from the pattern so capacity keeps agreeing with
- * what the calendar can actually hold.
+ * weekly_hours is NOT touched: it is the allocatable capacity, set in Settings;
+ * the pattern only says when the person is around.
  */
 app.post('/api/person-days/:id', ok((req, res) => {
   const id = Number(req.params.id);
@@ -1157,13 +1157,7 @@ app.post('/api/person-days/:id', ok((req, res) => {
   const ins = db.prepare('INSERT INTO person_days (person_id, dow, start_time, end_time) VALUES (?, ?, ?, ?)');
   for (const d of days) ins.run(id, Number(d.dow), d.start, d.end);
 
-  // weekly_hours follows the pattern — one source of truth for the week
-  const person = db.prepare('SELECT * FROM people WHERE id = ?').get(id);
-  const pattern = cap.patternOf(id);
-  const weekly = cap.round2([...(pattern || new Map()).values()].reduce((s, d) => s + d.minutes, 0) / 60);
-  db.prepare('UPDATE people SET weekly_hours = ? WHERE id = ?').run(weekly || person.weekly_hours, id);
-
-  res.json({ ok: true, days, weekly_hours: weekly, people: listPeople() });
+  res.json({ ok: true, days, people: listPeople() });
 }));
 
 // The Connect flow: browser goes to Slack's authorize page, Slack sends it
