@@ -3291,16 +3291,21 @@ async function drawReport(qs) {
   ].filter(Boolean).join(' · ') || 'All work';
   const nice = (d) => new Date(`${d}T00:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 
+  const donePct = (logged, alloc) => (alloc ? Math.round((logged / alloc) * 1000) / 10 : null);
   const shareTable = (rows, label) => `
-    <div class="card"><header><h2>${label}</h2></header>
-    <table><thead><tr><th>${label.replace('By ', '')}</th><th class="num">Hours</th>
-      <th class="num">Share</th><th style="width:120px"></th></tr></thead>
+    <div class="card"><header><h2>${label}</h2>
+      <p>Logged against what was allocated for ${r.totals.periods.length === 1 ? monthName(r.totals.periods[0]) : `${r.totals.periods.length} months`}</p></header>
+    <table><thead><tr><th>${label.replace('By ', '')}</th><th class="num">Logged</th>
+      <th class="num">Allocated</th><th class="num">Done</th><th style="width:120px"></th></tr></thead>
     <tbody>${rows.map((x) => `<tr>
       <td>${esc(x.name)}</td><td class="num">${hrs(x.hours)}</td>
-      <td class="num">${h(x.share, 1)}%</td>
-      <td><div class="bar"><i class="used" style="width:${Math.min(100, x.share)}%"></i></div></td>
+      <td class="num">${x.allocated_hours ? hrs(x.allocated_hours) : '—'}</td>
+      <td class="num ${x.done_pct > 100 ? 'bad' : ''}">${x.done_pct === null ? '—' : `${h(x.done_pct, 0)}%`}</td>
+      <td>${x.allocated_hours ? capBar(x.hours, x.allocated_hours) : ''}</td>
     </tr>`).join('')}
-    <tr class="total"><td>Total</td><td class="num">${hrs(r.totals.hours)}</td><td class="num">100%</td><td></td></tr>
+    <tr class="total"><td>Total</td><td class="num">${hrs(r.totals.hours)}</td>
+      <td class="num">${hrs(r.totals.allocated_hours)}</td>
+      <td class="num">${donePct(r.totals.hours, r.totals.allocated_hours) === null ? '—' : `${h(donePct(r.totals.hours, r.totals.allocated_hours), 0)}%`}</td><td></td></tr>
     </tbody></table></div>`;
 
   const maxT = Math.max(1, ...r.timeline.map((t2) => t2.hours));
@@ -3317,7 +3322,8 @@ async function drawReport(qs) {
     : [
       `${r.totals.people === 1 ? (topP ? esc(topP.name) : 'One person') : `${r.totals.people} people`}`
       + ` delivered <b>${h(r.totals.hours)} hours</b> across ${r.totals.days_worked} working day${r.totals.days_worked === 1 ? '' : 's'}`,
-      !S.repC && topC ? `the largest share went to <b>${esc(topC.name)}</b> (${h(topC.share, 1)}%)` : null,
+      r.totals.allocated_hours ? `<b>${h(donePct(r.totals.hours, r.totals.allocated_hours), 0)}%</b> of the ${h(r.totals.allocated_hours)} hours allocated` : null,
+      !S.repC && topC && topC.minutes ? `the most time went to <b>${esc(topC.name)}</b> (${h(topC.hours)} h)` : null,
       topD && topD.name !== 'Uncategorised' ? `most of the time was <b>${esc(topD.name)}</b>` : null,
     ].filter(Boolean).join(' — ') + '.';
 

@@ -966,19 +966,66 @@ function report({ from, to, contractId, contractIds, personId, department, deliv
      WHERE ${where.join(' AND ')}
      ORDER BY e.date, p.name, COALESCE(e.start, '99')`).all(...args);
 
+  // What was allocated for the months the range touches, under the same
+  // filters — so every roll-up can say "logged X of Y allocated" rather than
+  // a share of the logged total, which says nothing about progress. A row
+  // with allocation but no entries still appears: 0 h of 32 h is the point.
+  const periods = [];
+  for (let cur = from.slice(0, 7); cur <= to.slice(0, 7); cur = cap.shiftPeriod(cur, 1)) periods.push(cur);
+  const aWhere = [`a.period IN (${periods.map(() => '?').join(',')})`, 'c.archived = 0'];
+  const aArgs = [...periods];
+  if (contractId) { aWhere.push('a.contract_id = ?'); aArgs.push(contractId); }
+  if (contractIds) {
+    if (!contractIds.length) aWhere.push('1 = 0');
+    else { aWhere.push(`a.contract_id IN (${contractIds.map(() => '?').join(',')})`); aArgs.push(...contractIds); }
+  }
+  if (personId) { aWhere.push('a.person_id = ?'); aArgs.push(personId); }
+  if (department) { aWhere.push('c.department = ?'); aArgs.push(department); }
+  if (deliverableId) { aWhere.push('a.deliverable_id = ?'); aArgs.push(deliverableId); }
+  const allocated = db.prepare(`
+    SELECT a.contract_id, a.person_id, a.hours * 60 AS minutes,
+           p.name AS person, c.name AS contract, c.department, d.name AS deliverable
+      FROM allocations a
+      JOIN contracts c    ON c.id = a.contract_id
+      JOIN people p       ON p.id = a.person_id
+      JOIN deliverables d ON d.id = a.deliverable_id
+     WHERE ${aWhere.join(' AND ')}`).all(...aArgs);
+  // fixed commitments are allocation too; their entries carry the block label
+  if (!deliverableId) {
+    const anWhere = ['c.archived = 0', "c.status = 'live'"];
+    const anArgs = [];
+    if (contractId) { anWhere.push('an.contract_id = ?'); anArgs.push(contractId); }
+    if (contractIds) {
+      if (!contractIds.length) anWhere.push('1 = 0');
+      else { anWhere.push(`an.contract_id IN (${contractIds.map(() => '?').join(',')})`); anArgs.push(...contractIds); }
+    }
+    if (personId) { anWhere.push('an.person_id = ?'); anArgs.push(personId); }
+    if (department) { anWhere.push('c.department = ?'); anArgs.push(department); }
+    const anchors = db.prepare(`SELECT an.person_id, an.minutes, an.dow, an.cadence, an.label AS anchor_label,
+        p.name AS person, c.*
+        FROM anchors an JOIN contracts c ON c.id = an.contract_id JOIN people p ON p.id = an.person_id
+       WHERE ${anWhere.join(' AND ')}`).all(...anArgs);
+    for (const an of anchors) {
+      for (const period of periods) {
+        const mins = cap.anchorMinutes(an, an, period);
+        if (mins) allocated.push({ contract_id: an.id, person_id: an.person_id, minutes: mins,
+          person: an.person, contract: an.name, department: an.department,
+          deliverable: `${an.name} — ${an.anchor_label}` });
+      }
+    }
+  }
+
   const roll = (key, name) => {
     const m = new Map();
-    for (const e of entries) {
-      const k = key(e);
-      if (!m.has(k)) m.set(k, { name: name(e), minutes: 0, entries: 0 });
-      const g = m.get(k);
-      g.minutes += e.minutes;
-      g.entries += 1;
-    }
-    const total = entries.reduce((s2, e) => s2 + e.minutes, 0);
-    return [...m.values()].sort((a, b) => b.minutes - a.minutes)
-      .map((g) => ({ ...g, hours: toHours(g.minutes),
-        share: total ? Math.round((g.minutes / total) * 1000) / 10 : 0 }));
+    const row = (k, x) => {
+      if (!m.has(k)) m.set(k, { name: name(x), minutes: 0, allocated_minutes: 0, entries: 0 });
+      return m.get(k);
+    };
+    for (const e of entries) { const g = row(key(e), e); g.minutes += e.minutes; g.entries += 1; }
+    for (const a of allocated) row(key(a), a).allocated_minutes += a.minutes;
+    return [...m.values()].sort((a, b) => b.allocated_minutes - a.allocated_minutes || b.minutes - a.minutes)
+      .map((g) => ({ ...g, hours: toHours(g.minutes), allocated_hours: toHours(g.allocated_minutes),
+        done_pct: g.allocated_minutes ? Math.round((g.minutes / g.allocated_minutes) * 1000) / 10 : null }));
   };
 
   // timeline grain follows the range: days for a month, weeks for a quarter,
@@ -1010,6 +1057,8 @@ function report({ from, to, contractId, contractIds, personId, department, deliv
     totals: {
       minutes: totalMinutes,
       hours: toHours(totalMinutes),
+      allocated_hours: toHours(allocated.reduce((s2, a) => s2 + a.minutes, 0)),
+      periods,
       entries: entries.length,
       people: new Set(entries.map((e) => e.person_id)).size,
       contracts: new Set(entries.map((e) => e.contract_id).filter(Boolean)).size,
