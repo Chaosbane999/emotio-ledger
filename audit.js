@@ -216,7 +216,7 @@ for (const P of periods) {
     ok(near(accounted, expect, 0.02),
       `${P} ${p.name}: scheduled + unplaced = remaining + kept + anchors (${accounted} vs ${expect.toFixed(2)})`);
 
-    const byDay = {}, byDayKept = {}, byDayContract = {};
+    const byDay = {}, byDayKept = {}, byDayContract = {}, byDayContractFresh = {};
     for (const b of plan.blocks) {
       ok(b.minutes % 15 === 0, `${P} ${p.name}: block on a quarter hour (${b.minutes}m)`);
       ok(b.start < b.end, `${P} ${p.name}: block start before end`);
@@ -227,6 +227,7 @@ for (const P of periods) {
       if (b.kept) byDayKept[b.date] = (byDayKept[b.date] || 0) + b.minutes;
       const k = `${b.date}|${b.contract_id}`;
       byDayContract[k] = (byDayContract[k] || 0) + b.minutes;
+      if (!b.kept) byDayContractFresh[k] = (byDayContractFresh[k] || 0) + b.minutes;
     }
     // Weekday ceilings police the working week. Weekends are the overflow
     // valve — their whole point is holding what those ceilings squeezed out —
@@ -242,8 +243,11 @@ for (const P of periods) {
         ok(perDayOf(d) > 0 || fresh === 0, `${P} ${p.name}: ${d} is a non-working day, only history sits there`);
       }
     }
+    // The cap is a planning rule, so it polices what the planner adds. A day
+    // someone actually spent on one client is history, like the capacity
+    // ceiling above: only when fresh work joins it must the whole day fit.
     for (const [k, m] of Object.entries(byDayContract)) {
-      if (isWeekend(k.slice(0, 10))) continue;
+      if (isWeekend(k.slice(0, 10)) || !byDayContractFresh[k]) continue;
       const isInternal = plan.blocks.find((b) => `${b.date}|${b.contract_id}` === k)?.contract_type === 'internal';
       if (!isInternal) ok(m <= maxClient + 0.5, `${P} ${p.name}: ${k} within per-client daily cap (${m})`);
     }

@@ -446,6 +446,21 @@ function planPerson(personId, period) {
     return false;
   };
 
+  // Committed time is reserved wherever it sits. take() wants a block inside
+  // one free window, but history need not respect the plan's windows — a
+  // logged block can run through lunch or start inside it — and a block take()
+  // refused stayed open, so fresh work and anchors landed on top of it.
+  const reserve = (day, startMin, minutes) => {
+    const endMin = startMin + minutes;
+    day.free = day.free.flatMap(([s, e]) => {
+      if (endMin <= s || startMin >= e) return [[s, e]];
+      const rest = [];
+      if (startMin - s >= 15) rest.push([s, startMin]);
+      if (e - endMin >= 15) rest.push([endMin, e]);
+      return rest;
+    });
+  };
+
   const fits = (day, minutes, item) => {
     if (day.used + minutes > day.capMin + 0.01) return false;
     if (item.contract_type !== 'internal') {
@@ -481,7 +496,7 @@ function planPerson(personId, period) {
   for (const kb of keptBlocks) {
     const day = dayOf.get(kb.date);
     if (day && kb.start) {
-      take(day, toMin(kb.start), kb.minutes);
+      reserve(day, toMin(kb.start), kb.minutes);
       day.used += kb.minutes;
       if (kb.contract_id) {
         day.byContract.set(kb.contract_id, (day.byContract.get(kb.contract_id) || 0) + kb.minutes);

@@ -576,5 +576,49 @@ eq(Math.round(lh * 60), p1.logged_minutes, 'loggedHours matches variance by-pers
   db.prepare('DELETE FROM anchors WHERE id = ?').run(aid2);
 }
 
+// --- committed time keeps its ground even when it runs through lunch ---------
+// A logged block need not sit inside one free window: real days run through
+// lunch or start inside it. The planner used to reserve a committed block only
+// when it fitted a single window, so these were left open and fresh work (and
+// anchors) landed on top of them.
+{
+  const cap = require('./capacity');
+  const sch = require('./schedule');
+  const P = cap.shiftPeriod(cap.thisPeriod(), 1);
+  db.prepare('INSERT OR IGNORE INTO months (period) VALUES (?)').run(P);
+  db.prepare("INSERT INTO people (id, name, initials, weekly_hours) VALUES (7, 'Lunch Crosser', 'LC', 37.5)").run();
+  db.prepare(`INSERT INTO allocations (contract_id, period, person_id, deliverable_id, hours)
+    VALUES (11, ?, 7, 101, 60), (10, ?, 7, 100, 20)`).run(P, P);
+  const [d1, d2] = cap.workingDates(P);
+  const kept = [
+    [d1, '09:00', 360],   // straight through lunch (12:30-13:30 in the fixture)
+    [d2, '13:00', 120],   // starts inside lunch
+  ];
+  for (const [date, start, minutes] of kept) {
+    const id = Number(db.prepare(`INSERT INTO schedule_blocks (person_id, period, contract_id, deliverable_id,
+      label, date, start, minutes, anchored, manual, draft)
+      VALUES (7, ?, 10, 100, 'Client A — SEO', ?, ?, ?, 0, 0, 0)`)
+      .run(P, date, start, minutes).lastInsertRowid);
+    db.prepare(`INSERT INTO time_entries (block_id, person_id, contract_id, deliverable_id, date, start, minutes, source)
+      VALUES (?, 7, 10, 100, ?, ?, ?, 'confirm')`).run(id, date, start, minutes);
+  }
+
+  const plan = sch.planPerson(7, P);
+  const toMin = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+  for (const [date, start, minutes] of kept) {
+    const ks = toMin(start), ke = ks + minutes;
+    const clash = plan.blocks.filter((b) => !b.kept && b.date === date
+      && toMin(b.start) < ke && toMin(b.end) > ks);
+    eq(clash.length, 0, `nothing fresh lands on committed time ${date} ${start}+${minutes}m`);
+  }
+  eq(plan.blocks.filter((b) => b.kept).length, 2, 'both committed blocks stay in the plan');
+  // a day already spent past the per-client cap is history the audit forgives,
+  // so the planner must add nothing more for that client on it
+  const maxClient = Number(db.prepare("SELECT value FROM settings WHERE key = 'max_client_minutes_per_day'").get()?.value || 240);
+  ok(360 > maxClient, 'fixture day really is over the per-client cap');
+  eq(plan.blocks.filter((b) => !b.kept && b.date === d1 && b.contract_id === 10).length, 0,
+    'no fresh work for a client on a day already over its cap');
+}
+
 console.log(`\n${checks} checks run\nall time identities hold`);
 fs.rmSync(process.env.DATA_DIR, { recursive: true, force: true });
