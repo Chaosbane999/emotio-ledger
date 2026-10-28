@@ -284,6 +284,7 @@ td.indent { padding-left: 26px; color: var(--ink-2); font-size: .84rem; }
 }
 .banner.bad { border-left-color: var(--over); }
 .banner.info { border-left-color: var(--accent); }
+.banner.warn { border-left-color: #c98a1a; }
 .banner b { color: var(--ink); }
 
 /* ---------- contract editor ---------- */

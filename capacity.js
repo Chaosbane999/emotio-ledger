@@ -457,12 +457,13 @@ function potPosition(contract, period, thisPeriodUnits) {
   }
   if (end < start) end = start;
 
-  // A pot only loses what was actually worked. A month that has closed counts
-  // at the time logged in it — allocating 20 hours and working 15 draws 15,
-  // and a month with nothing logged draws nothing. The month in progress
-  // counts at the larger of logged-so-far and its plan; months still to come
-  // count at their plan, since that is all there is to go on. Third-party
-  // spend is a cost the moment it is booked, so it always counts in full.
+  // A pot only loses what was actually worked: every month draws the time
+  // logged in it and nothing else — allocating 20 hours and working 15 draws
+  // 15, a month with nothing logged draws nothing, and a plan copied forward
+  // draws nothing until someone does it. Third-party spend is a cost the
+  // moment it is booked, so it counts in full. What is PLANNED from this month
+  // on is reported beside the drawdown, so a plan that will not fit in what
+  // is left is a warning — not a drawdown.
   const now = thisPeriod();
   const perMonth = new Map();
   const month = (m) => {
@@ -483,15 +484,16 @@ function potPosition(contract, period, thisPeriodUnits) {
   }
   let drawn = 0; let planned = 0; let outside = 0; let allocHours = 0; let loggedHours = 0;
   const months = [...perMonth.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([m, e]) => {
-    const counts = m < now ? e.logged_units
-      : m === now ? Math.max(e.logged_units, e.alloc_units) : e.alloc_units;
-    drawn += counts + e.tp_units;
-    if (m >= now) planned += Math.max(0, counts - e.logged_units);
+    const counts = e.logged_units + e.tp_units;
+    drawn += counts;
+    // still to do: this month's plan beyond what is already logged, and every
+    // later month's plan in full
+    if (m >= now) planned += Math.max(0, e.alloc_units - e.logged_units);
     if (m < start || m > end) outside += e.alloc_units + e.tp_units;
     allocHours += e.alloc_hours; loggedHours += e.logged_hours;
     return { period: m, allocated_units: round2(e.alloc_units), logged_units: round2(e.logged_units),
-      third_party_units: round2(e.tp_units), counts_units: round2(counts + e.tp_units),
-      basis: m < now ? 'logged' : m === now ? 'in progress' : 'planned' };
+      third_party_units: round2(e.tp_units), counts_units: round2(counts),
+      basis: m < now ? 'closed' : m === now ? 'in progress' : 'ahead' };
   });
   const remaining = contract.pot_units - drawn;
 
@@ -507,7 +509,8 @@ function potPosition(contract, period, thisPeriodUnits) {
     pot_start: start,
     pot_end: end,
     pot_drawn: round2(drawn),
-    pot_planned: round2(planned),          // of drawn, the part still only planned
+    pot_planned: round2(planned),          // planned from this month on, not yet worked
+    pot_plan_over: round2(Math.max(0, planned - remaining)),   // plan that will not fit in what is left
     pot_remaining: round2(remaining),
     pot_this_period: round2(thisPeriodUnits),
     pot_outside_window: round2(outside),   // allocated in months past the run dates

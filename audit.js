@@ -113,13 +113,14 @@ for (const P of periods) {
       ok(near(c.pot_drawn, c.pot_months.reduce((s2, m) => s2 + m.counts_units, 0), 0.02),
         `${P} ${c.name}: pot drawn = sum of what each month counts`);
       const now = cap.thisPeriod();
+      let plannedAhead = 0;
       for (const m of c.pot_months) {
-        const want = m.period < now ? m.logged_units
-          : m.period === now ? Math.max(m.logged_units, m.allocated_units) : m.allocated_units;
-        ok(near(m.counts_units, want + m.third_party_units, 0.02),
-          `${P} ${c.name} ${m.period}: a closed month draws logged, open months draw the plan (${m.counts_units} vs ${want + m.third_party_units})`);
+        ok(near(m.counts_units, m.logged_units + m.third_party_units, 0.02),
+          `${P} ${c.name} ${m.period}: a month draws only its logged time and third-party spend (${m.counts_units})`);
+        if (m.period >= now) plannedAhead += Math.max(0, m.allocated_units - m.logged_units);
       }
-      ok(c.pot_planned <= c.pot_drawn + 0.02, `${P} ${c.name}: planned part of drawn is within drawn`);
+      ok(near(c.pot_planned, plannedAhead, 0.02), `${P} ${c.name}: planned ahead = this month's unworked plan + later months' plans`);
+      ok(near(c.pot_plan_over, Math.max(0, c.pot_planned - c.pot_remaining), 0.02), `${P} ${c.name}: plan overrun = planned - remaining, floored at 0`);
       ok(c.months_left >= 0, `${P} ${c.name}: months left not negative`);
     }
   }

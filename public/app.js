@@ -818,13 +818,16 @@ async function renderContractDetail(id) {
     ${!isPot && !s.balanced && s.variance < 0 ? `<div class="banner bad"><div>
       <b>Allocated ${units(-s.variance)} beyond contract.</b> Reduce hours, or declare the excess as carry-over below
       if you under-delivered last month.</div></div>` : ''}
-    ${isPot ? `<div class="banner ${s.pot_remaining < 0 ? 'bad' : 'info'}"><div>
+    ${isPot ? `<div class="banner ${s.pot_remaining < 0 ? 'bad' : s.pot_plan_over ? 'warn' : 'info'}"><div>
       <b>${s.pot_remaining < 0 ? 'This pot is overdrawn.' : 'Pot drawdown.'}</b>
-      ${units(s.pot_drawn)} of ${units(s.pot_units)} drawn${s.pot_planned ? ` (${units(s.pot_planned)} of that still only planned)` : ''},
+      ${units(s.pot_drawn)} of ${units(s.pot_units)} drawn by logged time,
       ${units(Math.abs(s.pot_remaining))} ${s.pot_remaining < 0 ? 'past the pot' : 'left'}, with ${s.months_left}
       month${s.months_left === 1 ? '' : 's'} to go (to ${esc(s.pot_end)}).
-      A closed month draws what was logged in it; this month and later draw their plan.
-      ${(s.pot_months || []).length ? `<div style="margin-top:6px" class="sub">${s.pot_months.map((m) => `${monthName(m.period).slice(0, 3)}: ${units(m.counts_units)} <i>(${m.basis}${m.basis !== 'logged' && m.logged_units ? `, ${units(m.logged_units)} logged` : ''})</i>`).join(' · ')}</div>` : ''}
+      ${s.pot_planned ? `<b>${units(s.pot_planned)} is planned</b> from this month on${s.pot_plan_over
+        ? ` — <b>${units(s.pot_plan_over)} more than is left</b>. Trim the plan, or it will overdraw the pot when it is worked.`
+        : ', which fits in what is left.'}` : 'Nothing is planned from this month on.'}
+      A pot only loses what is actually worked.
+      ${(s.pot_months || []).length ? `<div style="margin-top:6px" class="sub">${s.pot_months.map((m) => `${monthName(m.period).slice(0, 3)}: ${units(m.logged_units)} logged${m.third_party_units ? ` + ${units(m.third_party_units)} third party` : ''}${m.basis !== 'closed' ? ` · ${units(m.allocated_units)} planned` : ''}`).join(' · ')}</div>` : ''}
     </div></div>
     ${s.pot_outside_window ? `<div class="banner bad"><div>
       <b>${units(s.pot_outside_window)} is allocated outside this pot's run dates (${esc(s.pot_start)} to ${esc(s.pot_end)}).</b>

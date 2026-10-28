@@ -358,7 +358,7 @@ const listContracts = (withArchived) => db.prepare(
  * member-reachable payload carries one.
  */
 const UNIT_FIELDS = new Set([
-  'variance', 'pot_drawn', 'pot_remaining', 'pot_this_period', 'pot_planned', 'pot_outside_window', 'pot_months',
+  'variance', 'pot_drawn', 'pot_remaining', 'pot_this_period', 'pot_planned', 'pot_plan_over', 'pot_outside_window', 'pot_months',
 ]);
 function stripMoney(payload) {
   const scrub = (o) => {
