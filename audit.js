@@ -110,6 +110,16 @@ for (const P of periods) {
     if (c.type === 'pot') {
       ok(near(c.pot_remaining, c.pot_units - c.pot_drawn), `${P} ${c.name}: pot remaining = pot - drawn`);
       ok(c.pot_drawn >= -0.001, `${P} ${c.name}: pot drawn not negative`);
+      ok(near(c.pot_drawn, c.pot_months.reduce((s2, m) => s2 + m.counts_units, 0), 0.02),
+        `${P} ${c.name}: pot drawn = sum of what each month counts`);
+      const now = cap.thisPeriod();
+      for (const m of c.pot_months) {
+        const want = m.period < now ? m.logged_units
+          : m.period === now ? Math.max(m.logged_units, m.allocated_units) : m.allocated_units;
+        ok(near(m.counts_units, want + m.third_party_units, 0.02),
+          `${P} ${c.name} ${m.period}: a closed month draws logged, open months draw the plan (${m.counts_units} vs ${want + m.third_party_units})`);
+      }
+      ok(c.pot_planned <= c.pot_drawn + 0.02, `${P} ${c.name}: planned part of drawn is within drawn`);
       ok(c.months_left >= 0, `${P} ${c.name}: months left not negative`);
     }
   }

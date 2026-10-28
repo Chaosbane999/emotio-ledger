@@ -820,10 +820,15 @@ async function renderContractDetail(id) {
       if you under-delivered last month.</div></div>` : ''}
     ${isPot ? `<div class="banner ${s.pot_remaining < 0 ? 'bad' : 'info'}"><div>
       <b>${s.pot_remaining < 0 ? 'This pot is overdrawn.' : 'Pot drawdown.'}</b>
-      ${units(s.pot_drawn)} of ${units(s.pot_units)} drawn, ${units(Math.abs(s.pot_remaining))}
-      ${s.pot_remaining < 0 ? 'past the pot' : 'left'}, with ${s.months_left}
+      ${units(s.pot_drawn)} of ${units(s.pot_units)} drawn${s.pot_planned ? ` (${units(s.pot_planned)} of that still only planned)` : ''},
+      ${units(Math.abs(s.pot_remaining))} ${s.pot_remaining < 0 ? 'past the pot' : 'left'}, with ${s.months_left}
       month${s.months_left === 1 ? '' : 's'} to go (to ${esc(s.pot_end)}).
-      A pot is drawn as the work demands, so there is no monthly target to hit.</div></div>` : ''}
+      A closed month draws what was logged in it; this month and later draw their plan.
+      ${(s.pot_months || []).length ? `<div style="margin-top:6px" class="sub">${s.pot_months.map((m) => `${monthName(m.period).slice(0, 3)}: ${units(m.counts_units)} <i>(${m.basis}${m.basis !== 'logged' && m.logged_units ? `, ${units(m.logged_units)} logged` : ''})</i>`).join(' · ')}</div>` : ''}
+    </div></div>
+    ${s.pot_outside_window ? `<div class="banner bad"><div>
+      <b>${units(s.pot_outside_window)} is allocated outside this pot's run dates (${esc(s.pot_start)} to ${esc(s.pot_end)}).</b>
+      It still draws the pot. Extend the contract's Runs to date, or move the work.</div></div>` : ''}` : ''}
 
     <div class="card" id="ctrReport"></div>
 

@@ -443,44 +443,58 @@ function contractSummary(contract, period) {
 
 /** Drawdown position for a fixed-pot contract. */
 function potPosition(contract, period, thisPeriodUnits) {
-  // No dates on the contract: the window is every month the pot has been
-  // drawn in — "this month only" silently hid the rest of the drawdown.
+  // The pot's run window, for "months to go". No dates: every month with
+  // activity on it.
   let start = contract.pot_start; let end = contract.pot_end;
+  const span = db.prepare(`SELECT MIN(m) lo, MAX(m) hi FROM (
+      SELECT period AS m FROM allocations WHERE contract_id = ?
+      UNION ALL SELECT period FROM tp_allocations WHERE contract_id = ?
+      UNION ALL SELECT substr(date, 1, 7) FROM time_entries WHERE contract_id = ? AND source != 'skip')`)
+    .get(contract.id, contract.id, contract.id);
   if (!start || !end) {
-    const span = db.prepare(`SELECT MIN(period) lo, MAX(period) hi FROM (
-      SELECT period FROM allocations WHERE contract_id = ?
-      UNION ALL SELECT period FROM tp_allocations WHERE contract_id = ?)`)
-      .get(contract.id, contract.id);
     start = start || span.lo || period;
     end = end || span.hi || period;
   }
   if (end < start) end = start;
 
-  const drawnRows = db.prepare(`
-    SELECT a.hours, p.rate FROM allocations a
-      JOIN people p ON p.id = a.person_id
-     WHERE a.contract_id = ? AND a.period >= ? AND a.period <= ?`).all(contract.id, start, end);
-  const drawnPeople = drawnRows.reduce((s, r) => s + toUnits(r.hours, r.rate), 0);
-  const drawnTp = db.prepare(
-    'SELECT COALESCE(SUM(units),0) AS u FROM tp_allocations WHERE contract_id = ? AND period >= ? AND period <= ?')
-    .get(contract.id, start, end).u;
-
-  const drawn = drawnPeople + drawnTp;
+  // A pot only loses what was actually worked. A month that has closed counts
+  // at the time logged in it — allocating 20 hours and working 15 draws 15,
+  // and a month with nothing logged draws nothing. The month in progress
+  // counts at the larger of logged-so-far and its plan; months still to come
+  // count at their plan, since that is all there is to go on. Third-party
+  // spend is a cost the moment it is booked, so it always counts in full.
+  const now = thisPeriod();
+  const perMonth = new Map();
+  const month = (m) => {
+    if (!perMonth.has(m)) perMonth.set(m, { alloc_units: 0, alloc_hours: 0, logged_units: 0, logged_hours: 0, tp_units: 0 });
+    return perMonth.get(m);
+  };
+  for (const r of db.prepare(`SELECT a.period, a.hours, p.rate FROM allocations a
+      JOIN people p ON p.id = a.person_id WHERE a.contract_id = ?`).all(contract.id)) {
+    const e = month(r.period); e.alloc_units += toUnits(r.hours, r.rate); e.alloc_hours += r.hours;
+  }
+  for (const r of db.prepare(`SELECT substr(e.date, 1, 7) m, SUM(e.minutes) mins, p.rate
+      FROM time_entries e JOIN people p ON p.id = e.person_id
+     WHERE e.contract_id = ? AND e.source != 'skip' GROUP BY m, p.rate`).all(contract.id)) {
+    const e = month(r.m); e.logged_units += toUnits(r.mins / 60, r.rate); e.logged_hours += r.mins / 60;
+  }
+  for (const r of db.prepare('SELECT period, units FROM tp_allocations WHERE contract_id = ?').all(contract.id)) {
+    month(r.period).tp_units += r.units;
+  }
+  let drawn = 0; let planned = 0; let outside = 0; let allocHours = 0; let loggedHours = 0;
+  const months = [...perMonth.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([m, e]) => {
+    const counts = m < now ? e.logged_units
+      : m === now ? Math.max(e.logged_units, e.alloc_units) : e.alloc_units;
+    drawn += counts + e.tp_units;
+    if (m >= now) planned += Math.max(0, counts - e.logged_units);
+    if (m < start || m > end) outside += e.alloc_units + e.tp_units;
+    allocHours += e.alloc_hours; loggedHours += e.logged_hours;
+    return { period: m, allocated_units: round2(e.alloc_units), logged_units: round2(e.logged_units),
+      third_party_units: round2(e.tp_units), counts_units: round2(counts + e.tp_units),
+      basis: m < now ? 'logged' : m === now ? 'in progress' : 'planned' };
+  });
   const remaining = contract.pot_units - drawn;
 
-  // Time progress across the window, in hours. The drawdown above is about
-  // VALUE allocated; this is about WORK done. Showing the drawdown as a
-  // progress bar read as "nearly all logged" when almost nothing had been —
-  // a bar must compare logged time to allocated time, nothing else.
-  const windowAllocHours = drawnRows.reduce((s, r) => s + r.hours, 0);
-  const windowLoggedMin = db.prepare(`SELECT COALESCE(SUM(minutes),0) m FROM time_entries
-    WHERE contract_id = ? AND date >= ? AND date <= ? AND source != 'skip'`)
-    .get(contract.id, `${start}-01`, `${end}-31`).m;
-
-  // How many months of the window remain. Deliberately no burn-rate forecast:
-  // projecting the pace so far assumes nothing changes — no contract ending, no
-  // allocation moving — when drawing a pot as the work demands is its whole
-  // point. A forecast built on that assumption is worse than no forecast.
   let total = 0, elapsed = 0, cur = start;
   while (cur <= end && total < 120) {
     total += 1;
@@ -493,10 +507,13 @@ function potPosition(contract, period, thisPeriodUnits) {
     pot_start: start,
     pot_end: end,
     pot_drawn: round2(drawn),
+    pot_planned: round2(planned),          // of drawn, the part still only planned
     pot_remaining: round2(remaining),
     pot_this_period: round2(thisPeriodUnits),
-    window_allocated_hours: round2(windowAllocHours),
-    window_logged_hours: round2(windowLoggedMin / 60),
+    pot_outside_window: round2(outside),   // allocated in months past the run dates
+    pot_months: months,
+    window_allocated_hours: round2(allocHours),
+    window_logged_hours: round2(loggedHours),
     months_total: total,
     months_left: Math.max(0, total - elapsed),
     pot_exhausted: remaining <= 0.005,
