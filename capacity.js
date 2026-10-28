@@ -24,6 +24,37 @@ function holidaySet() {
   return new Set((get('holidays') || '').split(',').map((s) => s.trim()).filter(Boolean));
 }
 
+/**
+ * Which of `dates` (working days, ascending) an every-other-working-day
+ * commitment falls on. Counted on the agency calendar — weekdays less
+ * holidays — continuously from the commitment's start date, so the
+ * alternation never restarts at a month boundary and a part-timer stays in
+ * step with everyone else. Without a start date it falls back to the first
+ * working day of the month, as it always did.
+ */
+function alternateDates(anchor, dates) {
+  if (!dates.length) return [];
+  if (!anchor.start_date) return dates.filter((x, i) => i % 2 === 0);
+  const hols = holidaySet();
+  const isWorking = (d) => {
+    const dow = d.getUTCDay();
+    return dow !== 0 && dow !== 6 && !hols.has(d.toISOString().slice(0, 10));
+  };
+  // working days strictly between two ISO dates, either order
+  const between = (x, y) => {
+    const [a, b] = [x, y].sort();
+    const d = new Date(`${a}T00:00:00Z`); const end = new Date(`${b}T00:00:00Z`);
+    let n = 0;
+    for (d.setUTCDate(d.getUTCDate() + 1); d < end; d.setUTCDate(d.getUTCDate() + 1)) if (isWorking(d)) n += 1;
+    return n;
+  };
+  // the start day is sitting 0 when it is a working day; otherwise the first
+  // working day after it is. Every second working day from there is a hit.
+  const startIsWorking = isWorking(new Date(`${anchor.start_date}T00:00:00Z`));
+  return dates.filter((iso) => iso === anchor.start_date
+    || (between(anchor.start_date, iso) + (startIsWorking ? 1 : 0)) % 2 === 0);
+}
+
 /** Every working weekday in the period, as 'YYYY-MM-DD', excluding holidays. */
 function workingDates(period) {
   const { year, month } = parsePeriod(period);
@@ -281,8 +312,9 @@ function anchorMinutes(anchor, contract, period) {
   if (cadence === 'daily') {
     hits = buckets.flat().filter((iso) => allowed.has(iso)).length;
   } else if (cadence === 'alternate') {
-    // every other working day this person has, first one included
-    hits = buckets.flat().filter((iso) => allowed.has(iso)).filter((x, i) => i % 2 === 0).length;
+    // every other working day on the agency calendar, then only the days this
+    // person is in — a day off is a missed sitting, not a shifted one
+    hits = alternateDates(anchor, anchorWindowDates(contract, period)).filter((iso) => allowed.has(iso)).length;
   } else if (cadence === 'monthly') {
     hits = buckets.some((wk) => wk.some((iso) => allowed.has(iso) && dow(iso) === anchor.dow)) ? 1 : 0;
   } else {
@@ -781,5 +813,5 @@ module.exports = {
   personCapacity, activePeople,
   contractSummary,
   agencySummary, personView,
-  anchorMinutes, anchorLines, anchorWindowDates,
+  anchorMinutes, anchorLines, anchorWindowDates, alternateDates,
 };

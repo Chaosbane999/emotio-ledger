@@ -43,13 +43,13 @@ const DOW_NAMES = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
 /** "When" of a fixed commitment, in words. */
 const anchorWhen = (x) => `${x.cadence === 'daily' ? 'Every day'
-  : x.cadence === 'alternate' ? 'Every other day'
+  : x.cadence === 'alternate' ? `Every other working day${x.start_date ? ` from ${x.start_date.slice(8)}/${x.start_date.slice(5, 7)}` : ''}`
     : `${x.cadence === 'fortnightly' ? 'Every other ' : x.cadence === 'monthly' ? 'Monthly, ' : ''}${DOW_NAMES[x.dow]}`} ${x.time}`;
 
 /** The cadence picker every Fixed commitments card shares. */
 const cadenceOptions = `
   <option value="daily">Daily</option>
-  <option value="alternate">Every other day</option>
+  <option value="alternate">Every other working day</option>
   <option value="weekly" selected>Weekly</option>
   <option value="fortnightly">Fortnightly</option>
   <option value="monthly">Monthly</option>`;
@@ -901,6 +901,7 @@ async function renderContractDetail(id) {
           <input type="text" id="naLabel" placeholder="e.g. Weekly call" style="width:150px">
           <select id="naCad">${cadenceOptions}</select>
           <select id="naDow">${[1, 2, 3, 4, 5].map((x) => `<option value="${x}">${DOW_NAMES[x]}</option>`).join('')}</select>
+          <input type="date" id="naFrom" value="${todayIso()}" title="The first day it happens — every other working day counts from here" style="width:150px;display:none">
           <input type="time" id="naTime" value="10:00" style="width:100px">
           <input type="number" id="naMin" value="60" step="15" min="15"><span class="muted">min</span>
           <button class="btn small primary" id="addAnchor">Add</button></div>
@@ -1000,6 +1001,7 @@ function wireContractDetail(id, deliverables) {
 
   $('#naCad')?.addEventListener('change', (e) => {
     $('#naDow').style.display = ['daily', 'alternate'].includes(e.target.value) ? 'none' : '';
+    $('#naFrom').style.display = e.target.value === 'alternate' ? '' : 'none';
   });
   $('#naAll')?.addEventListener('click', () => {
     [...$('#naP').options].forEach((o) => { o.selected = true; });
@@ -1014,7 +1016,7 @@ function wireContractDetail(id, deliverables) {
     for (const pid of ids) {
       const r = await api('/api/anchors', { body: {
         person_id: pid, contract_id: id, label,
-        cadence: $('#naCad').value,
+        cadence: $('#naCad').value, start_date: $('#naFrom').value || null,
         dow: Number($('#naDow').value), time: $('#naTime').value, minutes: Number($('#naMin').value) } });
       placed += r.placed || 0;
     }
@@ -1258,6 +1260,7 @@ async function renderInternal() {
           <input type="text" id="niLabel" placeholder="e.g. Team call" style="width:150px">
           <select id="niCad">${cadenceOptions}</select>
           <select id="niDow">${[1, 2, 3, 4, 5].map((x) => `<option value="${x}">${DOW_NAMES[x]}</option>`).join('')}</select>
+          <input type="date" id="niFrom" value="${todayIso()}" title="The first day it happens — every other working day counts from here" style="width:150px;display:none">
           <input type="time" id="niTime" value="10:00" style="width:100px">
           <input type="number" id="niMin" value="30" step="15" min="15"><span class="muted">min</span>
           <button class="btn small primary" id="addIntAnchor">Add</button></div>
@@ -1281,6 +1284,7 @@ async function renderInternal() {
   }));
   $('#niCad').addEventListener('change', (e) => {
     $('#niDow').style.display = ['daily', 'alternate'].includes(e.target.value) ? 'none' : '';
+    $('#niFrom').style.display = e.target.value === 'alternate' ? '' : 'none';
   });
   $('#niAll').addEventListener('click', () => {
     [...$('#niP').options].forEach((o) => { o.selected = true; });
@@ -1294,7 +1298,7 @@ async function renderInternal() {
     for (const pid of ids) {
       const r = await api('/api/anchors', { body: {
         person_id: pid, contract_id: contract.id, label,
-        cadence: $('#niCad').value,
+        cadence: $('#niCad').value, start_date: $('#niFrom').value || null,
         dow: Number($('#niDow').value), time: $('#niTime').value, minutes: Number($('#niMin').value) } });
       placed += r.placed || 0;
     }

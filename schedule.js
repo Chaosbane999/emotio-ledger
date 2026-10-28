@@ -390,12 +390,15 @@ function planPerson(personId, period) {
       label: a.contract_name ? `${a.contract_name} — ${a.label}` : a.label,
     });
     if (cadence === 'daily' || cadence === 'alternate') {
-      // one sitting every working day inside the window — or every other one
-      let nth = 0;
+      // one sitting every working day inside the window — or every other one,
+      // counted on the agency calendar from the commitment's start date
+      const altOk = cadence === 'alternate'
+        ? new Set(cap.alternateDates(a, cap.workingDates(period).filter((iso) => iso >= win.start && iso <= win.end)))
+        : null;
       for (let w = 0; w < weeks; w++) {
         for (const iso of buckets[w]) {
           if (!allowed.has(iso)) continue;
-          if (cadence === 'alternate' && nth++ % 2 !== 0) continue;
+          if (altOk && !altOk.has(iso)) continue;
           push(w, new Date(`${iso}T00:00:00Z`).getUTCDay());
         }
       }
@@ -675,7 +678,8 @@ function anchorDates(anchor, contract, period) {
   if (cadence === 'daily') {
     dates.push(...buckets.flat().filter((iso) => allowed.has(iso)));
   } else if (cadence === 'alternate') {
-    dates.push(...buckets.flat().filter((iso) => allowed.has(iso)).filter((x, i) => i % 2 === 0));
+    const altOk = new Set(cap.alternateDates(anchor, cap.anchorWindowDates(contract, period)));
+    dates.push(...buckets.flat().filter((iso) => allowed.has(iso) && altOk.has(iso)));
   } else if (cadence === 'monthly') {
     for (const wk of buckets) {
       const d = wk.find((iso) => allowed.has(iso) && dowOf(iso) === anchor.dow);

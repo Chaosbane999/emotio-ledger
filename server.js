@@ -1053,15 +1053,23 @@ app.post('/api/anchors', ok((req, res) => {
     }
   }
   const cadence = ['daily', 'alternate', 'weekly', 'fortnightly', 'monthly'].includes(b.cadence) ? b.cadence : 'weekly';
+  // every-other-day commitments count from a start date; anything else ignores it
+  const isoDate = (v) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v || '')) return null;
+    const d = new Date(`${v}T00:00:00Z`);
+    return Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== v ? null : v;
+  };
+  const startDate = cadence === 'alternate' ? isoDate(b.start_date) : null;
+  if (cadence === 'alternate' && !startDate) throw new Error('Every other day needs a start date — the first day it happens.');
   if (b.id) {
     // reposition: lift the old placement, save, place afresh
     schedule.removeAnchorBlocks(Number(b.id));
-    db.prepare('UPDATE anchors SET person_id=?, contract_id=?, label=?, dow=?, time=?, minutes=?, cadence=? WHERE id=?')
-      .run(b.person_id, b.contract_id || null, b.label, num(b.dow, 2), b.time || '10:00', num(b.minutes, 60), cadence, b.id);
+    db.prepare('UPDATE anchors SET person_id=?, contract_id=?, label=?, dow=?, time=?, minutes=?, cadence=?, start_date=? WHERE id=?')
+      .run(b.person_id, b.contract_id || null, b.label, num(b.dow, 2), b.time || '10:00', num(b.minutes, 60), cadence, startDate, b.id);
   } else {
     b.id = Number(db.prepare(
-      'INSERT INTO anchors (person_id, contract_id, label, dow, time, minutes, cadence) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(b.person_id, b.contract_id || null, b.label, num(b.dow, 2), b.time || '10:00', num(b.minutes, 60), cadence)
+      'INSERT INTO anchors (person_id, contract_id, label, dow, time, minutes, cadence, start_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(b.person_id, b.contract_id || null, b.label, num(b.dow, 2), b.time || '10:00', num(b.minutes, 60), cadence, startDate)
       .lastInsertRowid);
   }
   // a fixed commitment owns its slot NOW, not at the next rebuild: its blocks

@@ -297,6 +297,12 @@ catch (e) { /* already there */ }
 try { db.exec("ALTER TABLE people ADD COLUMN department TEXT NOT NULL DEFAULT 'marketing'"); }
 catch (e) { /* already there */ }
 
+// migration: an every-other-working-day commitment is counted continuously
+// from a start date across the agency calendar, not restarted each month —
+// a month beginning on the wrong weekday used to flip it onto the off days.
+try { db.exec('ALTER TABLE anchors ADD COLUMN start_date TEXT'); }
+catch (e) { /* already there */ }
+
 // migration: fixed commitments gain a cadence — daily, weekly, fortnightly or
 // monthly — where before every one was implicitly weekly.
 try { db.exec("ALTER TABLE anchors ADD COLUMN cadence TEXT NOT NULL DEFAULT 'weekly'"); }

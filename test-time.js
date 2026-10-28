@@ -488,6 +488,24 @@ eq(Math.round(lh * 60), p1.logged_minutes, 'loggedHours matches variance by-pers
   const p4 = db.prepare('SELECT * FROM people WHERE id = 4').get();
   eq(cap.personCapacity(p4, '2026-09').gross_hours, 135, 'four-day week: 18 days x 7.5h, Thursdays count for nothing');
 
+  // every other working day counts continuously from its start date — a month
+  // beginning on the wrong weekday must not flip it onto the off days
+  {
+    const octo = cap.workingDates('2026-10');       // Oct 2026 starts on a Thursday
+    const nov = cap.workingDates('2026-11');
+    const anchorA = { start_date: '2026-10-28' };
+    const octHits = cap.alternateDates(anchorA, octo);
+    ok(octHits.includes('2026-10-28') && octHits.includes('2026-10-30') && !octHits.includes('2026-10-29'),
+      `alternate from 28 Oct hits 28 and 30, not 29 (${octHits.slice(-3)})`);
+    ok(octHits.includes('2026-10-26') && !octHits.includes('2026-10-27'), 'and counts backwards from the start date too');
+    const novHits = cap.alternateDates(anchorA, nov);
+    // 30 Oct (Fri) is a hit, so Mon 2 Nov is off and Tue 3 Nov is on
+    ok(!novHits.includes('2026-11-02') && novHits.includes('2026-11-03'),
+      `the phase carries over the month boundary (${novHits.slice(0, 3)})`);
+    const legacy = cap.alternateDates({ start_date: null }, octo);
+    eq(legacy[0], octo[0], 'no start date: first working day of the month, as before');
+  }
+
   // no lunch: the day stays whole for capacity-per-day and for the scheduler
   db.prepare('UPDATE people SET no_lunch = 1 WHERE id = 3').run();
   const patNL = cap.patternOf(3);
