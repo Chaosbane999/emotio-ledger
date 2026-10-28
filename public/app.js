@@ -679,7 +679,9 @@ async function renderContracts() {
             ${showsMoney() ? `<td class="num">${units(c.type === 'pot' ? c.pot_units : c.contracted_units)}</td>
             <td class="num">${units(c.allocated_units)}</td>` : ''}
             <td class="progress-cell">${c.type === 'pot'
-              ? `${capBar(c.window_logged_hours, c.window_allocated_hours)}<span class="sub">${hrs(c.window_logged_hours)} of ${hrs(c.window_allocated_hours)} · whole&nbsp;pot</span>`
+              ? (showsMoney()
+                ? `${capBar(c.pot_drawn, c.pot_units)}<span class="sub">${units(c.pot_drawn)} drawn of ${units(c.pot_units)} · whole&nbsp;pot${c.pot_plan_over ? ` · <b class="bad">plan ${units(c.pot_plan_over)} over</b>` : ''}</span>`
+                : `${capBar(c.window_logged_hours, c.window_allocated_hours)}<span class="sub">${hrs(c.window_logged_hours)} of ${hrs(c.window_allocated_hours)} planned · all&nbsp;months</span>`)
               : `${capBar(c.logged_hours, c.people_hours)}<span class="sub">${hrs(c.logged_hours)} of ${hrs(c.people_hours)} · this&nbsp;month</span>`}</td>
             ${showsMoney() ? `<td class="num">${c.type === 'pot' ? `${units(c.pot_remaining)} left`
               : `<span class="pill ${c.balanced ? 'ok' : 'bad'}">${c.balanced ? 'balanced' : h(-c.variance) + ' over'}</span>`}</td>` : ''}
