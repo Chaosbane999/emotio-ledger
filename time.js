@@ -972,9 +972,13 @@ function report({ from, to, contractId, contractIds, personId, department, deliv
   // with allocation but no entries still appears: 0 h of 32 h is the point.
   const periods = [];
   for (let cur = from.slice(0, 7); cur <= to.slice(0, 7); cur = cap.shiftPeriod(cur, 1)) periods.push(cur);
-  // no archived filter: a report is history, and a contract archived since
-  // still had its allocation in the months being reported on
-  const aWhere = [`a.period IN (${periods.map(() => '?').join(',')})`];
+  // Same rule as the person and agency pages: an archived or non-live
+  // contract's allocation is not a plan anyone is working to, so it does
+  // not count — otherwise an old copied-forward plan on a dead retainer
+  // inflates "allocated" for the people who were once on it. Logged
+  // entries against it still show: a report is history.
+  const aWhere = [`a.period IN (${periods.map(() => '?').join(',')})`,
+    'c.archived = 0', "c.status = 'live'"];
   const aArgs = [...periods];
   if (contractId) { aWhere.push('a.contract_id = ?'); aArgs.push(contractId); }
   if (contractIds) {
@@ -994,7 +998,7 @@ function report({ from, to, contractId, contractIds, personId, department, deliv
      WHERE ${aWhere.join(' AND ')}`).all(...aArgs);
   // fixed commitments are allocation too; their entries carry the block label
   if (!deliverableId) {
-    const anWhere = ["c.status = 'live'"];
+    const anWhere = ["c.status = 'live'", 'c.archived = 0'];
     const anArgs = [];
     if (contractId) { anWhere.push('an.contract_id = ?'); anArgs.push(contractId); }
     if (contractIds) {
@@ -1003,7 +1007,7 @@ function report({ from, to, contractId, contractIds, personId, department, deliv
     }
     if (personId) { anWhere.push('an.person_id = ?'); anArgs.push(personId); }
     if (department) { anWhere.push('c.department = ?'); anArgs.push(department); }
-    const anchors = db.prepare(`SELECT an.person_id, an.minutes, an.dow, an.cadence, an.label AS anchor_label,
+    const anchors = db.prepare(`SELECT an.person_id, an.minutes, an.dow, an.cadence, an.start_date, an.label AS anchor_label,
         p.name AS person, c.*
         FROM anchors an JOIN contracts c ON c.id = an.contract_id JOIN people p ON p.id = an.person_id
        WHERE ${anWhere.join(' AND ')}`).all(...anArgs);
