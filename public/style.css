@@ -375,6 +375,9 @@ tr.tentry.skip td { opacity: 0.5; }
 .tpanel .tmeta .pill { margin-left: 6px; }
 .tpanel > p.muted { padding: 10px 16px 2px; }
 .tpanel .rowline { padding: 6px 16px; }
+/* why a picker is empty — wraps onto its own line inside the .rowline */
+.anote { flex: 1 0 100%; margin: 2px 0 0; font-size: .78rem; line-height: 1.45;
+  color: var(--muted); }
 .tpanel .rowline:last-child { padding-bottom: 6px; }
 .tpanel .rowline { padding: 4px 16px; }
 

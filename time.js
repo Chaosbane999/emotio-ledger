@@ -126,6 +126,60 @@ function assignmentsFor(personId, period) {
 }
 
 /**
+ * Why `assignmentsFor` came back empty. An empty picker is the one thing a
+ * person cannot act on by themselves, and every cause looks identical from
+ * the outside — so say which one it is and who can fix it. Only meaningful
+ * when assignmentsFor() returned nothing.
+ *
+ * Deliverables cascade on delete and foreign keys are on, so an allocation
+ * can only be filtered out by an archived contract or by zero hours.
+ */
+function assignmentsDiagnosis(personId, period) {
+  if (!db.prepare('SELECT 1 FROM months WHERE period = ?').get(period)) {
+    return { reason: 'no_month' };
+  }
+
+  const mine = db.prepare(`SELECT a.hours, c.archived, c.name
+      FROM allocations a JOIN contracts c ON c.id = a.contract_id
+     WHERE a.person_id = ? AND a.period = ?`).all(personId, period);
+
+  if (mine.length) {
+    const archived = [...new Set(mine.filter((r) => r.archived).map((r) => r.name))].sort();
+    return archived.length ? { reason: 'archived', contracts: archived } : { reason: 'zero_hours' };
+  }
+
+  // Nothing of their own this month. Hours in other months are the usual
+  // sign the month picker is simply parked somewhere else; a month nobody
+  // has any hours in points at the plan, not at this person.
+  const elsewhere = db.prepare(`SELECT DISTINCT a.period
+      FROM allocations a JOIN contracts c ON c.id = a.contract_id AND c.archived = 0
+     WHERE a.person_id = ? AND a.hours > 0 AND a.period != ?
+     ORDER BY a.period DESC LIMIT 3`).all(personId, period).map((r) => r.period);
+
+  const monthHasAny = !!db.prepare(`SELECT 1 FROM allocations a
+      JOIN contracts c ON c.id = a.contract_id AND c.archived = 0
+     WHERE a.period = ? AND a.hours > 0 LIMIT 1`).get(period);
+
+  return { reason: 'none', elsewhere, month_has_any: monthHasAny };
+}
+
+/**
+ * Active people carrying no hours at all in a period. Rolling a month
+ * forward copies the previous month's lines, so anyone who was not in that
+ * month — a new starter, or someone coming back onto client work — lands in
+ * the new month with an empty picker and no way to tell why.
+ */
+function unallocatedPeople(period) {
+  return db.prepare(`SELECT p.id, p.name FROM people p
+     WHERE p.active = 1
+       AND NOT EXISTS (
+         SELECT 1 FROM allocations a
+           JOIN contracts c ON c.id = a.contract_id AND c.archived = 0
+          WHERE a.person_id = p.id AND a.period = ? AND a.hours > 0)
+     ORDER BY p.sort_order, p.name`).all(period);
+}
+
+/**
  * Where each of this person's allocation lines stands this month — allocated
  * vs logged, per task and per contract — so a block's tooltip can say "1:30
  * of 3:00 used · 1:30 left" without another request.
@@ -155,6 +209,8 @@ function usageFor(personId, period) {
 
 function dayView(personId, date) {
   if (!isDate(date)) throw new Error('bad date');
+  const period = date.slice(0, 7);
+  const assignments = assignmentsFor(personId, period);
   const entries = entriesFor(personId, date, date);
   const blocks = decorate(blocksFor(personId, date, date));
   const worked = entries.filter((e) => e.source !== 'skip');
@@ -164,8 +220,9 @@ function dayView(personId, date) {
     blocks,
     entries,
     timer: currentTimer(personId),
-    assignments: assignmentsFor(personId, date.slice(0, 7)),
-    usage: usageFor(personId, date.slice(0, 7)),
+    assignments,
+    assignments_empty: assignments.length ? null : assignmentsDiagnosis(personId, period),
+    usage: usageFor(personId, period),
     totals: {
       planned_minutes: blocks.reduce((s, b) => s + b.minutes, 0),
       logged_minutes: worked.reduce((s, e) => s + e.minutes, 0),
@@ -191,6 +248,8 @@ const addDays = (date, n) => {
 
 function weekView(personId, date) {
   if (!isDate(date)) throw new Error('bad date');
+  const period = date.slice(0, 7);
+  const assignments = assignmentsFor(personId, period);
   const start = mondayOf(date);
   const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
   const end = days[6];
@@ -205,8 +264,9 @@ function weekView(personId, date) {
   return {
     person_id: personId, start, days, blocks, entries,
     timer: currentTimer(personId),
-    assignments: assignmentsFor(personId, date.slice(0, 7)),
-    usage: usageFor(personId, date.slice(0, 7)),
+    assignments,
+    assignments_empty: assignments.length ? null : assignmentsDiagnosis(personId, period),
+    usage: usageFor(personId, period),
     totals: {
       planned_minutes: perDay.reduce((s, d) => s + d.planned_minutes, 0),
       logged_minutes: perDay.reduce((s, d) => s + d.logged_minutes, 0),
@@ -1161,7 +1221,7 @@ module.exports = {
   addEntry, confirmBlock, confirmDay, skipBlock, updateEntry, deleteEntry, moveBlock,
   resizeBlock, rebalancePlan, applyRebalance, bumpBlock, planCheck,
   startTimer, stopTimer, cancelTimer, currentTimer,
-  variance, loggedHours,
+  variance, loggedHours, unallocatedPeople,
   calendarToken, personByToken, feedItems,
   contractTimeReport, exportEntries, report,
   _internal: { isDate, isTime, parseUtc, londonParts },

@@ -560,8 +560,13 @@ app.get('/api/bootstrap', ok((req, res) => {
   send(req, res, payload);
 }));
 
-app.get('/api/agency', ok((req, res) => res.json(cap.agencySummary(period(req),
-  ['marketing', 'design'].includes(req.query.department) ? req.query.department : null))));
+app.get('/api/agency', ok((req, res) => {
+  const p = period(req);
+  const dept = ['marketing', 'design'].includes(req.query.department) ? req.query.department : null;
+  // Agency-wide, so anyone carrying hours in the other department is already
+  // excluded; the Plan screen narrows it to the people it is showing.
+  res.json({ ...cap.agencySummary(p, dept), unallocated: time.unallocatedPeople(p) });
+}));
 
 app.get('/api/person/:id', ok((req, res) => {
   const v = cap.personView(Number(req.params.id), period(req));
@@ -756,7 +761,15 @@ app.post('/api/months', ok((req, res) => {
   }
 
   db.prepare('INSERT INTO months (period, copied_from) VALUES (?, ?)').run(p, from || '');
-  res.json({ period: p, copied_from: from || null, copied });
+  // The copy only carries people who had lines last month, so a new starter
+  // silently arrives with an empty log-work picker. Name them here rather
+  // than letting them find out when they try to log time.
+  res.json({
+    period: p,
+    copied_from: from || null,
+    copied,
+    unallocated: time.unallocatedPeople(p),
+  });
 }));
 
 /** Remove a month and everything planned in it. */

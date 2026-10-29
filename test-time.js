@@ -594,5 +594,71 @@ eq(Math.round(lh * 60), p1.logged_minutes, 'loggedHours matches variance by-pers
   db.prepare('DELETE FROM anchors WHERE id = ?').run(aid2);
 }
 
+
+// --- an empty picker always says why ----------------------------------------
+// Every cause looks identical to the person staring at the dropdown, so the
+// diagnosis has to separate them. Isolated person and contracts throughout,
+// so earlier fixtures cannot colour the answers.
+{
+  const PX = '2031-03';            // a month nothing else in the suite touches
+  const PY = '2031-02';
+  const DX = `${PX}-10`;
+  db.prepare("INSERT INTO people (id,name,initials,active) VALUES (95,'Picker Person','PP',1)").run();
+  db.prepare("INSERT INTO people (id,name,initials,active) VALUES (96,'Gone Person','GP',0)").run();
+  db.prepare("INSERT INTO contracts (id,name) VALUES (95,'Picker Client'), (96,'Old Client')").run();
+  db.prepare("INSERT INTO deliverables (id,name) VALUES (195,'Picker Work')").run();
+  const alloc = (contract, period, hours, person = 95) =>
+    db.prepare(`INSERT INTO allocations (contract_id, period, person_id, deliverable_id, hours)
+      VALUES (?, ?, ?, 195, ?)`).run(contract, period, person, hours);
+  const why = () => T.dayView(95, DX).assignments_empty;
+
+  eq(T.dayView(95, DX).assignments.length, 0, 'nothing allocated, nothing to pick');
+  eq(why().reason, 'no_month', 'a month that was never added says so');
+
+  db.prepare("INSERT INTO months (period, copied_from) VALUES (?, '')").run(PX);
+  let d = why();
+  eq(d.reason, 'none', 'month exists but this person has nothing');
+  eq(d.month_has_any, false, 'and nobody else has anything either');
+  eq(d.elsewhere.length, 0, 'no hours in any other month');
+
+  alloc(95, PX, 4, 1);                                  // somebody else's hours
+  eq(why().month_has_any, true, 'the month is planned, just not for them');
+
+  alloc(95, PY, 3);                                     // their hours, wrong month
+  d = why();
+  eq(d.reason, 'none', 'still nothing for them in this month');
+  eq(d.elsewhere[0], PY, 'the month they do have hours in is named');
+
+  alloc(96, PX, 0);                                     // their hours, but zero
+  eq(why().reason, 'zero_hours', 'a zeroed allocation is not the same as none');
+
+  db.prepare('UPDATE allocations SET hours = 5 WHERE contract_id = 96 AND period = ? AND person_id = 95').run(PX);
+  db.prepare('UPDATE contracts SET archived = 1 WHERE id = 96').run();
+  d = why();
+  eq(d.reason, 'archived', 'an archived contract is the reason, not an absence');
+  eq(d.contracts[0], 'Old Client', 'and it names the contract');
+
+  db.prepare('UPDATE contracts SET archived = 0 WHERE id = 96').run();
+  const v = T.dayView(95, DX);
+  eq(v.assignments.length, 1, 'unarchiving puts the work back in the picker');
+  eq(v.assignments_empty, null, 'and there is nothing left to explain');
+  eq(T.weekView(95, DX).assignments_empty, null, 'the week view agrees with the day view');
+
+  // --- who the month forgot --------------------------------------------------
+  const names = (period) => T.unallocatedPeople(period).map((x) => x.name);
+  ok(!names(PX).includes('Picker Person'), 'someone with hours is not flagged');
+  ok(!names(PX).includes('Gone Person'), 'inactive people are never flagged');
+  ok(names(PY).includes('Test Person'), 'an active person with no hours is flagged');
+  db.prepare('UPDATE contracts SET archived = 1 WHERE id IN (95, 96)').run();
+  ok(names(PX).includes('Picker Person'),
+    'hours on an archived contract do not count as being allocated');
+
+  db.exec('DELETE FROM allocations WHERE person_id IN (95, 1) AND period LIKE \'2031-%\'');
+  db.exec('DELETE FROM months WHERE period = \'2031-03\'');
+  db.exec('DELETE FROM contracts WHERE id IN (95, 96)');
+  db.exec('DELETE FROM people WHERE id IN (95, 96)');
+  db.exec('DELETE FROM deliverables WHERE id = 195');
+}
+
 console.log(`\n${checks} checks run\nall time identities hold`);
 fs.rmSync(process.env.DATA_DIR, { recursive: true, force: true });

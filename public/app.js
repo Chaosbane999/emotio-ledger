@@ -190,7 +190,10 @@ $('#addMonth').addEventListener('click', async () => {
   if (!confirm(`Add ${monthName(next)}?\n\nIt starts as a copy of ${monthName(last)} — same contracts, same allocations — for you to edit.`)) return;
   try {
     const r = await api('/api/months', { body: { period: next, copy_from: last } });
-    toast(`${monthName(next)} added — ${r.copied.allocations} allocations copied forward.`);
+    const missed = r.unallocated || [];
+    toast(`${monthName(next)} added — ${r.copied.allocations} allocations copied forward.`
+      + (missed.length ? ` ${missed.length === 1 ? `${missed[0].name} has` : `${missed.length} people have`}`
+        + ' no hours and cannot log time yet.' : ''), missed.length > 0);
     S.period = next;
     rememberPeriod(next);
     S.boot = await api(`/api/bootstrap${P()}`);
@@ -308,6 +311,11 @@ async function renderAgency() {
 
   const colTotal = (pid) => live.reduce((s, c) => s + hoursFor(c, pid), 0);
 
+  // Active people with nothing allocated anywhere this month, limited to the
+  // ones on screen: an empty picker is invisible until they try to log time.
+  const onScreen = new Set(a.staff.map((x) => x.person_id));
+  const unallocated = (a.unallocated || []).filter((u) => onScreen.has(u.id));
+
   view().innerHTML = `
     <div class="steps" style="margin-bottom:14px">
       ${['marketing', 'design'].map((d) => `
@@ -369,6 +377,12 @@ async function renderAgency() {
     ${inactiveOwned.length ? `<div class="banner"><div>
       <b>${inactiveOwned.length} live contracts belong to someone no longer active.</b>
       <button class="linky" data-filter="orphan">Show them</button>
+    </div></div>` : ''}
+
+    ${unallocated.length ? `<div class="banner"><div>
+      <b>${unallocated.length === 1 ? `${esc(unallocated[0].name)} has` : `${unallocated.length} people have`} no hours at all in ${esc(monthName(S.period))}.</b><br>
+      ${unallocated.length > 1 ? `${unallocated.map((u) => esc(u.name)).join(', ')}. ` : ''}Until someone allocates them,
+      they cannot log any time this month — rolling a month forward only carries people who had hours the month before.
     </div></div>` : ''}
 
     <div class="card">
@@ -2272,16 +2286,63 @@ const SRC_LABEL = { confirm: 'as planned', adjust: 'adjusted', timer: 'timer', m
 const timeApi = (path, opts) => api(`/api/time/${S.personId}${path}`, opts);
 
 /**
- * Contract + task pickers built from what this person is actually allocated
- * to — pick a contract and the task list narrows to their work on it.
+ * Says why the pickers are empty, in terms the person can act on. Every
+ * cause looks the same from the outside — not allocated, contract archived,
+ * wrong month — so name the one that applies and who can resolve it.
  */
-function assignSelects(assignments, cId, dId) {
+function noAllocationsNote(empty) {
+  const month = monthName(S.period);
+  const mine = S.me?.person_id === S.personId;
+  const them = mine ? 'you' : 'them';
+  const their = mine ? 'Your' : 'Their';
+  const ask = mine ? 'Ask whoever plans the month' : 'An administrator';
+
+  if (!empty) return `Nothing is allocated to ${them} in ${month}.`;
+  switch (empty.reason) {
+    case 'no_month':
+      return `${month} hasn’t been set up yet, so there is nothing to log against. `
+        + 'An administrator adds the month on the Plan screen.';
+    case 'archived':
+      return `${their} ${month} work is all on archived `
+        + `${empty.contracts.length > 1 ? 'contracts' : 'a contract'} `
+        + `(${empty.contracts.join(', ')}). ${ask} can unarchive `
+        + `${empty.contracts.length > 1 ? 'them' : 'it'} or move the hours.`;
+    case 'zero_hours':
+      return `${their} ${month} allocations are all set to zero hours. `
+        + `${ask} can give ${them} hours against a task.`;
+    default:
+      break;
+  }
+  // reason === 'none'
+  if (empty.elsewhere?.length) {
+    const other = empty.elsewhere.map(monthName).join(' and ');
+    return `Nothing is allocated to ${them} in ${month}, but there are hours in `
+      + `${other}. Check the month at the top of the screen is the one you meant.`;
+  }
+  if (!empty.month_has_any) {
+    return `Nobody has any hours in ${month} yet — the month exists but hasn’t been planned. `
+      + `${ask} can allocate the work.`;
+  }
+  return `Nothing is allocated to ${them} in ${month}. `
+    + `${ask} can add hours against a task — rolling a month forward only carries `
+    + 'people who had hours the month before.';
+}
+
+/**
+ * Contract + task pickers built from what this person is actually allocated
+ * to — pick a contract and the task list narrows to their work on it. When
+ * there is nothing to pick, the pickers carry the reason rather than a dead
+ * dropdown nobody can act on.
+ */
+function assignSelects(assignments, cId, dId, empty) {
   const contracts = assignments.map((a) => `<option value="${a.contract_id}">${esc(a.name)}</option>`).join('');
   const first = assignments[0];
   const delivs = (a) => (a ? a.deliverables.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('') : '');
+  const note = assignments.length ? ''
+    : `<p class="anote">${esc(noAllocationsNote(empty))}</p>`;
   return {
-    html: `<select id="${cId}"${assignments.length ? '' : ' disabled'}>${contracts || '<option>No allocations this month</option>'}</select>
-      <select id="${dId}"${assignments.length ? '' : ' disabled'}>${delivs(first)}</select>`,
+    html: `<select id="${cId}"${assignments.length ? '' : ' disabled'}>${contracts || '<option>Nothing allocated</option>'}</select>
+      <select id="${dId}"${assignments.length ? '' : ' disabled'}>${delivs(first)}</select>${note}`,
     wire() {
       $(`#${cId}`)?.addEventListener('change', () => {
         const a = assignments.find((x) => x.contract_id === Number($(`#${cId}`).value));
@@ -2385,6 +2446,7 @@ async function renderTime() {
   $('#tCal').addEventListener('click', openCalendarPanel);
 
   S.timeAssignments = v.assignments || [];
+  S.timeAssignmentsEmpty = v.assignments_empty || null;
   renderTimerBar(v.timer);
   if (mode === 'day') renderTimeDay(v); else renderTimeWeek(v);
   if (S.me?.role === 'admin') renderVariance(S.personId);
@@ -2411,7 +2473,7 @@ function renderTimerBar(timer) {
       await timeApi('/timer', { method: 'DELETE' }); renderTime();
     });
   } else {
-    const picks = assignSelects(S.timeAssignments || [], 'tmC', 'tmD');
+    const picks = assignSelects(S.timeAssignments || [], 'tmC', 'tmD', S.timeAssignmentsEmpty);
     const logDate = S.timeDate <= todayIso() ? S.timeDate : todayIso();
     el.innerHTML = `<div class="card timerbar">
       <span class="k">Timer</span>
@@ -2528,7 +2590,7 @@ function renderTimeDay(v) {
           </tr>`).join('')}
       </tbody></table>` : '<p class="muted" style="padding:0 16px 16px">Nothing logged yet.</p>'}
       <div class="rowline" style="padding:12px 16px" id="teRow">
-        ${assignSelects(S.timeAssignments || [], 'teC', 'teD').html}
+        ${assignSelects(S.timeAssignments || [], 'teC', 'teD', S.timeAssignmentsEmpty).html}
         <input type="time" id="teStart">
         <input type="number" id="teMins" placeholder="min" min="1" step="15" style="width:80px">
         <input type="text" id="teNote" placeholder="note" style="flex:1;min-width:120px">
@@ -2628,7 +2690,7 @@ function renderTimeDay(v) {
     });
   });
 
-  assignSelects(S.timeAssignments || [], 'teC', 'teD').wire();
+  assignSelects(S.timeAssignments || [], 'teC', 'teD', S.timeAssignmentsEmpty).wire();
   $('#teAdd').addEventListener('click', async () => {
     const minutes = Number($('#teMins').value);
     if (!minutes) return toast('How many minutes?', true);
@@ -2650,14 +2712,14 @@ function openAddEntryPanel(date, start) {
   p.className = 'tpanel card';
   p.innerHTML = `
     <header><h2>Log work — ${niceDay(date)}</h2><button class="btn small" id="tpX">✕</button></header>
-    <div class="rowline"><label>What</label>${assignSelects(S.timeAssignments || [], 'naC', 'naD').html}</div>
+    <div class="rowline"><label>What</label>${assignSelects(S.timeAssignments || [], 'naC', 'naD', S.timeAssignmentsEmpty).html}</div>
     <div class="rowline"><label>Start</label><input type="time" id="naStart" value="${start}"></div>
     <div class="rowline"><label>Minutes</label><input type="number" id="naMins" value="60" min="15" step="15"></div>
     <div class="rowline"><label>Note</label><input type="text" id="naNote" placeholder="optional" style="flex:1"></div>
     <div class="rowline"><span class="spacer"></span>
       <button class="btn primary small" id="naGo">Log it</button></div>`;
   view().appendChild(p);
-  assignSelects(S.timeAssignments || [], 'naC', 'naD').wire();
+  assignSelects(S.timeAssignments || [], 'naC', 'naD', S.timeAssignmentsEmpty).wire();
   $('#tpX').addEventListener('click', () => p.remove());
   $('#naGo').addEventListener('click', async () => {
     const minutes = Number($('#naMins').value);
@@ -2687,7 +2749,7 @@ function openEntryEditor(e) {
       of the record. Override only to correct a mistake.</p>` : ''}
     <div class="rowline"><label>Date</label><input type="date" id="tpDate" value="${e.date}"${locked ? ' disabled' : ''}></div>
     ${e.source !== 'skip' ? `
-    <div class="rowline"><label>Logged to</label>${assignSelects(S.timeAssignments || [], 'tpC', 'tpD').html}</div>
+    <div class="rowline"><label>Logged to</label>${assignSelects(S.timeAssignments || [], 'tpC', 'tpD', S.timeAssignmentsEmpty).html}</div>
     <div class="rowline"><label>Start</label><input type="time" id="tpStart" value="${e.start || ''}"${locked ? ' disabled' : ''}></div>
     <div class="rowline"><label>Minutes</label><input type="number" id="tpMins" value="${e.minutes}" min="1" step="15"${locked ? ' disabled' : ''}></div>` : ''}
     <div class="rowline"><label>Note</label><input type="text" id="tpNote" value="${esc(e.note || '')}" style="flex:1"${locked ? ' disabled' : ''}></div>
@@ -2699,7 +2761,7 @@ function openEntryEditor(e) {
   const wasLocked = locked;
   // the identity selects start on the entry's current contract + deliverable
   if (e.source !== 'skip' && $('#tpC')) {
-    assignSelects(S.timeAssignments || [], 'tpC', 'tpD').wire();
+    assignSelects(S.timeAssignments || [], 'tpC', 'tpD', S.timeAssignmentsEmpty).wire();
     if (e.contract_id != null) {
       $('#tpC').value = String(e.contract_id);
       $('#tpC').dispatchEvent(new Event('change'));
