@@ -1021,17 +1021,30 @@ function report({ from, to, contractId, contractIds, personId, department, deliv
     }
   }
 
-  const roll = (key, name) => {
+  // what the month(s) actually gave each person — available hours after
+  // leave — so a person row can say how far over their allowance they went
+  const availableByPerson = new Map();
+  for (const pid of new Set([...entries, ...allocated].map((x) => x.person_id))) {
+    const person = db.prepare('SELECT * FROM people WHERE id = ?').get(pid);
+    if (!person) continue;
+    let mins = 0;
+    for (const period of periods) mins += Math.round(cap.personCapacity(person, period).available_hours * 60);
+    availableByPerson.set(pid, mins);
+  }
+
+  const roll = (key, name, availableOf) => {
     const m = new Map();
     const row = (k, x) => {
-      if (!m.has(k)) m.set(k, { name: name(x), minutes: 0, allocated_minutes: 0, entries: 0 });
+      if (!m.has(k)) m.set(k, { name: name(x), person_id: x.person_id, minutes: 0, allocated_minutes: 0, entries: 0 });
       return m.get(k);
     };
     for (const e of entries) { const g = row(key(e), e); g.minutes += e.minutes; g.entries += 1; }
     for (const a of allocated) row(key(a), a).allocated_minutes += a.minutes;
     return [...m.values()].sort((a, b) => b.allocated_minutes - a.allocated_minutes || b.minutes - a.minutes)
       .map((g) => ({ ...g, hours: toHours(g.minutes), allocated_hours: toHours(g.allocated_minutes),
-        done_pct: g.allocated_minutes ? Math.round((g.minutes / g.allocated_minutes) * 1000) / 10 : null }));
+        done_pct: g.allocated_minutes ? Math.round((g.minutes / g.allocated_minutes) * 1000) / 10 : null,
+        ...(availableOf ? { available_hours: toHours(availableOf(g)),
+          over_hours: toHours(g.minutes - availableOf(g)) } : {}) }));
   };
 
   // timeline grain follows the range: days for a month, weeks for a quarter,
@@ -1071,7 +1084,7 @@ function report({ from, to, contractId, contractIds, personId, department, deliv
       days_worked: new Set(entries.map((e) => e.date)).size,
     },
     by_contract: roll((e) => e.contract_id ?? 0, (e) => e.contract || 'No contract'),
-    by_person: roll((e) => e.person_id, (e) => e.person),
+    by_person: roll((e) => e.person_id, (e) => e.person, (g) => availableByPerson.get(g.person_id) || 0),
     by_deliverable: roll((e) => e.deliverable, (e) => e.deliverable),
     by_department: roll((e) => e.department || 'marketing', (e) => (e.department === 'design' ? 'Design' : 'Marketing')),
     timeline: timeline.map((k) => ({ bucket: k, minutes: buckets.get(k) || 0, hours: toHours(buckets.get(k) || 0) })),

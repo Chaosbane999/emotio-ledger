@@ -3306,21 +3306,31 @@ async function drawReport(qs) {
   const nice = (d) => new Date(`${d}T00:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 
   const donePct = (logged, alloc) => (alloc ? Math.round((logged / alloc) * 1000) / 10 : null);
-  const shareTable = (rows, label) => `
+  // person rows also carry the month's allowance (available hours after
+  // leave) and how far over it the logged time went — overtime owed
+  const shareTable = (rows, label) => {
+    const people = label === 'By person';
+    const over = (x) => (x.over_hours > 0 ? `<b class="bad">+${hrs(x.over_hours)}</b>` : x.over_hours < 0 ? hrs(x.over_hours) : '—');
+    const totAvail = people ? rows.reduce((s2, x) => s2 + (x.available_hours || 0), 0) : 0;
+    const totOver = Math.round((r.totals.hours - totAvail) * 100) / 100;
+    return `
     <div class="card"><header><h2>${label}</h2>
-      <p>Logged against what was allocated for ${r.totals.periods.length === 1 ? monthName(r.totals.periods[0]) : `${r.totals.periods.length} months`}</p></header>
+      <p>Logged against what was allocated for ${r.totals.periods.length === 1 ? monthName(r.totals.periods[0]) : `${r.totals.periods.length} months`}${people ? ' · Over = logged beyond the hours available' : ''}</p></header>
     <table><thead><tr><th>${label.replace('By ', '')}</th><th class="num">Logged</th>
-      <th class="num">Allocated</th><th class="num">Done</th><th style="width:120px"></th></tr></thead>
+      <th class="num">Allocated</th><th class="num">Done</th>${people ? '<th class="num">Available</th><th class="num">Over</th>' : ''}<th style="width:120px"></th></tr></thead>
     <tbody>${rows.map((x) => `<tr>
       <td>${esc(x.name)}</td><td class="num">${hrs(x.hours)}</td>
       <td class="num">${x.allocated_hours ? hrs(x.allocated_hours) : '—'}</td>
       <td class="num ${x.done_pct > 100 ? 'bad' : ''}">${x.done_pct === null ? '—' : `${h(x.done_pct, 0)}%`}</td>
+      ${people ? `<td class="num">${hrs(x.available_hours || 0)}</td><td class="num">${over(x)}</td>` : ''}
       <td>${x.allocated_hours ? capBar(x.hours, x.allocated_hours) : ''}</td>
     </tr>`).join('')}
     <tr class="total"><td>Total</td><td class="num">${hrs(r.totals.hours)}</td>
       <td class="num">${hrs(r.totals.allocated_hours)}</td>
-      <td class="num">${donePct(r.totals.hours, r.totals.allocated_hours) === null ? '—' : `${h(donePct(r.totals.hours, r.totals.allocated_hours), 0)}%`}</td><td></td></tr>
+      <td class="num">${donePct(r.totals.hours, r.totals.allocated_hours) === null ? '—' : `${h(donePct(r.totals.hours, r.totals.allocated_hours), 0)}%`}</td>
+      ${people ? `<td class="num">${hrs(totAvail)}</td><td class="num">${over({ over_hours: totOver })}</td>` : ''}<td></td></tr>
     </tbody></table></div>`;
+  };
 
   const maxT = Math.max(1, ...r.timeline.map((t2) => t2.hours));
   const step = [1, 2, 5, 10, 20, 25, 50, 100, 200].find((st) => maxT / st <= 4) || 500;
