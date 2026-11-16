@@ -7,7 +7,7 @@
   "scripts": {
     "start": "PORT=${PORT:-3400} node server.js",
     "seed": "node seed.js",
-    "test": "node test-time.js && node audit.js"
+    "test": "node test-time.js && node test-ical.js && node audit.js"
   },
   "dependencies": {
     "express": "^4.21.2"

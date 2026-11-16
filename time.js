@@ -1,5 +1,6 @@
 const { db } = require('./db');
 const cap = require('./capacity');
+const calimport = require('./calimport');
 
 // ---------------------------------------------------------------------------
 // Time entries: what actually happened, against schedule_blocks: the plan.
@@ -159,6 +160,35 @@ function usageFor(personId, period) {
   return out;
 }
 
+/** The task a meeting defaults to. */
+const generalManagementId = () =>
+  db.prepare("SELECT id FROM deliverables WHERE lower(name) = 'general management' AND active = 1").get()?.id || null;
+
+/** Calendar meetings waiting for a client and task, for a view's date range. */
+function meetingView(personId, from, to, assignments) {
+  return {
+    meetings: calimport.meetingsFor(personId, from, to, assignments),
+    calendar: calimport.status(personId),
+    general_management_id: generalManagementId(),
+  };
+}
+
+/** Confirm a calendar meeting as worked time against a client and task. */
+function logMeeting(personId, meetingId, body) {
+  const m = calimport.getMeeting(personId, meetingId);
+  if (m.status !== 'pending') throw new Error('That meeting has already been dealt with.');
+  const entry = addEntry(personId, {
+    contract_id: body.contract_id,
+    deliverable_id: body.deliverable_id || generalManagementId(),
+    date: m.date, start: m.start,
+    minutes: Number(body.minutes) || m.minutes,
+    note: body.note !== undefined ? body.note : m.title,
+    source: 'manual',
+  });
+  calimport.markLogged(personId, m.id, entry.id);
+  return entry;
+}
+
 function dayView(personId, date) {
   if (!isDate(date)) throw new Error('bad date');
   const entries = entriesFor(personId, date, date);
@@ -171,6 +201,7 @@ function dayView(personId, date) {
     entries,
     timer: currentTimer(personId),
     assignments: assignmentsFor(personId, date.slice(0, 7)),
+    ...meetingView(personId, date, date, assignmentsFor(personId, date.slice(0, 7))),
     usage: usageFor(personId, date.slice(0, 7)),
     totals: {
       planned_minutes: blocks.reduce((s, b) => s + b.minutes, 0),
@@ -212,6 +243,7 @@ function weekView(personId, date) {
     person_id: personId, start, days, blocks, entries,
     timer: currentTimer(personId),
     assignments: assignmentsFor(personId, date.slice(0, 7)),
+    ...meetingView(personId, start, end, assignmentsFor(personId, date.slice(0, 7))),
     usage: usageFor(personId, date.slice(0, 7)),
     totals: {
       planned_minutes: perDay.reduce((s, d) => s + d.planned_minutes, 0),
@@ -1227,6 +1259,7 @@ module.exports = {
   dayView, weekView, mondayOf, addDays, todayLondon,
   addEntry, confirmBlock, confirmDay, skipBlock, updateEntry, deleteEntry, moveBlock,
   resizeBlock, rebalancePlan, applyRebalance, bumpBlock, planCheck, addPlanBlock, removePlanBlock,
+  logMeeting,
   startTimer, stopTimer, cancelTimer, currentTimer,
   variance, loggedHours,
   calendarToken, personByToken, feedItems,

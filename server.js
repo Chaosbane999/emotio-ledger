@@ -7,6 +7,7 @@ const { db, get, set } = require('./db');
 const cap = require('./capacity');
 const schedule = require('./schedule');
 const time = require('./time');
+const calimport = require('./calimport');
 const harvest = require('./harvest');
 const slack = require('./slack');
 const ai = require('./ai');
@@ -423,6 +424,29 @@ app.post('/api/time/:id/resize-block', ok((req, res) => {
 }));
 app.post('/api/time/:id/bump-block', ok((req, res) => {
   res.json(time.bumpBlock(personParam(req), Number(req.body.block_id)));
+}));
+// --- calendar import: a person's own published calendar feeds meeting
+// suggestions onto their time sheet. Scoped to their own id like every
+// /api/time route; the link itself is never sent back.
+app.get('/api/time/:id/calendar-import', ok((req, res) => {
+  res.json(calimport.status(personParam(req)));
+}));
+app.post('/api/time/:id/calendar-import', okAsync(async (req, res) => {
+  res.json(await calimport.connect(personParam(req), req.body?.url));
+}));
+app.post('/api/time/:id/calendar-import/sync', okAsync(async (req, res) => {
+  const id = personParam(req);
+  await calimport.sync(id);
+  res.json(calimport.status(id));
+}));
+app.delete('/api/time/:id/calendar-import', ok((req, res) => {
+  res.json(calimport.disconnect(personParam(req)));
+}));
+app.post('/api/time/:id/meetings/:meetingId/log', ok((req, res) => {
+  res.json(time.logMeeting(personParam(req), Number(req.params.meetingId), req.body || {}));
+}));
+app.post('/api/time/:id/meetings/:meetingId/dismiss', ok((req, res) => {
+  res.json(calimport.dismiss(personParam(req), Number(req.params.meetingId)));
 }));
 app.post('/api/time/:id/plan-block', ok((req, res) => {
   res.json(time.addPlanBlock(personParam(req), req.body || {}));
@@ -1486,6 +1510,10 @@ if (!get('seeded_at')) {
   const pruned = cap.pruneOutOfRunBlocks();
   if (pruned) console.log(`pruned ${pruned} planned block(s) outside their contract's run dates`);
 }
+
+// linked calendars refresh quietly in the background
+setInterval(() => { calimport.syncAll().catch(() => {}); }, 20 * 60 * 1000).unref();
+setTimeout(() => { calimport.syncAll().catch(() => {}); }, 15 * 1000).unref();
 
 app.listen(PORT, () => console.log(`EmotioHours on http://localhost:${PORT}`));
 

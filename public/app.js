@@ -2358,6 +2358,7 @@ async function renderTime() {
       <button class="btn small" id="tNext">›</button>
       <b>${mode === 'day' ? niceDay(S.timeDate) : `${niceDay(v.start)} – ${niceDay(v.days[6])}`}</b>
       <span class="spacer"></span>
+      <button class="btn small" id="tOutlook" title="Bring meetings from an Outlook calendar onto this time sheet, to confirm against a client">${v.calendar?.connected ? '📥 Outlook linked' : '📥 Meetings from Outlook'}</button>
       <button class="btn small" id="tCal" title="Keep your calendar in step with this schedule">📅 Sync to Calendar</button>
       <a class="btn small" href="${S.me?.role === 'admin'
         ? `/api/export/time.csv?period=${S.timeDate.slice(0, 7)}&person_id=${S.personId}`
@@ -2368,6 +2369,7 @@ async function renderTime() {
       ${v.totals.pending ? `<span class="pill warn">${v.totals.pending} to confirm</span>` : ''}
     </div>
     <div id="tTimer"></div>
+    <div id="tMeet"></div>
     <div id="tBody"></div>
     ${S.me?.role === 'admin' ? '<div id="tVariance"></div>' : ''}
   `;
@@ -2396,11 +2398,128 @@ async function renderTime() {
   $('#tNext').addEventListener('click', () => goto(timeShiftDay(S.timeDate, step)));
   $('#tToday').addEventListener('click', () => { S.timeDate = todayIso(); renderTime(); });
   $('#tCal').addEventListener('click', openCalendarPanel);
+  $('#tOutlook')?.addEventListener('click', () => openOutlookPanel(v.calendar || {}));
 
   S.timeAssignments = v.assignments || [];
   renderTimerBar(v.timer);
+  renderMeetings(v);
   if (mode === 'day') renderTimeDay(v); else renderTimeWeek(v);
   if (S.me?.role === 'admin') renderVariance(S.personId);
+}
+
+// --- meetings from a linked calendar -----------------------------------------
+// A meeting in someone's Outlook is only a suggestion here: it shows with a
+// guessed client and General Management as the task, and nothing is logged
+// until they confirm it.
+
+function renderMeetings(v) {
+  const el = $('#tMeet');
+  if (!el) return;
+  const all = v.meetings || [];
+  const due = all.filter((m) => m.date <= todayIso());
+  const ahead = all.length - due.length;
+  if (!due.length) {
+    el.innerHTML = v.calendar?.last_error
+      ? `<div class="banner warn"><div><b>Your calendar could not be read.</b> ${esc(v.calendar.last_error)}</div></div>` : '';
+    return;
+  }
+  const A = S.timeAssignments || [];
+  const gm = v.general_management_id;
+  const gmName = S.boot.deliverables.find((d) => d.id === gm)?.name || 'General Management';
+  const taskOpts = (cid) => {
+    const a = A.find((x) => x.contract_id === cid);
+    const list = a ? [...a.deliverables] : [];
+    if (gm && !list.some((d) => d.id === gm)) list.unshift({ id: gm, name: gmName });
+    return list.map((d) => `<option value="${d.id}"${d.id === gm ? ' selected' : ''}>${esc(d.name)}</option>`).join('');
+  };
+  el.innerHTML = `<div class="card">
+    <header><h2>📅 Meetings from your calendar</h2>
+      <p>${due.length} to confirm — pick the client and task, and it is logged at the meeting's time.
+      ${ahead ? `${ahead} more later this week will appear once they have happened.` : ''}</p></header>
+    <div class="scroll"><table><thead><tr><th>When</th><th>Meeting</th><th>Client</th><th>Task</th>
+      <th class="num">Minutes</th><th></th></tr></thead>
+    <tbody>${due.map((m) => {
+      const cid = m.suggested_contract_id || null;
+      return `<tr data-m="${m.id}">
+        <td style="white-space:nowrap">${niceDay(m.date)} · ${m.start}</td>
+        <td>${esc(m.title)}</td>
+        <td><select class="mtC"><option value="">${A.length ? 'Which client?' : 'No clients this month'}</option>
+          ${A.map((a) => `<option value="${a.contract_id}"${a.contract_id === cid ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}</select>
+          ${cid ? '<span class="sub">matched from the title — check it</span>' : ''}</td>
+        <td><select class="mtD">${cid ? taskOpts(cid) : ''}</select></td>
+        <td class="num"><input type="number" class="mtMin" value="${m.minutes}" min="5" step="5" style="width:70px"></td>
+        <td class="num" style="white-space:nowrap">
+          <button class="btn small primary mtGo">Log</button>
+          <button class="btn small mtNo" title="Not client work, or already logged another way — hide it">Dismiss</button></td>
+      </tr>`; }).join('')}</tbody></table></div></div>`;
+  el.querySelectorAll('tr[data-m]').forEach((tr) => {
+    const id = Number(tr.dataset.m);
+    const m = due.find((x) => x.id === id);
+    tr.querySelector('.mtC').addEventListener('change', (e) => {
+      tr.querySelector('.mtD').innerHTML = e.target.value ? taskOpts(Number(e.target.value)) : '';
+    });
+    tr.querySelector('.mtGo').addEventListener('click', async () => {
+      const contract = Number(tr.querySelector('.mtC').value);
+      if (!contract) return toast('Pick the client this meeting was for.', true);
+      try {
+        await timeApi(`/meetings/${id}/log`, { body: { contract_id: contract,
+          deliverable_id: Number(tr.querySelector('.mtD').value) || null,
+          minutes: Number(tr.querySelector('.mtMin').value) || m.minutes, note: m.title } });
+        toast('Meeting logged.'); renderTime();
+      } catch (err) { toast(err.message, true); }
+    });
+    tr.querySelector('.mtNo').addEventListener('click', async () => {
+      try { await timeApi(`/meetings/${id}/dismiss`, { body: {} }); renderTime(); }
+      catch (err) { toast(err.message, true); }
+    });
+  });
+}
+
+function openOutlookPanel(cal) {
+  document.querySelector('.tpanel')?.remove();
+  const p = document.createElement('div');
+  p.className = 'tpanel card';
+  p.style.width = '420px';
+  p.innerHTML = `
+    <header><h2>📅 Meetings from Outlook</h2><button class="btn small" id="tpX">✕</button></header>
+    ${cal.connected ? `
+    <div class="tmeta">Connected${cal.last_sync ? ` · last read ${esc(cal.last_sync.slice(0, 16))} UTC` : ''}.
+      Meetings appear above your time sheet to confirm; nothing is logged until you say which client it was for.
+      ${cal.last_error ? `<br><b class="bad">Last read failed: ${esc(cal.last_error)}</b>` : ''}</div>
+    <div class="rowline"><button class="btn small" id="olSync">Read it now</button><span class="spacer"></span>
+      <button class="btn small danger" id="olOff">Disconnect</button></div>
+    <div class="rowline"><input type="url" id="olUrl" placeholder="paste a new link to replace it" style="flex:1">
+      <button class="btn small primary" id="olGo">Replace</button></div>` : `
+    <div class="tmeta">Link your own calendar and your meetings turn up on your time sheet, ready to confirm
+      against a client. Only you can link yours.
+      <ol style="margin:8px 0 0 18px;padding:0">
+        <li>In Outlook on the web: Settings → Calendar → Shared calendars.</li>
+        <li>Under <b>Publish a calendar</b>, choose your calendar and <b>Can view all details</b>, then Publish.</li>
+        <li>Copy the <b>ICS</b> link and paste it here.</li>
+      </ol></div>
+    <div class="rowline"><input type="url" id="olUrl" placeholder="https://outlook.office365.com/owa/calendar/…/calendar.ics" style="flex:1">
+      <button class="btn small primary" id="olGo">Connect</button></div>
+    <p class="muted" style="padding:0 16px 12px">All-day, private, free and cancelled events are left out.
+      The link reads your diary, so it is stored for you alone and never shown again.</p>`}`;
+  view().appendChild(p);
+  $('#tpX').addEventListener('click', () => p.remove());
+  const run = async (btn, label, fn, done) => {
+    btn.disabled = true; const was = btn.textContent; btn.textContent = label;
+    try { const r = await fn(); p.remove(); toast(done(r)); renderTime(); }
+    catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = was; }
+  };
+  $('#olGo').addEventListener('click', (e) => {
+    const url = $('#olUrl').value.trim();
+    if (!url) return toast('Paste the ICS link first.', true);
+    run(e.target, 'Reading…', () => timeApi('/calendar-import', { body: { url } }),
+      (r) => `Calendar connected — ${r.meetings} meeting${r.meetings === 1 ? '' : 's'} in the last three weeks and next two.`);
+  });
+  $('#olSync')?.addEventListener('click', (e) => run(e.target, 'Reading…',
+    () => timeApi('/calendar-import/sync', { body: {} }), () => 'Calendar read.'));
+  $('#olOff')?.addEventListener('click', (e) => {
+    if (!confirm('Disconnect your calendar? Meetings not yet confirmed will be cleared; logged time stays.')) return;
+    run(e.target, '…', () => timeApi('/calendar-import', { method: 'DELETE' }), () => 'Calendar disconnected.');
+  });
 }
 
 // --- timer ------------------------------------------------------------------
