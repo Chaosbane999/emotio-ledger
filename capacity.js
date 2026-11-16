@@ -228,7 +228,7 @@ function personCapacity(person, period) {
   const internalAlloc = db.prepare(`SELECT COALESCE(SUM(a.hours),0) h
       FROM allocations a JOIN contracts c ON c.id = a.contract_id
      WHERE a.person_id = ? AND a.period = ? AND c.archived = 0
-       AND c.status = 'live' AND c.type = 'internal'`).get(person.id, period).h
+       AND c.status = 'live' AND c.type = 'internal' AND ${RUN_SQL}`).get(person.id, period).h
     + db.prepare(`SELECT an.person_id, an.minutes, an.dow, an.cadence, c.* FROM anchors an
         JOIN contracts c ON c.id = an.contract_id
        WHERE an.person_id = ? AND c.archived = 0 AND c.status = 'live'
@@ -268,6 +268,49 @@ function personCapacity(person, period) {
  */
 const spareHours = (available, allocatedClient, allocatedInternal, allowance) =>
   round2(available - allocatedClient - Math.max(allocatedInternal, allowance));
+
+// ---------------------------------------------------------------------------
+// Run dates. A contract only exists in the months its run dates touch: before
+// it starts there is nothing to allocate, and after it ends the plan stops —
+// hours left on either side are not a plan anyone is working to, so they are
+// ignored everywhere (never deleted: extend the dates and they come back).
+// Logged time is history and always counts, whenever it happened.
+// ---------------------------------------------------------------------------
+
+/** SQL for "allocation row a belongs to a month contract c runs in". */
+const RUN_SQL = `(c.starts_on IS NULL OR c.starts_on = '' OR substr(c.starts_on, 1, 7) <= a.period)
+  AND (c.ends_on IS NULL OR c.ends_on = '' OR substr(c.ends_on, 1, 7) >= a.period)`;
+
+/** 'before' | 'in' | 'after' — where a month sits against a contract's run. */
+function runState(contract, period) {
+  if (contract.starts_on && contract.starts_on.slice(0, 7) > period) return 'before';
+  if (contract.ends_on && contract.ends_on.slice(0, 7) < period) return 'after';
+  return 'in';
+}
+const runsIn = (contract, period) => runState(contract, period) === 'in';
+
+/** Whether a single date falls inside the run. */
+const runsOn = (contract, iso) =>
+  !(contract.starts_on && iso < contract.starts_on) && !(contract.ends_on && iso > contract.ends_on);
+
+/**
+ * Planned blocks outside a contract's run dates are not a plan. Nothing reads
+ * them, so they are removed — only blocks nobody has answered; a confirmed or
+ * skipped block is history and stays. Idempotent; run at boot and whenever a
+ * contract's dates change.
+ */
+function pruneOutOfRunBlocks(contractId) {
+  const r = db.prepare(`DELETE FROM schedule_blocks
+    WHERE contract_id IS NOT NULL ${contractId ? 'AND contract_id = ?' : ''}
+      AND EXISTS (SELECT 1 FROM contracts c WHERE c.id = schedule_blocks.contract_id
+        AND ((c.starts_on IS NOT NULL AND c.starts_on != '' AND schedule_blocks.date < c.starts_on)
+          OR (c.ends_on IS NOT NULL AND c.ends_on != '' AND schedule_blocks.date > c.ends_on)))
+      AND NOT EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = schedule_blocks.id)`)
+    .run(...(contractId ? [contractId] : []));
+  return Number(r.changes);
+}
+
+const todayIso = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(new Date());
 
 const activePeople = () =>
   db.prepare('SELECT * FROM people WHERE active = 1 AND archived = 0 ORDER BY sort_order, name').all();
@@ -358,7 +401,10 @@ function anchorLines(contract, period) {
  * Pots are exempt and tracked against the pot instead.
  */
 function contractSummary(contract, period) {
-  const rows = db.prepare(`
+  // outside its run dates a contract carries no plan at all
+  const state = runState(contract, period);
+  const inRun = state === 'in';
+  const rows = !inRun ? [] : db.prepare(`
     SELECT a.person_id, a.deliverable_id, a.hours, p.rate, p.name AS person_name,
            d.name AS deliverable_name
       FROM allocations a
@@ -384,7 +430,7 @@ function contractSummary(contract, period) {
   // fixed commitments draw down the contract too — as their own lines
   lines.push(...anchorLines(contract, period));
 
-  const tpRows = db.prepare(`
+  const tpRows = !inRun ? [] : db.prepare(`
     SELECT t.id, t.name, ta.units
       FROM tp_allocations ta
       JOIN third_parties t ON t.id = ta.third_party_id
@@ -406,7 +452,7 @@ function contractSummary(contract, period) {
   // reconcile it against. It is simply the hours recorded. Deriving a "budget"
   // from the utilisation target produced a balance that looked meaningful and
   // was not — and one dominated by whoever happened to be most expensive.
-  const contractedUnits = contract.type === 'internal' ? 0 : contract.monthly_units;
+  const contractedUnits = contract.type === 'internal' || !inRun ? 0 : contract.monthly_units;
 
   const availableUnits = contractedUnits + (co.units || 0);
   const variance = round2(availableUnits - allocatedUnits);
@@ -418,6 +464,12 @@ function contractSummary(contract, period) {
     status: contract.status,
     starts_on: contract.starts_on || null,
     ends_on: contract.ends_on || null,
+    // where the viewed month sits against the run, and whether the run is
+    // over as of today — an ended contract that is still on the books needs
+    // extending or archiving
+    run_state: state,
+    ended: Boolean(contract.ends_on && contract.ends_on < todayIso()),
+    not_started: Boolean(contract.starts_on && contract.starts_on > todayIso()),
     logged_hours: round2(loggedMin / 60),
     period,
     lines,
@@ -488,7 +540,8 @@ function potPosition(contract, period, thisPeriodUnits) {
     drawn += counts;
     // still to do: this month's plan beyond what is already logged, and every
     // later month's plan in full
-    if (m >= now) planned += Math.max(0, e.alloc_units - e.logged_units);
+    // (only months inside the run — a plan outside it is ignored everywhere)
+    if (m >= now && m >= start && m <= end) planned += Math.max(0, e.alloc_units - e.logged_units);
     if (m < start || m > end) outside += e.alloc_units + e.tp_units;
     allocHours += e.alloc_hours; loggedHours += e.logged_hours;
     return { period: m, allocated_units: round2(e.alloc_units), logged_units: round2(e.logged_units),
@@ -539,7 +592,8 @@ function agencySummary(period, department) {
     || p.department === 'management');
   const contracts = db.prepare(
     "SELECT * FROM contracts WHERE archived = 0 ORDER BY sort_order, name").all()
-    .filter((c) => !department || (c.department || 'marketing') === department);
+    .filter((c) => !department || (c.department || 'marketing') === department)
+    .filter((c) => runsIn(c, period));
 
   const caps = people.map((p) => personCapacity(p, period));
   const capById = new Map(caps.map((c) => [c.person_id, c]));
@@ -549,7 +603,7 @@ function agencySummary(period, department) {
     SELECT a.person_id, c.type, SUM(a.hours) AS hours
       FROM allocations a
       JOIN contracts c ON c.id = a.contract_id
-     WHERE a.period = ? AND c.archived = 0 AND c.status = 'live'
+     WHERE a.period = ? AND c.archived = 0 AND c.status = 'live' AND ${RUN_SQL}
      GROUP BY a.person_id, c.type`).all(period);
 
   const perPerson = new Map(caps.map((c) => [c.person_id, {
@@ -593,6 +647,7 @@ function agencySummary(period, department) {
       SELECT a.person_id, a.contract_id, SUM(a.hours) h
         FROM allocations a JOIN contracts c ON c.id = a.contract_id
        WHERE a.period = ? AND c.archived = 0 AND c.status = 'live' AND c.type != 'internal'
+         AND ${RUN_SQL}
        GROUP BY a.person_id, a.contract_id`).all(period);
     const inScope = new Set(people.map((p) => p.id));
     const names = new Map(db.prepare('SELECT id, name, department FROM people').all()
@@ -739,7 +794,7 @@ function personView(personId, period) {
       FROM allocations a
       JOIN contracts c    ON c.id = a.contract_id
       JOIN deliverables d ON d.id = a.deliverable_id
-     WHERE a.person_id = ? AND a.period = ? AND c.archived = 0
+     WHERE a.person_id = ? AND a.period = ? AND c.archived = 0 AND ${RUN_SQL}
      ORDER BY c.type = 'internal', c.sort_order, c.name, d.sort_order`).all(personId, period);
 
   const actualByContract = new Map();
@@ -834,4 +889,5 @@ module.exports = {
   contractSummary,
   agencySummary, personView,
   anchorMinutes, anchorLines, anchorWindowDates, alternateDates,
+  RUN_SQL, runState, runsIn, runsOn, pruneOutOfRunBlocks,
 };

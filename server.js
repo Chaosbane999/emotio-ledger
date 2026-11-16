@@ -424,6 +424,12 @@ app.post('/api/time/:id/resize-block', ok((req, res) => {
 app.post('/api/time/:id/bump-block', ok((req, res) => {
   res.json(time.bumpBlock(personParam(req), Number(req.body.block_id)));
 }));
+app.post('/api/time/:id/plan-block', ok((req, res) => {
+  res.json(time.addPlanBlock(personParam(req), req.body || {}));
+}));
+app.delete('/api/time/:id/plan-block/:blockId', ok((req, res) => {
+  res.json(time.removePlanBlock(personParam(req), Number(req.params.blockId)));
+}));
 app.get('/api/time/:id/plan-check', ok((req, res) => {
   res.json(time.planCheck(personParam(req), Number(req.query.contract_id),
     String(req.query.period || period(req)), Number(req.query.exclude) || 0));
@@ -580,6 +586,9 @@ app.get('/api/contract-summaries', ok((req, res) => {
   const scope = isAdmin(req) ? null : contractsFor(req.user?.person_id);
   const contracts = listContracts(req.query.archived === '1')
     .filter((c) => !scope || scope.has(c.id))
+    // a contract is not in a month before it starts; one that has ended
+    // stays listed, flagged, until it is extended or archived
+    .filter((c) => cap.runState(c, p) !== 'before')
     .map((c) => cap.contractSummary(c, p));
   send(req, res, { period: p, contracts });
 }));
@@ -625,6 +634,20 @@ app.get('/api/leave', ok((req, res) => {
 // write — allocations
 // ---------------------------------------------------------------------------
 
+/**
+ * Nothing is allocated to a contract in a month outside its run dates.
+ * Clearing a line (zero) is always allowed — that is how a stray one goes.
+ */
+function assertRuns(contractId, p, amount) {
+  if (!amount) return;
+  const c = db.prepare('SELECT * FROM contracts WHERE id = ?').get(Number(contractId));
+  if (!c) throw new Error('no such contract');
+  const state = cap.runState(c, p);
+  const uk = (d) => String(d).split('-').reverse().join('/');
+  if (state === 'before') throw new Error(`${c.name} does not start until ${uk(c.starts_on)} — nothing can be allocated to it before then.`);
+  if (state === 'after') throw new Error(`${c.name} ended on ${uk(c.ends_on)} — extend its run dates before allocating more time.`);
+}
+
 app.post('/api/allocation', ok((req, res) => {
   const { contract_id, person_id, deliverable_id } = req.body;
   assertOwnContract(req, contract_id);
@@ -632,6 +655,7 @@ app.post('/api/allocation', ok((req, res) => {
   // quarter-hour grain, the same grain the schedule is built on
   const hours = Math.max(0, Math.round(num(req.body.hours) * 4) / 4);
   if (!contract_id || !person_id || !deliverable_id) throw new Error('contract, person and deliverable are all required');
+  assertRuns(contract_id, p, hours);
 
   if (hours === 0) {
     db.prepare('DELETE FROM allocations WHERE contract_id=? AND period=? AND person_id=? AND deliverable_id=?')
@@ -653,6 +677,7 @@ app.post('/api/tp-allocation', ok((req, res) => {
   const p = req.body.period || period(req);
   const units = Math.max(0, num(req.body.units));
   if (!contract_id || !third_party_id) throw new Error('contract and service are both required');
+  assertRuns(contract_id, p, units);
 
   if (units === 0) {
     db.prepare('DELETE FROM tp_allocations WHERE contract_id=? AND period=? AND third_party_id=?')
@@ -726,10 +751,19 @@ app.post('/api/months', ok((req, res) => {
   let copied = { allocations: 0, third_party: 0 };
 
   if (from && db.prepare('SELECT 1 FROM months WHERE period = ?').get(from)) {
+    // a plan only copies onto contracts that run in the new month — one that
+    // has ended, or has not started, takes nothing forward
+    const runsNew = `(c.starts_on IS NULL OR c.starts_on = '' OR substr(c.starts_on, 1, 7) <= ?)
+      AND (c.ends_on IS NULL OR c.ends_on = '' OR substr(c.ends_on, 1, 7) >= ?)`;
+    const contractById = new Map(db.prepare('SELECT * FROM contracts').all().map((c) => [c.id, c]));
     const a = db.prepare(`INSERT OR IGNORE INTO allocations (contract_id, period, person_id, deliverable_id, hours)
-      SELECT contract_id, ?, person_id, deliverable_id, hours FROM allocations WHERE period = ?`).run(p, from);
+      SELECT a.contract_id, ?, a.person_id, a.deliverable_id, a.hours
+        FROM allocations a JOIN contracts c ON c.id = a.contract_id
+       WHERE a.period = ? AND ${runsNew}`).run(p, from, p, p);
     const t = db.prepare(`INSERT OR IGNORE INTO tp_allocations (contract_id, period, third_party_id, units)
-      SELECT contract_id, ?, third_party_id, units FROM tp_allocations WHERE period = ?`).run(p, from);
+      SELECT a.contract_id, ?, a.third_party_id, a.units
+        FROM tp_allocations a JOIN contracts c ON c.id = a.contract_id
+       WHERE a.period = ? AND ${runsNew}`).run(p, from, p, p);
     copied = { allocations: Number(a.changes), third_party: Number(t.changes), blocks: 0 };
 
     // Carry saved schedules across too, mapped by working-day index: a block on
@@ -746,6 +780,8 @@ app.post('/api/months', ok((req, res) => {
     for (const b of blocks) {
       const i = idx.get(b.date);
       if (i === undefined || i >= toDays.length) continue;
+      const bc = b.contract_id ? contractById.get(b.contract_id) : null;
+      if (bc && !cap.runsOn(bc, toDays[i])) continue;
       // carry the state across: a reviewed plan copies as reviewed, a
       // suggestion copies as a suggestion. Dropping the flag put unreviewed
       // work straight onto next month's time sheet.
@@ -909,6 +945,8 @@ app.post('/api/contracts', ok((req, res) => {
       pot_units, pot_start, pot_end, starts_on, ends_on, harvest_ids, notes, department, sort_order)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 50)`).run(...fields);
   }
+  // the run dates may have moved: planned blocks now outside them go
+  if (b.id) cap.pruneOutOfRunBlocks(Number(b.id));
   res.json(listContracts(req.query.archived === '1'));
 }));
 
@@ -1442,6 +1480,11 @@ app.get('/api/health', (req, res) => res.json({ ok: true, period: cap.thisPeriod
 if (!get('seeded_at')) {
   try { console.log('seeding:', JSON.stringify(seed.run())); }
   catch (e) { console.error('seed failed:', e.message); }
+}
+
+{
+  const pruned = cap.pruneOutOfRunBlocks();
+  if (pruned) console.log(`pruned ${pruned} planned block(s) outside their contract's run dates`);
 }
 
 app.listen(PORT, () => console.log(`EmotioHours on http://localhost:${PORT}`));

@@ -299,7 +299,7 @@ function planPerson(personId, period) {
       FROM allocations a
       JOIN contracts c    ON c.id = a.contract_id
       JOIN deliverables d ON d.id = a.deliverable_id
-     WHERE a.person_id = ? AND a.period = ? AND c.archived = 0 AND a.hours > 0`)
+     WHERE a.person_id = ? AND a.period = ? AND c.archived = 0 AND a.hours > 0 AND ${cap.RUN_SQL}`)
     .all(personId, period);
 
   // Committed time is history — a rebuild plans only what is still to do.
@@ -834,7 +834,7 @@ function nextDay(iso) {
 function expectedPlanHours(personId, period) {
   const lines = db.prepare(`SELECT a.contract_id, a.deliverable_id, a.hours FROM allocations a
     JOIN contracts c ON c.id = a.contract_id
-    WHERE a.person_id = ? AND a.period = ? AND c.archived = 0 AND a.hours > 0`).all(personId, period);
+    WHERE a.person_id = ? AND a.period = ? AND c.archived = 0 AND a.hours > 0 AND ${cap.RUN_SQL}`).all(personId, period);
   const loggedBy = new Map(db.prepare(`SELECT contract_id, deliverable_id, SUM(minutes) m
       FROM time_entries WHERE person_id = ? AND date LIKE ? AND source != 'skip'
      GROUP BY contract_id, deliverable_id`).all(personId, `${period}-%`)

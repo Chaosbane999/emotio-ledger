@@ -648,6 +648,8 @@ async function renderPerson() {
 // 3 — Contracts. The checkbox screen.
 // ---------------------------------------------------------------------------
 
+const ukDate = (d) => (d ? String(d).split('-').reverse().join('/') : '');
+
 async function renderContracts() {
   if (!S.contractId) {
     const a = await api(`/api/contract-summaries${P()}${S.showArchived ? '&archived=1' : ''}`);
@@ -674,7 +676,9 @@ async function renderContracts() {
             <td><button class="linky" data-contract="${c.contract_id}">${esc(c.name)}</button></td>
             <td>${ex ? esc(ex.name) + (ex.active ? '' : ' <span class="pill warn">inactive</span>') : '<span class="muted">—</span>'}</td>
             <td><span class="pill ${c.type === 'pot' ? 'info' : 'mute'}">${esc(c.type)}</span></td>
-            <td>${c.status === 'live' ? '<span class="pill ok">Live</span>'
+            <td>${c.ended && !cc.archived
+              ? `<span class="pill bad" title="Its run dates have passed. Extend the Runs to date, or archive it.">Campaign ended</span><span class="sub">${ukDate(c.ends_on)} · extend or archive</span>`
+              : c.status === 'live' ? `<span class="pill ok">Live</span>${c.not_started ? `<span class="sub">starts ${ukDate(c.starts_on)}</span>` : ''}`
               : c.status === 'pipeline' ? '<span class="pill warn">Pipeline</span>' : '<span class="pill mute">Hold</span>'}</td>
             ${showsMoney() ? `<td class="num">${units(c.type === 'pot' ? c.pot_units : c.contracted_units)}</td>
             <td class="num">${units(c.allocated_units)}</td>` : ''}
@@ -682,7 +686,9 @@ async function renderContracts() {
               ? (showsMoney()
                 ? `${capBar(c.pot_drawn, c.pot_units)}<span class="sub">${units(c.pot_drawn)} drawn of ${units(c.pot_units)} · whole&nbsp;pot${c.pot_plan_over ? ` · <b class="bad">plan ${units(c.pot_plan_over)} over</b>` : ''}</span>`
                 : `${capBar(c.window_logged_hours, c.window_allocated_hours)}<span class="sub">${hrs(c.window_logged_hours)} of ${hrs(c.window_allocated_hours)} planned · all&nbsp;months</span>`)
-              : `${capBar(c.logged_hours, c.people_hours)}<span class="sub">${hrs(c.logged_hours)} of ${hrs(c.people_hours)} · this&nbsp;month</span>`}</td>
+              : c.run_state === 'after'
+                ? `<span class="sub">${c.logged_hours ? `${hrs(c.logged_hours)} logged · ` : ''}no hours — past its end date</span>`
+                : `${capBar(c.logged_hours, c.people_hours)}<span class="sub">${hrs(c.logged_hours)} of ${hrs(c.people_hours)} · this&nbsp;month</span>`}</td>
             ${showsMoney() ? `<td class="num">${c.type === 'pot' ? `${units(c.pot_remaining)} left`
               : `<span class="pill ${c.balanced ? 'ok' : 'bad'}">${c.balanced ? 'balanced' : h(-c.variance) + ' over'}</span>`}</td>` : ''}
           </tr>`;
@@ -797,6 +803,12 @@ async function renderContractDetail(id) {
       <button class="btn small" id="archC">${c.archived ? 'Restore' : 'Archive'}</button>
       <button class="btn small danger" id="delC">Delete</button>
     </div>
+    ${s.run_state === 'before' ? `<div class="banner warn"><div><b>${esc(c.name)} does not start until ${ukDate(c.starts_on)}.</b>
+      There is nothing to allocate in ${esc(monthName(S.period))} — it joins the plan from its start month.</div></div>`
+    : s.run_state === 'after' ? `<div class="banner bad"><div><b>Campaign ended on ${ukDate(c.ends_on)}.</b>
+      No hours are planned or shown past that date. Extend the Runs to date under Edit contract to carry on, or archive it.</div></div>`
+    : s.ended && !c.archived ? `<div class="banner bad"><div><b>Campaign ended on ${ukDate(c.ends_on)}.</b>
+      Extend the Runs to date under Edit contract to carry on, or archive it.</div></div>` : ''}
 
     <div class="balance ${s.balanced ? '' : 'bad'}">
       <div class="item"><span class="k">${isPot ? 'Pot' : 'Contracted'}</span>
@@ -832,8 +844,9 @@ async function renderContractDetail(id) {
       ${(s.pot_months || []).length ? `<div style="margin-top:6px" class="sub">${s.pot_months.map((m) => `${monthName(m.period).slice(0, 3)}: ${units(m.logged_units)} logged${m.third_party_units ? ` + ${units(m.third_party_units)} third party` : ''}${m.basis !== 'closed' ? ` · ${units(m.allocated_units)} planned` : ''}`).join(' · ')}</div>` : ''}
     </div></div>
     ${s.pot_outside_window ? `<div class="banner bad"><div>
-      <b>${units(s.pot_outside_window)} is allocated outside this pot's run dates (${esc(s.pot_start)} to ${esc(s.pot_end)}).</b>
-      It still draws the pot. Extend the contract's Runs to date, or move the work.</div></div>` : ''}` : ''}
+      <b>${units(s.pot_outside_window)} of plan or third-party spend sits outside this pot's run dates (${esc(s.pot_start)} to ${esc(s.pot_end)}).</b>
+      It is ignored — nothing outside the run dates is planned or scheduled. Extend the contract's Runs to date to bring it back.
+      Time already logged outside the dates still draws the pot.</div></div>` : ''}` : ''}
 
     <div class="card" id="ctrReport"></div>
 
@@ -2643,13 +2656,84 @@ function renderTimeDay(v) {
 
 // --- add a piece of work straight onto the calendar --------------------------
 
+// --- copy & paste a block ------------------------------------------------------
+// One block on a clipboard (S.clip). Logged time pastes as logged time on a
+// day that has happened; anything pasted into the future — or copied from the
+// plan — pastes as a planned block, because the future can only be planned.
+
+const WK = { v: null, hoverEl: null, hoverSlot: null };
+
+function copyClip(src, kind) {
+  S.clip = {
+    kind,
+    contract_id: src.contract_id, deliverable_id: src.deliverable_id || null,
+    minutes: src.minutes, note: kind === 'entry' ? (src.note || '') : '',
+    label: kind === 'entry'
+      ? [src.contract_name, src.deliverable_name].filter(Boolean).join(' — ')
+      : src.label,
+  };
+  toast(`Copied “${S.clip.label}” (${hm(S.clip.minutes)}) — click an empty slot to paste, or hover one and press ${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl+'}V.`);
+}
+
+async function pasteClip(date, start) {
+  const c = S.clip;
+  if (!c) return;
+  try {
+    if (c.kind === 'entry' && c.deliverable_id && date <= todayIso()) {
+      await timeApi('/entries', { body: { contract_id: c.contract_id, deliverable_id: c.deliverable_id,
+        date, start, minutes: c.minutes, note: c.note } });
+      toast('Pasted.');
+    } else {
+      await timeApi('/plan-block', { body: { contract_id: c.contract_id, deliverable_id: c.deliverable_id,
+        date, start, minutes: c.minutes, label: c.label } });
+      toast(date > todayIso() ? "Pasted into the plan — tick it once it's happened." : 'Pasted into the plan — tick it to log it.');
+    }
+    document.querySelector('.tpanel')?.remove();
+    renderTime();
+  } catch (err) { toast(err.message, true); }
+}
+
+document.addEventListener('keydown', (ev) => {
+  if (!(ev.metaKey || ev.ctrlKey) || !document.querySelector('.tw-body') || !WK.v) return;
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
+  const key = ev.key.toLowerCase();
+  if (key === 'c') {
+    if (String(window.getSelection?.() || '')) return;      // real text copy wins
+    const el = WK.hoverEl;
+    if (!el || !document.body.contains(el)) return;
+    const id = Number(el.dataset.id);
+    const src = el.dataset.kind === 'entry' ? WK.v.entries.find((x) => x.id === id) : WK.v.blocks.find((x) => x.id === id);
+    if (!src) return;
+    ev.preventDefault();
+    copyClip(src, el.dataset.kind === 'entry' ? 'entry' : 'block');
+  } else if (key === 'v' && S.clip) {
+    if (!WK.hoverSlot) return toast('Hover over the slot to paste into first.', true);
+    ev.preventDefault();
+    pasteClip(WK.hoverSlot.date, fromMinOfDay(WK.hoverSlot.min));
+  }
+});
+
 function openAddEntryPanel(date, start) {
   document.querySelector('.tpanel')?.remove();
-  if (date > todayIso()) return toast("That day hasn't happened yet — log time after the work.", true);
+  const clip = S.clip;
+  const pasteRow = clip ? `<div class="rowline"><button class="btn small" id="naPaste" style="flex:1">📋 Paste “${esc(clip.label)}” (${hm(clip.minutes)}) here</button></div>` : '';
+  if (date > todayIso()) {
+    if (!clip) return toast("That day hasn't happened yet — log time after the work.", true);
+    // the future can only be planned: offer the paste and nothing else
+    const fp = document.createElement('div');
+    fp.className = 'tpanel card';
+    fp.innerHTML = `
+      <header><h2>Plan — ${niceDay(date)} · ${start}</h2><button class="btn small" id="tpX">✕</button></header>
+      <div class="tmeta">This day hasn't happened yet, so a paste lands in the plan.</div>${pasteRow}`;
+    view().appendChild(fp);
+    $('#tpX').addEventListener('click', () => fp.remove());
+    $('#naPaste').addEventListener('click', () => pasteClip(date, start));
+    return;
+  }
   const p = document.createElement('div');
   p.className = 'tpanel card';
   p.innerHTML = `
-    <header><h2>Log work — ${niceDay(date)}</h2><button class="btn small" id="tpX">✕</button></header>
+    <header><h2>Log work — ${niceDay(date)}</h2><button class="btn small" id="tpX">✕</button></header>${pasteRow}
     <div class="rowline"><label>What</label>${assignSelects(S.timeAssignments || [], 'naC', 'naD').html}</div>
     <div class="rowline"><label>Start</label><input type="time" id="naStart" value="${start}"></div>
     <div class="rowline"><label>Minutes</label><input type="number" id="naMins" value="60" min="15" step="15"></div>
@@ -2659,15 +2743,18 @@ function openAddEntryPanel(date, start) {
   view().appendChild(p);
   assignSelects(S.timeAssignments || [], 'naC', 'naD').wire();
   $('#tpX').addEventListener('click', () => p.remove());
+  $('#naPaste')?.addEventListener('click', () => pasteClip(date, $('#naStart').value || start));
   $('#naGo').addEventListener('click', async () => {
     const minutes = Number($('#naMins').value);
     if (!minutes) return toast('How many minutes?', true);
-    await timeApi('/entries', { body: {
-      contract_id: Number($('#naC').value), deliverable_id: Number($('#naD').value),
-      date, start: $('#naStart').value || null, minutes,
-      note: $('#naNote').value.trim(),
-    } });
-    p.remove(); toast('Logged.'); renderTime();
+    try {
+      await timeApi('/entries', { body: {
+        contract_id: Number($('#naC').value), deliverable_id: Number($('#naD').value),
+        date, start: $('#naStart').value || null, minutes,
+        note: $('#naNote').value.trim(),
+      } });
+      p.remove(); toast('Logged.'); renderTime();
+    } catch (err) { toast(err.message, true); }
   });
 }
 
@@ -2692,8 +2779,9 @@ function openEntryEditor(e) {
     <div class="rowline"><label>Minutes</label><input type="number" id="tpMins" value="${e.minutes}" min="1" step="15"${locked ? ' disabled' : ''}></div>` : ''}
     <div class="rowline"><label>Note</label><input type="text" id="tpNote" value="${esc(e.note || '')}" style="flex:1"${locked ? ' disabled' : ''}></div>
     <div class="rowline"><span class="spacer"></span>
+      ${e.source !== 'skip' ? '<button class="btn small" id="tpCopy" title="Copy this block, then click an empty slot to paste it">Copy</button>' : ''}
       ${locked ? '<button class="btn small" id="tpUnlock">Override…</button>' : ''}
-      <button class="btn danger small hideable${locked ? ' hidden' : ''}" id="tpDel">${e.source === 'skip' ? 'Unskip' : 'Delete'}</button>
+      <button class="btn danger small" id="tpDel">${e.source === 'skip' ? 'Unskip' : 'Delete'}</button>
       <button class="btn primary small hideable${locked ? ' hidden' : ''}" id="tpSave">Save</button></div>`;
   view().appendChild(p);
   const wasLocked = locked;
@@ -2714,9 +2802,14 @@ function openEntryEditor(e) {
     p.querySelectorAll('.hideable').forEach((b) => b.classList.remove('hidden'));
     $('#tpUnlock').remove();
   });
+  $('#tpCopy')?.addEventListener('click', () => { copyClip(e, 'entry'); p.remove(); });
   $('#tpDel').addEventListener('click', async () => {
-    await timeApi(`/entries/${e.id}${wasLocked ? '?override=1' : ''}`, { method: 'DELETE' });
-    p.remove(); renderTime();
+    // a passed day is part of the record: deleting is allowed, but never by accident
+    if (wasLocked && !confirm('This day has passed — its time is part of the record. Delete this entry anyway?')) return;
+    try {
+      await timeApi(`/entries/${e.id}${wasLocked ? '?override=1' : ''}`, { method: 'DELETE' });
+      p.remove(); toast(e.source === 'skip' ? 'Unskipped.' : 'Deleted.'); renderTime();
+    } catch (err) { toast(`Could not delete: ${err.message}`, true); }
   });
   $('#tpSave').addEventListener('click', async () => {
     const body = { date: $('#tpDate').value, note: $('#tpNote').value.trim() };
@@ -2729,7 +2822,9 @@ function openEntryEditor(e) {
       }
     }
     if (wasLocked) body.override = true;
-    const saved = await timeApi(`/entries/${e.id}`, { method: 'PATCH', body });
+    let saved;
+    try { saved = await timeApi(`/entries/${e.id}`, { method: 'PATCH', body }); }
+    catch (err) { return toast(`Could not save: ${err.message}`, true); }
     if (saved.relabelled && e.block_id) {
       toast('Relabelled — the planned block it answered is pending again; skip or delete it if it never happened.');
     }
@@ -2842,7 +2937,8 @@ function renderTimeWeek(v) {
       <div class="tw-day tw-total-col"></div>
     </div></div>
     <p class="muted" style="padding:8px 16px">Drag a block to move it · drag its lower edge to change its length ·
-      click to add a note · faint outlines are the plan.</p>
+      click a block to edit, copy or delete it · click an empty slot to log or paste · faint outlines are the plan.
+      ${S.clip ? `<b>On the clipboard: “${esc(S.clip.label)}” (${hm(S.clip.minutes)}).</b>` : ''}</p>
   </div>`;
 
   wireWeekDrag(v, lo);
@@ -2851,6 +2947,7 @@ function renderTimeWeek(v) {
 function wireWeekDrag(v, lo) {
   const body = view().querySelector('.tw-body');
   let drag = null;
+  WK.v = v; WK.hoverEl = null; WK.hoverSlot = null;
 
   const slotOf = (ev) => {
     const day = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.tw-day');
@@ -2905,8 +3002,15 @@ function wireWeekDrag(v, lo) {
     try { body.setPointerCapture(ev.pointerId); } catch (e) { /* synthetic pointers */ }
   });
 
+  body.addEventListener('pointerleave', () => { WK.hoverEl = null; WK.hoverSlot = null; });
   body.addEventListener('pointermove', (ev) => {
-    if (!drag || drag.kind === 'locked') return;
+    if (!drag) {
+      // remembered for copy (what is under the pointer) and paste (which slot)
+      WK.hoverEl = ev.target.closest('[data-kind="entry"], [data-kind="ghost"]');
+      WK.hoverSlot = ev.target.closest('.tw-grid') ? slotOf(ev) : null;
+      return;
+    }
+    if (drag.kind === 'locked') return;
     if (drag.kind === 'empty' || drag.kind === 'ghostfixed') {
       if (Math.abs(ev.clientX - drag.startX) + Math.abs(ev.clientY - drag.startY) > 4) drag.moved = true;
       return;
@@ -3010,16 +3114,24 @@ function openGhostMenu(b) {
     <div class="rowline">
       <button class="btn small danger" id="tgSk">✗ ${future ? "Won't happen" : "Didn't happen"}</button>
       <span class="spacer"></span>
-      ${future ? '' : '<button class="btn primary small" id="tgCf">✓ As planned</button>'}</div>`;
+      ${future ? '' : '<button class="btn primary small" id="tgCf">✓ As planned</button>'}</div>
+    <div class="rowline">
+      ${b.contract_id ? '<button class="btn small" id="tgCopy" title="Copy this block, then click an empty slot to paste it">Copy</button>' : ''}
+      ${b.anchored ? '' : '<button class="btn small" id="tgRm" title="Take this block off the plan altogether — nothing is logged or marked skipped">Remove from plan</button>'}</div>`;
   view().appendChild(p);
+  const act = async (fn) => {
+    try { await fn(); p.remove(); renderTime(); }
+    catch (err) { toast(err.message, true); }
+  };
   $('#tpX').addEventListener('click', () => p.remove());
-  $('#tgCf')?.addEventListener('click', async () => {
-    await timeApi('/confirm', { body: { block_id: b.id, note: $('#tgNote').value.trim() } });
-    p.remove(); renderTime();
-  });
-  $('#tgSk').addEventListener('click', async () => {
-    await timeApi('/skip', { body: { block_id: b.id, note: $('#tgNote').value.trim() } });
-    p.remove(); renderTime();
+  $('#tgCf')?.addEventListener('click', () => act(() =>
+    timeApi('/confirm', { body: { block_id: b.id, note: $('#tgNote').value.trim() } })));
+  $('#tgSk').addEventListener('click', () => act(() =>
+    timeApi('/skip', { body: { block_id: b.id, note: $('#tgNote').value.trim() } })));
+  $('#tgCopy')?.addEventListener('click', () => { copyClip(b, 'block'); p.remove(); });
+  $('#tgRm')?.addEventListener('click', () => {
+    if (!confirm(`Remove “${b.label}” (${hm(b.minutes)}) from the plan?`)) return;
+    act(() => timeApi(`/plan-block/${b.id}`, { method: 'DELETE' }));
   });
 }
 

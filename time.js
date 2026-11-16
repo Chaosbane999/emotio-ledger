@@ -64,6 +64,12 @@ function blocksFor(personId, from, to) {
       LEFT JOIN contracts c    ON c.id = b.contract_id
       LEFT JOIN deliverables d ON d.id = b.deliverable_id
      WHERE b.person_id = ? AND b.date >= ? AND b.date <= ? AND b.draft = 0
+       -- a plan outside the contract's run dates is not a plan; anything
+       -- already answered (confirmed or skipped) stays, it is history
+       AND (b.contract_id IS NULL
+         OR ((c.starts_on IS NULL OR c.starts_on = '' OR b.date >= c.starts_on)
+           AND (c.ends_on IS NULL OR c.ends_on = '' OR b.date <= c.ends_on))
+         OR EXISTS (SELECT 1 FROM time_entries e WHERE e.block_id = b.id))
      ORDER BY b.date, b.start`).all(personId, from, to);
 }
 
@@ -115,7 +121,7 @@ function assignmentsFor(personId, period) {
       FROM allocations a
       JOIN contracts c    ON c.id = a.contract_id AND c.archived = 0
       JOIN deliverables d ON d.id = a.deliverable_id
-     WHERE a.person_id = ? AND a.period = ? AND a.hours > 0
+     WHERE a.person_id = ? AND a.period = ? AND a.hours > 0 AND ${cap.RUN_SQL}
      ORDER BY c.name, d.name`).all(personId, period);
   const m = new Map();
   for (const r of rows) {
@@ -139,7 +145,7 @@ function usageFor(personId, period) {
   };
   for (const l of db.prepare(`SELECT a.contract_id, a.deliverable_id, a.hours
       FROM allocations a JOIN contracts c ON c.id = a.contract_id
-     WHERE a.person_id = ? AND a.period = ? AND c.archived = 0`).all(personId, period)) {
+     WHERE a.person_id = ? AND a.period = ? AND c.archived = 0 AND ${cap.RUN_SQL}`).all(personId, period)) {
     add(`${l.contract_id}:${l.deliverable_id}`, Math.round(l.hours * 60), 0);
     add(`c:${l.contract_id}`, Math.round(l.hours * 60), 0);
   }
@@ -432,6 +438,50 @@ function moveBlock(personId, blockId, date, start) {
   return getBlock(b.id);
 }
 const toMinOfDayLocal = (t) => { const [h, m] = String(t).split(':').map(Number); return h * 60 + m; };
+
+/**
+ * A planned block added from the time sheet — a paste, in practice. It is
+ * plan, not record: it sits as a pending block until ticked. Same promises
+ * as a drag: inside the contract's run dates, and never overlapping.
+ */
+function addPlanBlock(personId, body) {
+  const date = body.date; const start = String(body.start || '').slice(0, 5);
+  if (!isDate(date)) throw new Error('bad date');
+  if (!isTime(start)) throw new Error('bad start time');
+  const minutes = Math.max(15, Math.round(Number(body.minutes) / 15) * 15);
+  if (!Number.isFinite(minutes) || minutes > MAX_DAY_MINUTES) throw new Error('bad length');
+  const contractId = Number(body.contract_id) || null;
+  const deliverableId = Number(body.deliverable_id) || null;
+  const c = contractId ? db.prepare('SELECT * FROM contracts WHERE id = ? AND archived = 0').get(contractId) : null;
+  if (!c) throw new Error('no such contract');
+  if (!cap.runsOn(c, date)) throw new Error(`${c.name} does not run on that date.`);
+  const d = deliverableId ? db.prepare('SELECT name FROM deliverables WHERE id = ?').get(deliverableId) : null;
+  if (!db.prepare('SELECT 1 FROM months WHERE period = ?').get(date.slice(0, 7))) {
+    throw new Error('That month has not been opened for planning yet.');
+  }
+  const startMin = toMinOfDayLocal(start);
+  const clash = db.prepare(`SELECT start, minutes, label FROM schedule_blocks
+    WHERE person_id = ? AND date = ? AND start IS NOT NULL`).all(personId, date)
+    .find((o) => { const os = toMinOfDayLocal(o.start); return startMin < os + o.minutes && os < startMin + minutes; });
+  if (clash) throw new Error(`That slot overlaps “${clash.label}” at ${clash.start}.`);
+  const label = String(body.label || '').slice(0, 200) || [c.name, d?.name].filter(Boolean).join(' — ');
+  const r = db.prepare(`INSERT INTO schedule_blocks
+    (person_id, period, contract_id, deliverable_id, label, date, start, minutes, anchored, manual, draft)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 0)`)
+    .run(personId, date.slice(0, 7), contractId, d ? deliverableId : null, label, date, start, minutes);
+  return getBlock(Number(r.lastInsertRowid));
+}
+
+/** Take a planned block off the time sheet. Only one nobody has answered. */
+function removePlanBlock(personId, blockId) {
+  const b = blockGuard(personId, blockId);
+  if (b.anchored) throw new Error(FIXED_MSG);
+  if (db.prepare('SELECT 1 FROM time_entries WHERE block_id = ?').get(b.id)) {
+    throw new Error('This block already has time against it — delete the logged entry first.');
+  }
+  db.prepare('DELETE FROM schedule_blocks WHERE id = ?').run(b.id);
+  return { deleted: b.id };
+}
 
 /** How much a block can grow before it hits the next block that day. */
 function growthRoom(personId, block) {
@@ -978,7 +1028,7 @@ function report({ from, to, contractId, contractIds, personId, department, deliv
   // inflates "allocated" for the people who were once on it. Logged
   // entries against it still show: a report is history.
   const aWhere = [`a.period IN (${periods.map(() => '?').join(',')})`,
-    'c.archived = 0', "c.status = 'live'"];
+    'c.archived = 0', "c.status = 'live'", cap.RUN_SQL];
   const aArgs = [...periods];
   if (contractId) { aWhere.push('a.contract_id = ?'); aArgs.push(contractId); }
   if (contractIds) {
@@ -1176,7 +1226,7 @@ const fromMinOfDayLocal = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, 
 module.exports = {
   dayView, weekView, mondayOf, addDays, todayLondon,
   addEntry, confirmBlock, confirmDay, skipBlock, updateEntry, deleteEntry, moveBlock,
-  resizeBlock, rebalancePlan, applyRebalance, bumpBlock, planCheck,
+  resizeBlock, rebalancePlan, applyRebalance, bumpBlock, planCheck, addPlanBlock, removePlanBlock,
   startTimer, stopTimer, cancelTimer, currentTimer,
   variance, loggedHours,
   calendarToken, personByToken, feedItems,
