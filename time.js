@@ -167,7 +167,11 @@ const generalManagementId = () =>
 /** Calendar meetings waiting for a client and task, for a view's date range. */
 function meetingView(personId, from, to, assignments) {
   return {
+    // everything in view, future included, so the diary shows on the calendar
     meetings: calimport.meetingsFor(personId, from, to, assignments),
+    // and everything that has happened and still wants an answer, whichever
+    // week is on screen — nothing waits unseen on a week nobody opens
+    meetings_due: calimport.meetingsFor(personId, calimport.lookbackFrom(), calimport.londonToday(), assignments),
     calendar: calimport.status(personId),
     general_management_id: generalManagementId(),
   };

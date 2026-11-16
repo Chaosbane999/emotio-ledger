@@ -448,6 +448,12 @@ app.post('/api/time/:id/meetings/:meetingId/log', ok((req, res) => {
 app.post('/api/time/:id/meetings/:meetingId/dismiss', ok((req, res) => {
   res.json(calimport.dismiss(personParam(req), Number(req.params.meetingId)));
 }));
+app.post('/api/time/:id/meetings/:meetingId/ignore', ok((req, res) => {
+  res.json(calimport.ignoreTitle(personParam(req), Number(req.params.meetingId)));
+}));
+app.post('/api/time/:id/calendar-import/unignore', ok((req, res) => {
+  res.json(calimport.unignoreTitle(personParam(req), req.body?.title));
+}));
 app.post('/api/time/:id/plan-block', ok((req, res) => {
   res.json(time.addPlanBlock(personParam(req), req.body || {}));
 }));

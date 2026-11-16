@@ -2415,12 +2415,13 @@ async function renderTime() {
 function renderMeetings(v) {
   const el = $('#tMeet');
   if (!el) return;
-  const all = v.meetings || [];
-  const due = all.filter((m) => m.date <= todayIso());
-  const ahead = all.length - due.length;
+  const due = v.meetings_due || [];
+  const ahead = (v.meetings || []).filter((m) => m.date > todayIso()).length;
   if (!due.length) {
     el.innerHTML = v.calendar?.last_error
-      ? `<div class="banner warn"><div><b>Your calendar could not be read.</b> ${esc(v.calendar.last_error)}</div></div>` : '';
+      ? `<div class="banner warn"><div><b>Your calendar could not be read.</b> ${esc(v.calendar.last_error)}</div></div>`
+      : ahead ? `<div class="banner info"><div><b>📅 ${ahead} upcoming meeting${ahead === 1 ? '' : 's'} from your calendar</b>
+          ${S.timeMode === 'week' ? 'shown on the calendar below' : 'this day'} — confirm ${ahead === 1 ? 'it' : 'each'} against a client once it has happened.</div></div>` : '';
     return;
   }
   const A = S.timeAssignments || [];
@@ -2435,7 +2436,7 @@ function renderMeetings(v) {
   el.innerHTML = `<div class="card">
     <header><h2>📅 Meetings from your calendar</h2>
       <p>${due.length} to confirm — pick the client and task, and it is logged at the meeting's time.
-      ${ahead ? `${ahead} more later this week will appear once they have happened.` : ''}</p></header>
+      ${ahead ? `${ahead} upcoming ${ahead === 1 ? 'meeting is' : 'meetings are'} shown on the calendar below and can be confirmed once ${ahead === 1 ? 'it has' : 'they have'} happened.` : ''}</p></header>
     <div class="scroll"><table><thead><tr><th>When</th><th>Meeting</th><th>Client</th><th>Task</th>
       <th class="num">Minutes</th><th></th></tr></thead>
     <tbody>${due.map((m) => {
@@ -2450,7 +2451,8 @@ function renderMeetings(v) {
         <td class="num"><input type="number" class="mtMin" value="${m.minutes}" min="5" step="5" style="width:70px"></td>
         <td class="num" style="white-space:nowrap">
           <button class="btn small primary mtGo">Log</button>
-          <button class="btn small mtNo" title="Not client work, or already logged another way — hide it">Dismiss</button></td>
+          <button class="btn small mtNo" title="Not client work, or already logged another way — hide this one">Dismiss</button>
+          <button class="btn small mtNever" title="Never offer meetings with this title again — for a regular one already covered by a fixed commitment">Always ignore</button></td>
       </tr>`; }).join('')}</tbody></table></div></div>`;
   el.querySelectorAll('tr[data-m]').forEach((tr) => {
     const id = Number(tr.dataset.m);
@@ -2472,6 +2474,61 @@ function renderMeetings(v) {
       try { await timeApi(`/meetings/${id}/dismiss`, { body: {} }); renderTime(); }
       catch (err) { toast(err.message, true); }
     });
+    tr.querySelector('.mtNever').addEventListener('click', async () => {
+      if (!confirm(`Never offer “${m.title}” meetings again? You can undo this under Meetings from Outlook.`)) return;
+      try { await timeApi(`/meetings/${id}/ignore`, { body: {} }); toast(`“${m.title}” will no longer be offered.`); renderTime(); }
+      catch (err) { toast(err.message, true); }
+    });
+  });
+}
+
+/** One calendar meeting: confirm it against a client, or wave it away. */
+function openMeetingPanel(m, v) {
+  document.querySelector('.tpanel')?.remove();
+  const A = S.timeAssignments || [];
+  const gm = v.general_management_id;
+  const gmName = S.boot.deliverables.find((d) => d.id === gm)?.name || 'General Management';
+  const taskOpts = (cid) => {
+    const a = A.find((x) => x.contract_id === cid);
+    const list = a ? [...a.deliverables] : [];
+    if (gm && !list.some((d) => d.id === gm)) list.unshift({ id: gm, name: gmName });
+    return list.map((d) => `<option value="${d.id}"${d.id === gm ? ' selected' : ''}>${esc(d.name)}</option>`).join('');
+  };
+  const future = m.date > todayIso();
+  const cid = m.suggested_contract_id || null;
+  const p = document.createElement('div');
+  p.className = 'tpanel card';
+  p.innerHTML = `
+    <header><h2>📅 ${esc(m.title)}</h2><button class="btn small" id="tpX">✕</button></header>
+    <div class="tmeta">From your calendar · ${niceDay(m.date)} · ${m.start} · ${hm(m.minutes)}
+      ${future ? '<span class="pill mute">later — confirm it once it\'s happened</span>' : ''}</div>
+    ${future ? '' : `
+    <div class="rowline"><label>Client</label><select id="mpC" style="flex:1"><option value="">Which client?</option>
+      ${A.map((a) => `<option value="${a.contract_id}"${a.contract_id === cid ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}</select></div>
+    <div class="rowline"><label>Task</label><select id="mpD" style="flex:1">${cid ? taskOpts(cid) : ''}</select></div>
+    <div class="rowline"><label>Minutes</label><input type="number" id="mpMin" value="${m.minutes}" min="5" step="5"></div>`}
+    <div class="rowline">
+      <button class="btn small" id="mpNo" title="Not client work, or already logged another way — hide this one">Dismiss</button>
+      <button class="btn small" id="mpNever" title="Never offer meetings with this title again">Always ignore</button>
+      <span class="spacer"></span>
+      ${future ? '' : '<button class="btn primary small" id="mpGo">Log it</button>'}</div>`;
+  view().appendChild(p);
+  const act = async (fn, msg) => {
+    try { await fn(); p.remove(); if (msg) toast(msg); renderTime(); }
+    catch (err) { toast(err.message, true); }
+  };
+  $('#tpX').addEventListener('click', () => p.remove());
+  $('#mpC')?.addEventListener('change', (e) => { $('#mpD').innerHTML = e.target.value ? taskOpts(Number(e.target.value)) : ''; });
+  $('#mpGo')?.addEventListener('click', () => {
+    const contract = Number($('#mpC').value);
+    if (!contract) return toast('Pick the client this meeting was for.', true);
+    act(() => timeApi(`/meetings/${m.id}/log`, { body: { contract_id: contract,
+      deliverable_id: Number($('#mpD').value) || null, minutes: Number($('#mpMin').value) || m.minutes, note: m.title } }), 'Meeting logged.');
+  });
+  $('#mpNo').addEventListener('click', () => act(() => timeApi(`/meetings/${m.id}/dismiss`, { body: {} })));
+  $('#mpNever').addEventListener('click', () => {
+    if (!confirm(`Never offer “${m.title}” meetings again? You can undo this under Meetings from Outlook.`)) return;
+    act(() => timeApi(`/meetings/${m.id}/ignore`, { body: {} }), `“${m.title}” will no longer be offered.`);
   });
 }
 
@@ -2489,7 +2546,9 @@ function openOutlookPanel(cal) {
     <div class="rowline"><button class="btn small" id="olSync">Read it now</button><span class="spacer"></span>
       <button class="btn small danger" id="olOff">Disconnect</button></div>
     <div class="rowline"><input type="url" id="olUrl" placeholder="paste a new link to replace it" style="flex:1">
-      <button class="btn small primary" id="olGo">Replace</button></div>` : `
+      <button class="btn small primary" id="olGo">Replace</button></div>
+    ${(cal.ignored || []).length ? `<div class="tmeta">Always ignored:
+      ${cal.ignored.map((t) => `<button class="btn small olUn" data-t="${esc(t)}" title="Offer these meetings again">${esc(t)} ✕</button>`).join(' ')}</div>` : ''}` : `
     <div class="tmeta">Link your own calendar and your meetings turn up on your time sheet, ready to confirm
       against a client. Only you can link yours.
       <ol style="margin:8px 0 0 18px;padding:0">
@@ -2514,6 +2573,8 @@ function openOutlookPanel(cal) {
     run(e.target, 'Reading…', () => timeApi('/calendar-import', { body: { url } }),
       (r) => `Calendar connected — ${r.meetings} meeting${r.meetings === 1 ? '' : 's'} in the last three weeks and next two.`);
   });
+  p.querySelectorAll('.olUn').forEach((b) => b.addEventListener('click', (e) => run(e.target, '…',
+    () => timeApi('/calendar-import/unignore', { body: { title: b.dataset.t } }), () => 'Those meetings will be offered again.')));
   $('#olSync')?.addEventListener('click', (e) => run(e.target, 'Reading…',
     () => timeApi('/calendar-import/sync', { body: {} }), () => 'Calendar read.'));
   $('#olOff')?.addEventListener('click', (e) => {
@@ -3003,6 +3064,7 @@ function renderTimeWeek(v) {
   };
   v.blocks.forEach((b) => stretch(b.start, b.minutes));
   v.entries.forEach((e) => stretch(e.start, e.minutes));
+  (v.meetings || []).forEach((m) => stretch(m.start, m.minutes));
   const height = (hi - lo) * T_PPM;
 
   const hours = [];
@@ -3026,6 +3088,9 @@ function renderTimeWeek(v) {
           <span>${b.anchored ? '📌 ' : ''}${esc(b.label)}</span><em>${hm(b.minutes)}${b.status === 'done' ? ' ✓' : b.status === 'skipped' ? ' ✗' : ''}</em>
           ${b.status === 'pending' && !b.anchored ? `<div class="tw-resize" data-kind="gresize" data-id="${b.id}"></div>` : ''}
         </div>`).join('')}
+        ${(v.meetings || []).filter((m) => m.date === d).map((m) => `<div class="tw-meet" data-kind="meet" data-id="${m.id}"
+            style="${pos(m.start, m.minutes)}" title="from your calendar: ${esc(m.title)} (${hm(m.minutes)}) — click to ${m.date > todayIso() ? 'see it' : 'log it against a client'}">
+          <span>📅 ${esc(m.title)}</span><em>${hm(m.minutes)}</em></div>`).join('')}
         ${solids.map((e) => { const past = e.date < todayIso(); return `<div class="tw-entry ${e.source}${past ? ' locked' : ''}" data-kind="entry" data-id="${e.id}"
             style="${pos(e.start, e.minutes)}" title="logged: ${esc(e.contract_name || '')} (${hm(e.minutes)})${past ? ' — a past day: drag or resize to correct it' : ''}${esc(usageTitle(e.contract_id, e.deliverable_id, v.usage))}">
           <span>${esc(e.contract_name || '')}${e.deliverable_name ? ` — ${esc(e.deliverable_name)}` : ''}</span>
@@ -3095,6 +3160,12 @@ function wireWeekDrag(v, lo) {
         .then(() => renderTime()).catch((err) => toast(err.message, true));
       return;
     }
+    if (kind === 'meet') {
+      // a calendar meeting is not ours to move — a click opens it
+      drag = { kind: 'meet', id: Number(t.dataset.id), startX: ev.clientX, startY: ev.clientY, moved: false };
+      ev.preventDefault();
+      return;
+    }
     if (kind === 'ghost') {
       const b = v.blocks.find((x) => x.id === Number(t.dataset.id));
       if (b && b.anchored) {
@@ -3130,7 +3201,7 @@ function wireWeekDrag(v, lo) {
       return;
     }
     if (drag.kind === 'locked') return;
-    if (drag.kind === 'empty' || drag.kind === 'ghostfixed') {
+    if (drag.kind === 'empty' || drag.kind === 'ghostfixed' || drag.kind === 'meet') {
       if (Math.abs(ev.clientX - drag.startX) + Math.abs(ev.clientY - drag.startY) > 4) drag.moved = true;
       return;
     }
@@ -3160,6 +3231,11 @@ function wireWeekDrag(v, lo) {
       if (d.kind === 'locked') { openEntryEditor(d.entry); return; }
       if (d.kind === 'empty') {
         if (!d.moved) openAddEntryPanel(d.slot.date, fromMinOfDay(d.slot.min));
+        return;
+      }
+      if (d.kind === 'meet') {
+        const m = (v.meetings || []).find((x) => x.id === d.id);
+        if (m && !d.moved) openMeetingPanel(m, v);
         return;
       }
       if (d.kind === 'ghostfixed') {

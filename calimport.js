@@ -26,6 +26,13 @@ CREATE TABLE IF NOT EXISTS calendar_events (
   UNIQUE (person_id, uid, date, start)
 );
 CREATE INDEX IF NOT EXISTS calendar_events_person_date ON calendar_events (person_id, date);
+-- titles a person never wants offered (a daily huddle already covered by a
+-- fixed commitment, say)
+CREATE TABLE IF NOT EXISTS calendar_ignores (
+  person_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  PRIMARY KEY (person_id, title)
+);
 `);
 
 const ALLOWED_HOSTS = [
@@ -316,7 +323,7 @@ async function syncAll() {
 function status(personId) {
   const l = db.prepare('SELECT last_sync, last_error FROM calendar_links WHERE person_id = ?').get(personId);
   // the link itself is never sent back — it reads the person's whole diary
-  return l ? { connected: true, last_sync: l.last_sync, last_error: l.last_error } : { connected: false };
+  return l ? { connected: true, last_sync: l.last_sync, last_error: l.last_error, ignored: ignoredTitles(personId) } : { connected: false };
 }
 
 async function connect(personId, url) {
@@ -371,6 +378,8 @@ function meetingsFor(personId, from, to, assignments) {
     WHERE person_id = ? AND date >= ? AND date <= ? AND status = 'pending'
     ORDER BY date, start`).all(personId, from, to);
   if (!rows.length) return [];
+  const ignored = new Set(db.prepare('SELECT title FROM calendar_ignores WHERE person_id = ?')
+    .all(personId).map((r) => r.title));
   const taken = [
     ...db.prepare(`SELECT date, start, minutes FROM time_entries
       WHERE person_id = ? AND date >= ? AND date <= ? AND start IS NOT NULL AND source != 'skip'`).all(personId, from, to),
@@ -379,6 +388,7 @@ function meetingsFor(personId, from, to, assignments) {
   ];
   const contracts = (assignments || []).map((a) => ({ id: a.contract_id, name: a.name }));
   return rows.filter((m) => {
+    if (ignored.has(norm(m.title))) return false;
     const s = toMin(m.start); const e = s + m.minutes;
     return !taken.some((x) => {
       if (x.date !== m.date) return false;
@@ -400,6 +410,21 @@ function dismiss(personId, id) {
   return { dismissed: m.id };
 }
 
+/** Never offer meetings with this one's title again (and hide those waiting). */
+function ignoreTitle(personId, id) {
+  const m = getMeeting(personId, id);
+  db.prepare('INSERT OR IGNORE INTO calendar_ignores (person_id, title) VALUES (?, ?)').run(personId, norm(m.title));
+  return { ignored: m.title };
+}
+const ignoredTitles = (personId) =>
+  db.prepare('SELECT title FROM calendar_ignores WHERE person_id = ? ORDER BY title').all(personId).map((r) => r.title);
+function unignoreTitle(personId, title) {
+  db.prepare('DELETE FROM calendar_ignores WHERE person_id = ? AND title = ?').run(personId, String(title || ''));
+  return { ignored: ignoredTitles(personId) };
+}
+/** How far back meetings are kept for confirming. */
+const lookbackFrom = () => new Date(Date.parse(`${londonToday()}T00:00:00Z`) - BACK_DAYS * DAY).toISOString().slice(0, 10);
+
 /** Called once the time entry exists. */
 function markLogged(personId, id, entryId) {
   const m = getMeeting(personId, id);
@@ -408,5 +433,6 @@ function markLogged(personId, id, entryId) {
 
 module.exports = {
   connect, disconnect, sync, syncAll, status, meetingsFor, getMeeting, dismiss, markLogged,
+  ignoreTitle, unignoreTitle, lookbackFrom, londonToday,
   _internal: { parseIcs, occurrences, meetingsFrom, toLondon, guessContract, checkUrl },
 };

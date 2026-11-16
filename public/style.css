@@ -400,6 +400,12 @@ tr.tentry.skip td { opacity: 0.5; }
 .tw-ghost { border: 1px solid var(--accent-2); color: var(--accent); background: transparent; }
 .tw-ghost.pending { background: color-mix(in srgb, var(--accent-2) 7%, transparent); cursor: grab; }
 .tw-ghost.done, .tw-ghost.skipped { opacity: 0.35; }
+/* a meeting from the person's own calendar: a suggestion, not plan or record */
+.tw-meet { position: absolute; left: 18%; right: 3px; white-space: nowrap; text-overflow: ellipsis; z-index: 3; overflow: hidden; cursor: pointer;
+  border: 1px dashed #7a5cc4; border-radius: 6px; padding: 2px 6px; font-size: .72rem; line-height: 1.25;
+  color: #5a3fa8; background: color-mix(in srgb, #7a5cc4 12%, var(--surface, #fff)); }
+.tw-meet span { display: block; overflow: hidden; text-overflow: ellipsis; }
+.tw-meet em { display: block; font-style: normal; font-weight: 600; }
 .tw-ghost.skipped { text-decoration: line-through; cursor: pointer; }
 .tw-ghost em, .tw-entry em { display: block; font-style: normal; font-weight: 600; }
 .tw-entry { background: var(--accent); color: #fff; cursor: grab; z-index: 2;
