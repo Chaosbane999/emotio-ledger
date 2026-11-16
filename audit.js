@@ -117,9 +117,12 @@ for (const P of periods) {
       for (const m of c.pot_months) {
         ok(near(m.counts_units, m.logged_units + m.third_party_units, 0.02),
           `${P} ${c.name} ${m.period}: a month draws only its logged time and third-party spend (${m.counts_units})`);
-        if (m.period >= now) plannedAhead += Math.max(0, m.allocated_units - m.logged_units);
+        // only months inside the pot's run — a plan outside it is ignored
+        if (m.period >= now && m.period >= c.pot_start && m.period <= c.pot_end) {
+          plannedAhead += Math.max(0, m.allocated_units - m.logged_units);
+        }
       }
-      ok(near(c.pot_planned, plannedAhead, 0.02), `${P} ${c.name}: planned ahead = this month's unworked plan + later months' plans`);
+      ok(near(c.pot_planned, plannedAhead, 0.02), `${P} ${c.name}: planned ahead = this month's unworked plan + later months' plans, inside the run`);
       ok(near(c.pot_plan_over, Math.max(0, c.pot_planned - c.pot_remaining), 0.02), `${P} ${c.name}: plan overrun = planned - remaining, floored at 0`);
       ok(c.months_left >= 0, `${P} ${c.name}: months left not negative`);
     }
