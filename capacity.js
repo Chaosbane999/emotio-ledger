@@ -392,6 +392,47 @@ function anchorLines(contract, period) {
 }
 
 // ---------------------------------------------------------------------------
+// Contract changes — a retainer worth something different for a spell.
+// ---------------------------------------------------------------------------
+
+/** Every dated change on a contract, oldest first. */
+function changesFor(contractId) {
+  return db.prepare('SELECT * FROM contract_changes WHERE contract_id = ? ORDER BY starts_on, id')
+    .all(contractId);
+}
+
+/** The change covering a month, if any. Changes work in whole months. */
+function changeIn(contractId, period) {
+  return changesFor(contractId).find((ch) => ch.starts_on.slice(0, 7) <= period
+    && (!ch.ends_on || ch.ends_on.slice(0, 7) >= period)) || null;
+}
+
+/** What a retainer is worth in a month: the change in force, else the original. */
+function monthlyUnitsIn(contract, period) {
+  const ch = changeIn(contract.id, period);
+  return ch ? ch.monthly_units : contract.monthly_units;
+}
+
+/**
+ * The change someone needs to look at today: its review date has arrived and
+ * nobody has yet said what happens next. One with no end date and no review
+ * date never asks.
+ */
+function changeReviewDue(contractId) {
+  const today = todayIso();
+  return changesFor(contractId).find((ch) => !ch.reviewed_at
+    && (ch.review_on || ch.ends_on) && (ch.review_on || ch.ends_on) <= today) || null;
+}
+
+/** A change as the browser sees it. */
+function changeView(ch, contract) {
+  if (!ch) return null;
+  return { id: ch.id, starts_on: ch.starts_on, ends_on: ch.ends_on || null, label: ch.label,
+    note: ch.note, review_on: ch.review_on || null, reviewed: Boolean(ch.reviewed_at),
+    monthly_units: ch.monthly_units, original_units: contract.monthly_units };
+}
+
+// ---------------------------------------------------------------------------
 // Contract reconciliation.
 // ---------------------------------------------------------------------------
 
@@ -452,7 +493,9 @@ function contractSummary(contract, period) {
   // reconcile it against. It is simply the hours recorded. Deriving a "budget"
   // from the utilisation target produced a balance that looked meaningful and
   // was not — and one dominated by whoever happened to be most expensive.
-  const contractedUnits = contract.type === 'internal' || !inRun ? 0 : contract.monthly_units;
+  const change = contract.type === 'retainer' ? changeIn(contract.id, period) : null;
+  const contractedUnits = contract.type === 'internal' || !inRun ? 0
+    : change ? change.monthly_units : contract.monthly_units;
 
   const availableUnits = contractedUnits + (co.units || 0);
   const variance = round2(availableUnits - allocatedUnits);
@@ -470,6 +513,11 @@ function contractSummary(contract, period) {
     run_state: state,
     ended: Boolean(contract.ends_on && contract.ends_on < todayIso()),
     not_started: Boolean(contract.starts_on && contract.starts_on > todayIso()),
+    // a dated change to the terms: the one in force this month, and the one
+    // (any month) whose review date has come round
+    change: changeView(change, contract),
+    change_review: contract.type === 'retainer' && !contract.archived
+      ? changeView(changeReviewDue(contract.id), contract) : null,
     logged_hours: round2(loggedMin / 60),
     period,
     lines,
@@ -881,6 +929,7 @@ function personView(personId, period) {
 }
 
 module.exports = {
+  changesFor, changeIn, monthlyUnitsIn, changeReviewDue, changeView,
   periodOf, thisPeriod, parsePeriod, shiftPeriod,
   workingDates, workingDays, weekBuckets, monthHours, teamHours,
   patternOf, dayMinutes, capacityMinutes, isoDow, toMinutes,

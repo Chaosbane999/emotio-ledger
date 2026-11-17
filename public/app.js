@@ -650,6 +650,41 @@ async function renderPerson() {
 
 const ukDate = (d) => (d ? String(d).split('-').reverse().join('/') : '');
 
+/** "01/12/2026 to 28/02/2027" or "from 01/12/2026, until further notice". */
+function changeSpan(ch) {
+  return ch.ends_on ? `${ukDate(ch.starts_on)} to ${ukDate(ch.ends_on)}` : `from ${ukDate(ch.starts_on)}, until further notice`;
+}
+
+/** The "what happens next?" banner for a contract change whose review is due. */
+function changeReviewBanner(ch, name) {
+  const what = ch.label ? `"${esc(ch.label)}"` : 'The change';
+  return `<div class="banner warn"><div><b>${name ? `${esc(name)}: time` : 'Time'} to review ${ch.label ? `the change ${what}` : 'this contract change'}.</b>
+    ${showsMoney() ? `${units(ch.monthly_units)} a month instead of ${units(ch.original_units)}, ` : ''}${ch.ends_on ? `ending ${ukDate(ch.ends_on)}` : 'with no end date'}.
+    Is the contract going back to its original terms, carrying on like this, or being extended?</div>
+    ${showsMoney() ? `<div class="rowline" style="gap:6px;flex-wrap:wrap">
+      <button class="btn small" data-chrev="revert" data-chid="${ch.id}">Back to original${ch.ends_on ? ` after ${ukDate(ch.ends_on)}` : ''}</button>
+      <button class="btn small" data-chrev="extend" data-chid="${ch.id}">Extend or amend…</button>
+      <button class="btn small" data-chrev="permanent" data-chid="${ch.id}">Keep it until further notice</button></div>` : ''}</div>`;
+}
+
+/** Wire the buttons of every review banner on the page. */
+function wireChangeReview(contractIdOf, after) {
+  for (const b of view().querySelectorAll('[data-chrev]')) {
+    b.addEventListener('click', async () => {
+      const cid = contractIdOf(b);
+      if (b.dataset.chrev === 'extend') {
+        S.contractId = cid;
+        return openContractEditor(S.boot.contracts.find((x) => x.id === cid), Number(b.dataset.chid));
+      }
+      try {
+        await api(`/api/contract/${cid}/changes/${b.dataset.chid}/review`, { body: { action: b.dataset.chrev } });
+        toast(b.dataset.chrev === 'permanent' ? 'Kept until further notice.' : 'Noted — the original terms come back when it ends.');
+        after();
+      } catch (e) { toast(e.message, true); }
+    });
+  }
+}
+
 async function renderContracts() {
   if (!S.contractId) {
     const a = await api(`/api/contract-summaries${P()}${S.showArchived ? '&archived=1' : ''}`);
@@ -659,6 +694,7 @@ async function renderContracts() {
         <label class="tick"><input type="checkbox" id="cArch"${S.showArchived ? ' checked' : ''}> show archived</label>
         <span class="spacer"></span>
         ${showsMoney() ? '<button class="btn small primary" id="newContract">New contract</button>' : ''}</div>
+      ${a.contracts.filter((c) => c.change_review).map((c) => `<div data-chc="${c.contract_id}">${changeReviewBanner(c.change_review, c.name)}</div>`).join('')}
       <div class="card"><div class="scroll"><table>
         <thead><tr><th>Contract</th><th>Owner</th><th>Type</th><th>Status</th>
           ${showsMoney() ? '<th class="num">Contracted</th><th class="num">Allocated</th>' : ''}
@@ -679,7 +715,9 @@ async function renderContracts() {
             <td>${c.ended && !cc.archived
               ? `<span class="pill bad" title="Its run dates have passed. Extend the Runs to date, or archive it.">Campaign ended</span><span class="sub">${ukDate(c.ends_on)} · extend or archive</span>`
               : c.status === 'live' ? `<span class="pill ok">Live</span>${c.not_started ? `<span class="sub">starts ${ukDate(c.starts_on)}</span>` : ''}`
-              : c.status === 'pipeline' ? '<span class="pill warn">Pipeline</span>' : '<span class="pill mute">Hold</span>'}</td>
+              : c.status === 'pipeline' ? '<span class="pill warn">Pipeline</span>' : '<span class="pill mute">Hold</span>'}
+              ${c.change_review ? '<span class="pill warn" title="A contract change has reached its review date.">Review change</span>' : ''}
+              ${c.change ? `<span class="sub" title="A contract change is in force this month.">${esc(c.change.label || 'Changed terms')} · ${c.change.ends_on ? `to ${ukDate(c.change.ends_on)}` : 'until further notice'}</span>` : ''}</td>
             ${showsMoney() ? `<td class="num">${units(c.type === 'pot' ? c.pot_units : c.contracted_units)}</td>
             <td class="num">${units(c.allocated_units)}</td>` : ''}
             <td class="progress-cell">${c.type === 'pot'
@@ -695,6 +733,7 @@ async function renderContracts() {
         }).join('');
         }).join('')}</tbody></table></div></div>`;
     $('#newContract')?.addEventListener('click', () => openContractEditor(null));
+    wireChangeReview((b) => Number(b.closest('[data-chc]').dataset.chc), renderContracts);
     $('#cSearch').addEventListener('input', (e) => {
       const q = e.target.value.trim().toLowerCase();
       for (const tr of view().querySelectorAll('#cBody tr')) {
@@ -809,6 +848,10 @@ async function renderContractDetail(id) {
       No hours are planned or shown past that date. Extend the Runs to date under Edit contract to carry on, or archive it.</div></div>`
     : s.ended && !c.archived ? `<div class="banner bad"><div><b>Campaign ended on ${ukDate(c.ends_on)}.</b>
       Extend the Runs to date under Edit contract to carry on, or archive it.</div></div>` : ''}
+    ${s.change_review ? changeReviewBanner(s.change_review) : ''}
+    ${s.change ? `<div class="banner info"><div><b>Changed terms in ${esc(monthName(S.period))}${s.change.label ? `: ${esc(s.change.label)}` : ''}.</b>
+      ${showsMoney() ? `${units(s.change.monthly_units)} a month instead of the original ${units(s.change.original_units)}, ` : 'Running '}${changeSpan(s.change)}.
+      ${s.change.note ? esc(s.change.note) : ''}</div></div>` : ''}
 
     <div class="balance ${s.balanced ? '' : 'bad'}">
       <div class="item"><span class="k">${isPot ? 'Pot' : 'Contracted'}</span>
@@ -951,6 +994,7 @@ function wireContractDetail(id, deliverables) {
   $('#backC').addEventListener('click', () => { S.contractId = null; renderContracts(); });
   renderTimeReport(id);      // fills in behind the fold while the page is live
   $('#editC').addEventListener('click', () => openContractEditor(S.boot.contracts.find((c) => c.id === id)));
+  wireChangeReview(() => id, () => renderContractDetail(id));
 
   const saveLine = async (deliverable_id, person_id, hours) => {
     await api('/api/allocation', { body: { contract_id: id, period: S.period, person_id, deliverable_id, hours } });
@@ -1086,7 +1130,80 @@ function normMonth(v) {
   return t;
 }
 
-function openContractEditor(c) {
+/**
+ * Contract changes, on the Edit contract page: the retainer is worth something
+ * different for a set spell, and a review date asks what happens afterwards.
+ */
+async function renderChangeCard(c, editId) {
+  const el = document.getElementById('cChanges');
+  if (!el) return;
+  const changes = (await api(`/api/contract/${c.id}${P()}`)).changes || [];
+  const ed = changes.find((x) => x.id === editId) || null;
+  const monthsOf = (ch) => (ch.ends_on
+    ? (Number(ch.ends_on.slice(0, 4)) - Number(ch.starts_on.slice(0, 4))) * 12
+      + Number(ch.ends_on.slice(5, 7)) - Number(ch.starts_on.slice(5, 7)) + 1 : '');
+  const today = new Date().toISOString().slice(0, 10);
+  el.innerHTML = `<div class="card">
+    <header><h2>Contract changes</h2>
+      <p>For when the contract is worth something different for a spell — a reduced service, a pause, a temporary extra.
+      The monthly units above stay as the original and come back when the change ends.</p></header>
+    ${changes.length ? `<div class="scroll"><table>
+      <thead><tr><th>What changes</th><th>Runs</th><th class="num">Monthly units</th><th>Review</th><th></th></tr></thead>
+      <tbody>${changes.map((ch) => `<tr${ch.ends_on && ch.ends_on < today ? ' class="archived"' : ''}>
+        <td>${esc(ch.label || '—')}${ch.note ? `<span class="sub">${esc(ch.note)}</span>` : ''}</td>
+        <td>${changeSpan(ch)}</td>
+        <td class="num">${units(ch.monthly_units)}</td>
+        <td>${ch.reviewed ? '<span class="pill ok">decided</span>'
+          : ch.review_on ? (ch.review_on <= today ? '<span class="pill warn">due now</span>' : ukDate(ch.review_on))
+          : '<span class="muted">—</span>'}</td>
+        <td class="num"><button class="btn small" data-ched="${ch.id}">Edit</button>
+          <button class="btn small danger" data-chrm="${ch.id}">Remove</button></td></tr>`).join('')}</tbody></table></div>` : ''}
+    <div class="body">
+      <div class="rowline"><label>${ed ? 'Edit change' : 'New change'}</label>
+        <input type="text" id="chLabel" value="${esc(ed?.label || '')}" placeholder="What changes, e.g. BGRL only" style="flex:1;min-width:220px"></div>
+      <div class="rowline"><label>From</label>
+        <input type="date" id="chFrom" value="${esc(ed?.starts_on || '')}" style="width:160px">
+        <label style="min-width:auto">for</label>
+        <input type="number" id="chMonths" min="1" step="1" value="${ed ? monthsOf(ed) : ''}" style="width:80px">
+        <span class="muted">months — leave blank for until further notice. Changes run in whole months.</span></div>
+      <div class="rowline"><label>Monthly units</label>
+        <input type="number" id="chUnits" step="0.5" min="0" value="${ed ? h(ed.monthly_units) : ''}">
+        <span class="muted">instead of the original ${units(c.monthly_units)}</span></div>
+      <div class="rowline"><label>Review on</label>
+        <input type="date" id="chReview" value="${esc(ed?.review_on || '')}" style="width:160px">
+        <span class="muted">When to be asked what happens next. Blank: the start of its last month.</span></div>
+      <div class="rowline"><label>Note</label>
+        <input type="text" id="chNote" value="${esc(ed?.note || '')}" placeholder="Why, and what was agreed" style="flex:1;min-width:220px"></div>
+      <div class="rowline"><span class="spacer"></span>
+        ${ed ? '<button class="btn small" id="chCancel">Cancel</button>' : ''}
+        <button class="btn primary" id="chSave">${ed ? 'Save change' : 'Add change'}</button></div>
+    </div></div>`;
+
+  $('#chCancel')?.addEventListener('click', () => renderChangeCard(c));
+  $('#chSave').addEventListener('click', async () => {
+    if (!$('#chFrom').value) return toast('Say when the change starts.', true);
+    if ($('#chUnits').value === '') return toast('Say how many units a month it is worth during the change.', true);
+    try {
+      await api(`/api/contract/${c.id}/changes`, { body: { id: ed?.id, label: $('#chLabel').value,
+        starts_on: $('#chFrom').value, months: $('#chMonths').value, monthly_units: Number($('#chUnits').value),
+        review_on: $('#chReview').value || null, note: $('#chNote').value } });
+      toast(ed ? 'Change saved.' : 'Change added.');
+      renderChangeCard(c);
+    } catch (e) { toast(e.message, true); }
+  });
+  for (const b of el.querySelectorAll('[data-ched]')) {
+    b.addEventListener('click', () => renderChangeCard(c, Number(b.dataset.ched)));
+  }
+  for (const b of el.querySelectorAll('[data-chrm]')) {
+    b.addEventListener('click', async () => {
+      if (!confirm('Remove this change? Those months go back to the original monthly units.')) return;
+      try { await api(`/api/contract/${c.id}/changes/${b.dataset.chrm}`, { method: 'DELETE' }); renderChangeCard(c); }
+      catch (e) { toast(e.message, true); }
+    });
+  }
+}
+
+function openContractEditor(c, editChangeId) {
   const people = S.boot.people;
   const f = (k, d = '') => esc(c?.[k] ?? d);
   view().innerHTML = `
@@ -1136,7 +1253,9 @@ function openContractEditor(c) {
       <div class="rowline"><span class="spacer"></span>
         ${c && showsMoney() ? '<button class="btn danger small" id="cDel">Archive</button>' : ''}
         <button class="btn primary" id="cSave">Save</button></div>
-    </div></div>`;
+    </div></div>
+    <div id="cChanges"></div>`;
+  if (c && showsMoney() && c.type === 'retainer') renderChangeCard(c, editChangeId);
 
   $('#backE').addEventListener('click', () => { if (c) renderContractDetail(c.id); else { S.contractId = null; renderContracts(); } });
 

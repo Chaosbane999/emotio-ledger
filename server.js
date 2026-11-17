@@ -642,11 +642,86 @@ app.get('/api/contract/:id', ok((req, res) => {
   send(req, res, {
     contract: c,
     summary: cap.contractSummary(c, p),
+    changes: cap.changesFor(c.id).map((ch) => cap.changeView(ch, c)),
     channels: db.prepare('SELECT channel_id FROM contract_channels WHERE contract_id = ?')
       .all(c.id).map((r) => r.channel_id),
     actuals: actuals.map((a) => ({ ...a, hours: cap.round2(a.hours) })),
     actual_hours: cap.round2(actuals.reduce((s, a) => s + a.hours, 0)),
   });
+}));
+
+// ---- contract changes: different terms for a spell ------------------------
+// Commercial terms, so administrators only (the member gate has already
+// refused a member writing anywhere under /api/contract/).
+const lastDayOf = (p) => {
+  const [y, m] = p.split('-').map(Number);
+  return `${p}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0')}`;
+};
+const isoDate = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null);
+const changeList = (c) => cap.changesFor(c.id).map((ch) => cap.changeView(ch, c));
+const retainerFor = (req) => {
+  if (!isAdmin(req)) throw new Error('Contract changes are set by an administrator.');
+  const c = db.prepare('SELECT * FROM contracts WHERE id = ?').get(Number(req.params.id));
+  if (!c) throw new Error('no such contract');
+  if (c.type !== 'retainer') throw new Error('Only a retainer has monthly units to change.');
+  return c;
+};
+
+app.post('/api/contract/:id/changes', ok((req, res) => {
+  const c = retainerFor(req); const b = req.body;
+  const from = isoDate(b.starts_on);
+  if (!from) throw new Error('Say which month the change starts.');
+  const startP = from.slice(0, 7);
+  const months = b.months === '' || b.months == null ? null : Math.round(Number(b.months));
+  if (months !== null && !(months >= 1 && months <= 120)) throw new Error('How many months does it last? Leave it blank for until further notice.');
+  const endP = months ? cap.shiftPeriod(startP, months - 1) : null;
+  const units = Number(b.monthly_units);
+  if (!(units >= 0)) throw new Error('Monthly units must be a number.');
+  // changes work in whole months, and only one can be in force in a month
+  const clash = cap.changesFor(c.id).find((ch) => ch.id !== Number(b.id)
+    && (!endP || ch.starts_on.slice(0, 7) <= endP)
+    && (!ch.ends_on || ch.ends_on.slice(0, 7) >= startP));
+  if (clash) throw new Error(`That overlaps the change${clash.label ? ` "${clash.label}"` : ''} already set from ${clash.starts_on.slice(5, 7)}/${clash.starts_on.slice(0, 4)}.`);
+  // asked about a month before it runs out, unless told otherwise
+  const review = isoDate(b.review_on) || (endP ? `${endP}-01` : null);
+  const row = [`${startP}-01`, endP ? lastDayOf(endP) : null, units,
+    String(b.label || '').trim().slice(0, 120), String(b.note || '').trim().slice(0, 500), review];
+  if (b.id) {
+    // saving it again is a fresh decision: the review comes round again
+    const r = db.prepare(`UPDATE contract_changes SET starts_on=?, ends_on=?, monthly_units=?, label=?,
+      note=?, review_on=?, reviewed_at=NULL WHERE id=? AND contract_id=?`).run(...row, Number(b.id), c.id);
+    if (!r.changes) throw new Error('no such change');
+  } else {
+    db.prepare(`INSERT INTO contract_changes (starts_on, ends_on, monthly_units, label, note, review_on, contract_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(...row, c.id);
+  }
+  res.json(changeList(c));
+}));
+
+app.delete('/api/contract/:id/changes/:changeId', ok((req, res) => {
+  const c = retainerFor(req);
+  db.prepare('DELETE FROM contract_changes WHERE id = ? AND contract_id = ?')
+    .run(Number(req.params.changeId), c.id);
+  res.json(changeList(c));
+}));
+
+/**
+ * Answer the review. "revert": it runs out as planned and the original terms
+ * come back (one with no end date stops at the end of this month).
+ * "permanent": it carries on until further notice and stops asking.
+ */
+app.post('/api/contract/:id/changes/:changeId/review', ok((req, res) => {
+  const c = retainerFor(req);
+  const ch = db.prepare('SELECT * FROM contract_changes WHERE id = ? AND contract_id = ?')
+    .get(Number(req.params.changeId), c.id);
+  if (!ch) throw new Error('no such change');
+  if (req.body.action === 'permanent') {
+    db.prepare("UPDATE contract_changes SET ends_on = NULL, review_on = NULL, reviewed_at = datetime('now') WHERE id = ?").run(ch.id);
+  } else if (req.body.action === 'revert') {
+    db.prepare("UPDATE contract_changes SET ends_on = ?, reviewed_at = datetime('now') WHERE id = ?")
+      .run(ch.ends_on || lastDayOf([cap.thisPeriod(), ch.starts_on.slice(0, 7)].sort()[1]), ch.id);
+  } else throw new Error('unknown action');
+  res.json(changeList(c));
 }));
 
 app.get('/api/leave', ok((req, res) => {

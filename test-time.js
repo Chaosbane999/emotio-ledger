@@ -594,5 +594,28 @@ eq(Math.round(lh * 60), p1.logged_minutes, 'loggedHours matches variance by-pers
   db.prepare('DELETE FROM anchors WHERE id = ?').run(aid2);
 }
 
+// --- contract changes: different monthly units for a set spell ---------------
+{
+  const cap = require('./capacity');
+  db.prepare("INSERT INTO contracts (id,name,type,monthly_units) VALUES (95,'Change C','retainer',35)").run();
+  db.prepare(`INSERT INTO contract_changes (contract_id, starts_on, ends_on, monthly_units, label, review_on)
+    VALUES (95, '2026-12-01', '2027-02-28', 20, 'Reduced', '2027-02-01')`).run();
+  const c = db.prepare('SELECT * FROM contracts WHERE id = 95').get();
+  eq(cap.contractSummary(c, '2026-11').contracted_units, 35, 'month before the change keeps the original units');
+  eq(cap.contractSummary(c, '2026-12').contracted_units, 20, 'first month of the change uses its units');
+  eq(cap.contractSummary(c, '2027-02').contracted_units, 20, 'last month of the change uses its units');
+  eq(cap.contractSummary(c, '2027-03').contracted_units, 35, 'the original units come back afterwards');
+  eq(cap.contractSummary(c, '2026-11').change, null, 'no change reported outside its months');
+  eq(cap.contractSummary(c, '2027-01').change.original_units, 35, 'the change reports the original units');
+  eq(cap.changeReviewDue(95), null, 'no review before the review date');
+  db.prepare("UPDATE contract_changes SET review_on = '2020-01-01' WHERE contract_id = 95").run();
+  ok(cap.changeReviewDue(95), 'review is due once its date has passed');
+  db.prepare("UPDATE contract_changes SET reviewed_at = datetime('now') WHERE contract_id = 95").run();
+  eq(cap.changeReviewDue(95), null, 'a decided review stops asking');
+  db.prepare("UPDATE contract_changes SET ends_on = NULL WHERE contract_id = 95").run();
+  eq(cap.contractSummary(c, '2030-06').contracted_units, 20, 'an open-ended change carries on');
+  db.exec('DELETE FROM contract_changes WHERE contract_id = 95');
+}
+
 console.log(`\n${checks} checks run\nall time identities hold`);
 fs.rmSync(process.env.DATA_DIR, { recursive: true, force: true });

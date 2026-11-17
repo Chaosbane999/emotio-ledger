@@ -360,6 +360,24 @@ catch (e) { /* already there */ }
 try { db.exec('ALTER TABLE people ADD COLUMN calendar_token TEXT'); }
 catch (e) { /* already there */ }
 
+// A dated change to a contract's terms: from one month to another (or until
+// further notice) the retainer is worth a different number of units. The
+// contract's own monthly_units stays as the original, so the months before and
+// after the change keep their value, and review_on is when someone should
+// decide what happens when it runs out.
+db.exec(`CREATE TABLE IF NOT EXISTS contract_changes (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  contract_id   INTEGER NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+  starts_on     TEXT    NOT NULL,
+  ends_on       TEXT,
+  monthly_units REAL    NOT NULL DEFAULT 0,
+  label         TEXT    NOT NULL DEFAULT '',
+  note          TEXT    NOT NULL DEFAULT '',
+  review_on     TEXT,
+  reviewed_at   TEXT,
+  created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+)`);
+
 // migration: a contract can start or finish mid-month. Without dates the
 // scheduler spread work across the whole month regardless, booking time after
 // a contract had already ended.
