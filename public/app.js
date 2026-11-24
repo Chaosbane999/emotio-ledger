@@ -2172,7 +2172,7 @@ function wireSettings() {
     toast('Back to the standard week.'); renderSettings();
   }));
 
-  if ($('#aiModel') && st.ai_ready) {
+  if ($('#aiModel') && S.boot.settings.ai_ready) {
     api('/api/ai/models').then((m) => {
       const sel = $('#aiModel'); if (!sel) return;
       sel.innerHTML = m.models.map((id) => `<option value="${esc(id)}"${id === m.current ? ' selected' : ''}>${esc(id)}</option>`).join('');
