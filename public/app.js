@@ -2026,9 +2026,13 @@ async function renderSettings() {
           <div class="rowline"><label>OpenAI key</label>
             <input type="password" id="aiKeyIn" placeholder="${st.ai_ready ? '•••••• stored' : 'sk-…'}" style="flex:1;min-width:180px">
             <button class="btn primary small" id="aiKeySave">Save</button></div>
+          <div class="rowline"><label>Model</label>
+            <select id="aiModel" style="min-width:220px"><option value="${esc(st.ai_model)}">${esc(st.ai_model)}</option></select>
+            <span class="muted" id="aiModelNote">${st.ai_ready ? 'Loading the models your key can use…' : 'Save a key to choose from your models.'}</span></div>
           <p class="muted">Powers <b>✨ Describe your day</b> on the time sheet — everyone types what
           they did, it drafts the entries, they approve. Create a key at platform.openai.com → API keys.
-          Each draft is one small API call.</p>
+          Each draft is one small API call. It also powers <b>Ask the analyst</b> on Reports, which sends
+          the team's time data it needs to OpenAI to answer each question.</p>
         </div>
       </div>
 
@@ -2167,6 +2171,20 @@ function wireSettings() {
     S.boot.people = r.people;
     toast('Back to the standard week.'); renderSettings();
   }));
+
+  if ($('#aiModel') && st.ai_ready) {
+    api('/api/ai/models').then((m) => {
+      const sel = $('#aiModel'); if (!sel) return;
+      sel.innerHTML = m.models.map((id) => `<option value="${esc(id)}"${id === m.current ? ' selected' : ''}>${esc(id)}</option>`).join('');
+      $('#aiModelNote').textContent = m.live ? 'Used for the analyst and Describe your day.'
+        : `Could not load the list${m.error ? ` — ${m.error}` : ''}.`;
+    }).catch(() => {});
+  }
+  $('#aiModel')?.addEventListener('change', async (e) => {
+    await api('/api/settings', { body: { openai_model: e.target.value } });
+    S.boot = await api(`/api/bootstrap${P()}`);
+    toast(`Model set to ${e.target.value}.`);
+  });
 
   $('#aiKeySave')?.addEventListener('click', async () => {
     const key = $('#aiKeyIn').value.trim();
@@ -3659,6 +3677,89 @@ function repRange(preset) {
   return [som(thisM), eom(thisM)];
 }
 
+// ---------------------------------------------------------------------------
+// Ask the analyst — a chat box on Reports. The thread lives in the browser
+// for the session; each question goes to the server with the thread so far.
+// ---------------------------------------------------------------------------
+
+/** The small subset of markdown the analyst is asked to write in. */
+function mdLite(text) {
+  const inline = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  let html = ''; let list = false;
+  const close = () => { if (list) { html += '</ul>'; list = false; } };
+  for (const raw of String(text).split('\n')) {
+    const line = raw.trimEnd();
+    const hd = line.match(/^#{1,4}\s+(.*)$/);
+    const li = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/);
+    if (hd) { close(); html += `<h4>${inline(hd[1])}</h4>`; }
+    else if (li) { if (!list) { html += '<ul>'; list = true; } html += `<li>${inline(li[1])}</li>`; }
+    else if (!line.trim()) close();
+    else { close(); html += `<p>${inline(line)}</p>`; }
+  }
+  close();
+  return html;
+}
+
+const ANALYST_STARTERS = [
+  'Who is not keeping their time sheet up to date this month, and why?',
+  'Which clients are at risk of not getting their allocated hours this month?',
+  'Give me a summary of how the team managed its time last month.',
+  'Who is overloaded and who has spare capacity?',
+];
+
+function renderAnalyst() {
+  const el = document.getElementById('analyst');
+  if (!el) return;
+  S.analyst = S.analyst || { open: false, thread: [], busy: false };
+  const A = S.analyst;
+  const ready = S.boot.settings.ai_ready;
+  el.innerHTML = `<div class="card analyst">
+    <header><h2>Ask the analyst</h2>
+      <p>Questions about the team's time, answered from the live data</p>
+      <span class="spacer"></span>
+      ${A.thread.length ? '<button class="btn small" id="anClear">New conversation</button>' : ''}
+      <button class="btn small" id="anToggle">${A.open ? 'Hide' : 'Open'}</button></header>
+    ${!A.open ? '' : !ready ? `<div class="body"><p class="muted">Add an OpenAI key under Settings → AI assistant to switch this on.</p></div>` : `
+    <div class="an-thread" id="anThread">
+      ${A.thread.length ? A.thread.map((m) => m.role === 'user'
+        ? `<div class="an-msg me">${esc(m.content)}</div>`
+        : `<div class="an-msg ${m.error ? 'err' : ''}">${m.error ? esc(m.content) : mdLite(m.content)}
+            ${m.looked_at?.length ? `<span class="sub">Looked at: ${esc(m.looked_at.join(', ').replace(/_/g, ' '))}</span>` : ''}</div>`).join('')
+        : `<div class="an-starters">${ANALYST_STARTERS.map((q) => `<button class="btn small" data-anq="${esc(q)}">${esc(q)}</button>`).join('')}</div>`}
+      ${A.busy ? '<div class="an-msg muted">Looking through the time sheets…</div>' : ''}
+    </div>
+    <div class="an-ask">
+      <textarea id="anIn" rows="2" placeholder="Ask about the team's time — e.g. why is NLG behind this month?"${A.busy ? ' disabled' : ''}></textarea>
+      <button class="btn primary" id="anSend"${A.busy ? ' disabled' : ''}>Ask</button>
+    </div>`}</div>`;
+
+  const send = async (q) => {
+    q = String(q || '').trim();
+    if (!q || A.busy) return;
+    A.thread.push({ role: 'user', content: q });
+    A.busy = true; renderAnalyst();
+    try {
+      const r = await api('/api/ai/analyst', { body: {
+        messages: A.thread.filter((m) => !m.error).map((m) => ({ role: m.role, content: m.content })) } });
+      A.thread.push({ role: 'assistant', content: r.answer, looked_at: r.looked_at });
+    } catch (e) {
+      A.thread.push({ role: 'assistant', content: e.message, error: true });
+    }
+    A.busy = false; renderAnalyst();
+  };
+
+  $('#anToggle').addEventListener('click', () => { A.open = !A.open; renderAnalyst(); });
+  $('#anClear')?.addEventListener('click', () => { A.thread = []; A.open = true; renderAnalyst(); });
+  $('#anSend')?.addEventListener('click', () => send($('#anIn').value));
+  $('#anIn')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(e.target.value); }
+  });
+  for (const b of el.querySelectorAll('[data-anq]')) b.addEventListener('click', () => send(b.dataset.anq));
+  const th = document.getElementById('anThread');
+  if (th) th.scrollTop = th.scrollHeight;
+  if (A.open && !A.busy) $('#anIn')?.focus();
+}
+
 async function renderReports() {
   if (!S.repFrom) [S.repFrom, S.repTo] = repRange('month');
   const contracts = S.boot.contracts.filter((c) => !c.archived);
@@ -3687,7 +3788,9 @@ async function renderReports() {
       <button class="btn small" id="rpCsv">Export CSV</button>
       <button class="btn small primary" id="rpPdf">Print / Save as PDF</button>
     </div>
+    ${showsMoney() ? '<div id="analyst" class="no-print"></div>' : ''}
     <div id="reportDoc"><p class="muted">Building the report…</p></div>`;
+  renderAnalyst();
 
   const qs = () => {
     const parts = [`from=${S.repFrom}`, `to=${S.repTo}`];

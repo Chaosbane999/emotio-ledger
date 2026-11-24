@@ -164,4 +164,4 @@ async function draftDay(personId, date, text) {
   return { date, entries: valid, dropped };
 }
 
-module.exports = { configured, draftDay };
+module.exports = { configured, draftDay, apiKey, model };

@@ -186,4 +186,4 @@ function handle(req, res) {
   }
 }
 
-module.exports = { handle };
+module.exports = { handle, tools, impl };

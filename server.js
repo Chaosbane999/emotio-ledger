@@ -587,6 +587,7 @@ app.get('/api/bootstrap', ok((req, res) => {
       slack_status_emoji: get('slack_status_emoji') || ':no_entry_sign:',
       slack_log: isAdmin(req) ? slack.recentLog().slice(0, 8) : [],
       ai_ready: ai.configured(),
+      ai_model: ai.model(),
       last_sync: get('last_sync') || '',
       passcode_set: Boolean(get('passcode_hash')),
       staging: process.env.STAGING === '1',
@@ -1251,11 +1252,24 @@ app.post('/api/passcode', ok((req, res) => {
   res.json({ ok: true });
 }));
 
+// ---- the analyst: questions about the team's time, answered from the data --
+// Admin only: it reads everyone's time and the money behind it.
+const analyst = require('./analyst');
+const adminOnly = (req) => { if (!isAdmin(req)) throw new Error('Not available on your account.'); };
+app.get('/api/ai/models', async (req, res) => {
+  try { adminOnly(req); res.json(await analyst.listModels()); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/ai/analyst', async (req, res) => {
+  try { adminOnly(req); res.json(await analyst.ask(req.body.messages)); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 app.post('/api/settings', ok((req, res) => {
   const allowed = ['standard_rate', 'work_start', 'work_end', 'lunch_start', 'lunch_minutes',
     'max_client_minutes_per_day', 'holidays', 'harvest_account_id', 'harvest_token', 'default_period',
     'slack_enabled', 'slack_override', 'slack_status_text', 'slack_status_emoji', 'slack_token',
-    'slack_client_id', 'slack_client_secret', 'openai_api_key'];
+    'slack_client_id', 'slack_client_secret', 'openai_api_key', 'openai_model'];
   for (const [k, v] of Object.entries(req.body)) if (allowed.includes(k)) set(k, v);
   res.json({ ok: true });
 }));
