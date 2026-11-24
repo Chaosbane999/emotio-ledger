@@ -151,9 +151,9 @@ const extraTools = [
       period: { type: 'string', description: 'YYYY-MM, defaults to the current month' } } } },
 ];
 const impl = { ...mcp.impl, timekeeping_health: timekeepingHealth, contracts_at_risk: contractsAtRisk };
+// Responses API tool shape (flat, not nested under "function")
 const toolDefs = [...extraTools, ...mcp.tools].map((t) => ({
-  type: 'function',
-  function: { name: t.name, description: t.description, parameters: t.inputSchema },
+  type: 'function', name: t.name, description: t.description, parameters: t.inputSchema, strict: false,
 }));
 
 const MAX_TOOL_CHARS = 60000;
@@ -211,6 +211,12 @@ async function openai(path, body) {
 /**
  * One turn of the conversation. messages: [{role: 'user'|'assistant', content}]
  * — the browser keeps the thread and sends it each time; nothing is stored here.
+ *
+ * Uses OpenAI's Responses API: the newer models refuse function tools on the
+ * older chat-completions route. Nothing is stored at OpenAI either — the
+ * model's working between tool calls is passed back to it each round
+ * (encrypted) rather than kept on their side. A model that will not work that
+ * way gets one retry with OpenAI holding the turn instead.
  */
 async function ask(messages) {
   const thread = (Array.isArray(messages) ? messages : [])
@@ -219,28 +225,41 @@ async function ask(messages) {
     .map((m) => ({ role: m.role, content: m.content.slice(0, 8000) }));
   if (!thread.length || thread[thread.length - 1].role !== 'user') throw new Error('Ask a question first.');
 
-  const convo = [{ role: 'system', content: system() }, ...thread];
-  const used = [];
-  for (let round = 0; round < 8; round++) {
-    const data = await openai('chat/completions', {
-      model: ai.model(), messages: convo, tools: toolDefs,
-      // the last round must answer with what it has
-      tool_choice: round === 7 ? 'none' : 'auto',
-    });
-    const msg = data.choices?.[0]?.message || {};
-    if (msg.refusal) throw new Error(String(msg.refusal).slice(0, 300));
-    if (!msg.tool_calls?.length) {
-      if (!msg.content) throw new Error('The analyst came back with nothing — try asking again.');
-      return { answer: msg.content, looked_at: [...new Set(used)], model: ai.model() };
+  const run = async (stateless) => {
+    const input = [...thread];
+    const used = [];
+    for (let round = 0; round < 8; round++) {
+      const data = await openai('responses', {
+        model: ai.model(), instructions: system(), input, tools: toolDefs,
+        // the last round must answer with what it has
+        tool_choice: round === 7 ? 'none' : 'auto',
+        ...(stateless ? { store: false, include: ['reasoning.encrypted_content'] } : {}),
+      });
+      const out = Array.isArray(data.output) ? data.output : [];
+      const calls = out.filter((o) => o.type === 'function_call');
+      if (!calls.length) {
+        const parts = out.filter((o) => o.type === 'message').flatMap((o) => o.content || []);
+        const refusal = parts.find((c) => c.type === 'refusal');
+        if (refusal) throw new Error(String(refusal.refusal).slice(0, 300));
+        const answer = parts.filter((c) => c.type === 'output_text').map((c) => c.text).join('\n').trim();
+        if (!answer) throw new Error('The analyst came back with nothing — try asking again.');
+        return { answer, looked_at: [...new Set(used)], model: ai.model() };
+      }
+      // hand back everything it produced (its reasoning and its calls), then the results
+      input.push(...out);
+      for (const call of calls) {
+        used.push(call.name);
+        input.push({ type: 'function_call_output', call_id: call.call_id, output: runTool(call.name, call.arguments) });
+      }
     }
-    convo.push({ role: 'assistant', content: msg.content || null, tool_calls: msg.tool_calls });
-    for (const call of msg.tool_calls) {
-      used.push(call.function?.name);
-      convo.push({ role: 'tool', tool_call_id: call.id,
-        content: runTool(call.function?.name, call.function?.arguments) });
-    }
+    throw new Error('The analyst could not finish — try a narrower question.');
+  };
+
+  try { return await run(true); }
+  catch (e) {
+    if (/encrypted_content|include|store/i.test(e.message)) return run(false);
+    throw e;
   }
-  throw new Error('The analyst could not finish — try a narrower question.');
 }
 
 /**

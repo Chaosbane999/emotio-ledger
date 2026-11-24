@@ -215,7 +215,9 @@ for (const P of periods) {
     let remainMin = 0;
     for (const l of lines) {
       const rem = l.hours * 60 - (loggedBy.get(`${l.contract_id}:${l.deliverable_id}`) || 0);
-      if (rem >= 15) remainMin += rem;
+      // part-logged lines are re-planned on the quarter-hour grain
+      if (loggedBy.has(`${l.contract_id}:${l.deliverable_id}`)) { if (rem >= 15) remainMin += Math.floor(rem / 15) * 15; }
+      else if (rem >= 15) remainMin += rem;
       else if (!loggedBy.has(`${l.contract_id}:${l.deliverable_id}`) && rem > 0) remainMin += rem;
     }
     const keptMin = db.prepare(`SELECT COALESCE(SUM(b.minutes),0) m FROM schedule_blocks b
@@ -232,7 +234,9 @@ for (const P of periods) {
 
     const byDay = {}, byDayKept = {}, byDayContract = {};
     for (const b of plan.blocks) {
-      ok(b.minutes % 15 === 0, `${P} ${p.name}: block on a quarter hour (${b.minutes}m)`);
+      // committed blocks are what happened, to the minute; only what the
+      // scheduler places fresh has to sit on the grain
+      ok(b.kept || b.minutes % 15 === 0, `${P} ${p.name}: block on a quarter hour (${b.minutes}m)`);
       ok(b.start < b.end, `${P} ${p.name}: block start before end`);
       ok(b.minutes > 0, `${P} ${p.name}: block has duration`);
       byDay[b.date] = (byDay[b.date] || 0) + b.minutes;
@@ -259,16 +263,26 @@ for (const P of periods) {
     for (const [k, m] of Object.entries(byDayContract)) {
       if (isWeekend(k.slice(0, 10))) continue;
       const isInternal = plan.blocks.find((b) => `${b.date}|${b.contract_id}` === k)?.contract_type === 'internal';
-      if (!isInternal) ok(m <= maxClient + 0.5, `${P} ${p.name}: ${k} within per-client daily cap (${m})`);
+      // a day someone really did spend on one client is history, not a
+      // scheduling fault — the cap binds only where fresh work was added
+      const anyFresh = plan.blocks.some((b) => `${b.date}|${b.contract_id}` === k && !b.kept);
+      if (!isInternal && anyFresh) ok(m <= maxClient + 0.5, `${P} ${p.name}: ${k} within per-client daily cap (${m})`);
     }
     // no two blocks may overlap on the same day
     const byDate = {};
     for (const b of plan.blocks) (byDate[b.date] = byDate[b.date] || []).push(b);
     for (const [d, list] of Object.entries(byDate)) {
-      const sorted = [...list].sort((x, y) => x.start.localeCompare(y.start));
-      for (let i = 1; i < sorted.length; i++) {
-        ok(sorted[i].start >= sorted[i - 1].end, `${P} ${p.name}: ${d} blocks do not overlap`);
+      // every pair, not just neighbours — a long block can sit over several.
+      // Two committed blocks overlapping is how the day was logged; the
+      // scheduler answers only for what it placed itself.
+      const sorted = list.filter((b) => b.start && b.end).sort((x, y) => x.start.localeCompare(y.start));
+      let clash = false;
+      for (let i = 0; i < sorted.length; i++) {
+        for (let j = i + 1; j < sorted.length && sorted[j].start < sorted[i].end; j++) {
+          if (!(sorted[i].kept && sorted[j].kept)) clash = true;
+        }
       }
+      ok(!clash, `${P} ${p.name}: ${d} blocks do not overlap`);
     }
   }
 }

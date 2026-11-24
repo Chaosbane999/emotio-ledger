@@ -321,8 +321,13 @@ function planPerson(personId, period) {
   const recipeFor = db.prepare('SELECT * FROM recipes WHERE deliverable_id = ?');
 
   const allDates = buckets.flat();
-  const periodFrom = allDates[0];
-  const periodTo = allDates[allDates.length - 1];
+  // The month's own edges, not this person's first and last working day: an
+  // every-other-day commitment is counted along the agency calendar, and
+  // starting the count on a part-timer's first day in put their sittings out
+  // of step with the budget (and with everyone else in the meeting).
+  const monthDates = cap.workingDates(period);
+  const periodFrom = monthDates[0] || allDates[0];
+  const periodTo = monthDates[monthDates.length - 1] || allDates[allDates.length - 1];
   const contractRow = db.prepare('SELECT * FROM contracts WHERE id = ?');
 
   const wanted = [];
@@ -330,8 +335,12 @@ function planPerson(personId, period) {
   for (let r of rows) {
     const loggedMin = loggedBy.get(`${r.contract_id}:${r.deliverable_id}`) || 0;
     if (loggedMin > 0) {
-      r = { ...r, hours: Math.max(0, r.hours - loggedMin / 60) };
-      if (r.hours * 60 < GRAIN) continue;      // fully delivered — nothing left to plan
+      // what is left is planned on the quarter-hour grain: time logged to the
+      // minute (a timer, a 50-minute entry) must not leave a 55-minute block
+      // behind it. The odd minutes under a quarter hour are dropped.
+      const leftMin = Math.floor(Math.max(0, r.hours * 60 - loggedMin) / GRAIN) * GRAIN;
+      if (leftMin < GRAIN) continue;           // fully delivered — nothing left to plan
+      r = { ...r, hours: leftMin / 60 };
     }
     const recipe = ownRecipe.get(personId, r.deliverable_id)
       || recipeFor.get(r.deliverable_id) || DEFAULT_RECIPE;
@@ -449,6 +458,20 @@ function planPerson(personId, period) {
     return false;
   };
 
+  // Remove a stretch from the day's free time whatever it straddles. take()
+  // only works inside one free window, so a committed block running through
+  // lunch, or starting before the day does, used to carve nothing at all —
+  // and fresh work was then planned straight on top of it.
+  const carve = (day, startMin, endMin) => {
+    day.free = day.free.flatMap(([s, e]) => {
+      if (endMin <= s || startMin >= e) return [[s, e]];
+      const rest = [];
+      if (startMin - s >= 15) rest.push([s, startMin]);
+      if (e - endMin >= 15) rest.push([endMin, e]);
+      return rest;
+    });
+  };
+
   const fits = (day, minutes, item) => {
     if (day.used + minutes > day.capMin + 0.01) return false;
     if (item.contract_type !== 'internal') {
@@ -484,7 +507,7 @@ function planPerson(personId, period) {
   for (const kb of keptBlocks) {
     const day = dayOf.get(kb.date);
     if (day && kb.start) {
-      take(day, toMin(kb.start), kb.minutes);
+      carve(day, toMin(kb.start), toMin(kb.start) + kb.minutes);
       day.used += kb.minutes;
       if (kb.contract_id) {
         day.byContract.set(kb.contract_id, (day.byContract.get(kb.contract_id) || 0) + kb.minutes);
@@ -506,7 +529,7 @@ function planPerson(personId, period) {
     const day = iso && dayOf.get(iso);
     if (!day) { unplaced.push(item); continue; }
     const startMin = toMin(item.time || '10:00');
-    if (take(day, startMin, item.minutes) && fits(day, item.minutes, item)) commit(day, startMin, item);
+    if (fits(day, item.minutes, item) && take(day, startMin, item.minutes)) commit(day, startMin, item);
     else unplaced.push(item);
   }
 
@@ -592,6 +615,10 @@ function planPerson(personId, period) {
     const weekends = [...weekendDays.values()].sort((a, b) => a.iso.localeCompare(b.iso));
     const still = [];
     for (const item of unplaced) {
+      // a fixed commitment happens at its own time or not at all — one whose
+      // slot is already taken (usually by time logged over it) is reported,
+      // never moved to a Saturday
+      if (item.anchored) { still.push(item); continue; }
       // a contract window still binds: no weekend outside the dates it ran
       const bounds = item.allowed ? [...item.allowed].sort() : null;
       const legal = weekends.filter((w) => !bounds
@@ -639,7 +666,8 @@ function planPerson(personId, period) {
     period,
     blocks,
     unplaced: [
-      ...unplaced.map((u) => ({ label: u.label, minutes: Math.round(u.minutes), week: u.week + 1, reason: 'no room left that week' })),
+      ...unplaced.map((u) => ({ label: u.label, minutes: Math.round(u.minutes), week: u.week + 1,
+        reason: u.anchored ? 'its slot is already taken' : 'no room left that week' })),
       ...offWindow,
     ],
     totals: {

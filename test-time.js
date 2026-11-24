@@ -617,5 +617,27 @@ eq(Math.round(lh * 60), p1.logged_minutes, 'loggedHours matches variance by-pers
   db.exec('DELETE FROM contract_changes WHERE contract_id = 95');
 }
 
+// --- a rebuild plans round what is already logged ---------------------------
+{
+  const schedule = require('./schedule');
+  db.prepare("INSERT INTO people (id,name,rate) VALUES (96,'Replan Person',100)").run();
+  db.prepare("INSERT INTO contracts (id,name,monthly_units) VALUES (96,'Replan C',100)").run();
+  db.prepare("INSERT INTO allocations (contract_id, period, person_id, deliverable_id, hours) VALUES (96,'2026-08',96,100,20)").run();
+  // a committed block that runs straight through lunch, logged to the minute
+  db.prepare(`INSERT INTO schedule_blocks (id, person_id, period, contract_id, deliverable_id, label, date, start, minutes)
+    VALUES (9601, 96, '2026-08', 96, 100, 'Replan C — SEO', '2026-08-03', '11:00', 240)`).run();
+  db.prepare(`INSERT INTO time_entries (block_id, person_id, contract_id, deliverable_id, date, start, minutes, source)
+    VALUES (9601, 96, 96, 100, '2026-08-03', '11:00', 235, 'adjust')`).run();
+  const plan = schedule.planPerson(96, '2026-08');
+  const fresh = plan.blocks.filter((b) => !b.kept);
+  ok(fresh.length > 0, 'the rest of a part-logged line is still planned');
+  ok(fresh.every((b) => b.minutes % 15 === 0), 'time logged to the minute leaves no odd-length blocks');
+  ok(fresh.every((b) => !(b.date === '2026-08-03' && b.start < '15:00' && b.end > '11:00')),
+    'nothing fresh is planned on top of a committed block that spans lunch');
+  eq(fresh.reduce((s2, b) => s2 + b.minutes, 0) + plan.unplaced.reduce((s2, u) => s2 + u.minutes, 0),
+    Math.floor((20 * 60 - 235) / 15) * 15, 'what is re-planned is the remainder on the quarter-hour grain');
+  db.exec('DELETE FROM time_entries WHERE person_id = 96; DELETE FROM schedule_blocks WHERE person_id = 96; DELETE FROM allocations WHERE person_id = 96');
+}
+
 console.log(`\n${checks} checks run\nall time identities hold`);
 fs.rmSync(process.env.DATA_DIR, { recursive: true, force: true });
