@@ -72,7 +72,9 @@ function dayContext(personId, date) {
     person,
     view: v,
     working_window: { start: get('work_start') || '09:00', end: get('work_end') || '17:30',
-      lunch_start: get('lunch_start') || '13:00', lunch_minutes: Number(get('lunch_minutes') || 30) },
+      lunch_start: get('lunch_start') || '13:00',
+      lunch_minutes: require('./capacity').lunchMinutesOf(
+        db.prepare('SELECT no_lunch, lunch_minutes FROM people WHERE id = ?').get(personId)) },
   };
 }
 

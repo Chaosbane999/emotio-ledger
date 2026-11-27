@@ -292,6 +292,11 @@ db.exec(`
 try { db.exec('ALTER TABLE people ADD COLUMN no_lunch INTEGER NOT NULL DEFAULT 0'); }
 catch (e) { /* already there */ }
 
+// migration: a person's own lunch length — a part-timer on a 30-minute break
+// where the agency takes an hour. NULL means the agency's lunch.
+try { db.exec('ALTER TABLE people ADD COLUMN lunch_minutes INTEGER'); }
+catch (e) { /* already there */ }
+
 // migration: people belong to a department too, so the agency view can show
 // capacity and load per department, not just contracts.
 try { db.exec("ALTER TABLE people ADD COLUMN department TEXT NOT NULL DEFAULT 'marketing'"); }

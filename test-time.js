@@ -515,6 +515,21 @@ eq(Math.round(lh * 60), p1.logged_minutes, 'loggedHours matches variance by-pers
   if (winNL) eq(winNL.length, 1, 'no-lunch day is one unbroken window');
   db.prepare('UPDATE people SET no_lunch = 0 WHERE id = 3').run();
 
+  // their own lunch length: 30 minutes off the day instead of the agency's
+  const stdDay = cap.patternOf(3).get(1).minutes;
+  db.prepare('UPDATE people SET lunch_minutes = 30 WHERE id = 3').run();
+  const pat30 = cap.patternOf(3);
+  eq(pat30.get(1).minutes, 510 - 30, 'a 30-minute lunch takes 30 minutes from the full day');
+  ok(pat30.get(1).minutes >= stdDay, 'a shorter lunch never shortens the day');
+  eq(pat30.get(4).minutes, 210, 'the half day is still untouched');
+  if (sch._internal) {
+    const w30 = sch._internal.personWindows(pat30, '2026-09-07');
+    eq(w30.length, 2, 'the day still breaks for lunch');
+    eq(w30[1][0] - w30[0][1], 30, 'and the break in the plan is 30 minutes');
+  }
+  db.prepare('UPDATE people SET lunch_minutes = NULL WHERE id = 3').run();
+  eq(cap.patternOf(3).get(1).minutes, stdDay, 'clearing it returns them to the agency lunch');
+
   // the scheduler keeps every fresh block inside the pattern
   db.prepare(`INSERT INTO allocations (contract_id, period, person_id, deliverable_id, hours)
     VALUES (10, '2026-09', 3, 100, 20)`).run();

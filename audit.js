@@ -21,12 +21,15 @@ const STD = Number(get('standard_rate') || 100);
 // not through capacity.js, so the two implementations check each other.
 const hm = (t) => { const [h2, m2] = String(t).split(':').map(Number); return (h2 || 0) * 60 + (m2 || 0); };
 const LUNCH_S = hm(get('lunch_start') || '13:00');
-const LUNCH_E = LUNCH_S + Number(get('lunch_minutes') || 30);
+const LUNCH_MIN = Number(get('lunch_minutes') || 30);
 const isoDow = (iso) => ((new Date(`${iso}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;
 function patternMinutes(personId) {
   const rows = db.prepare('SELECT dow, start_time, end_time FROM person_days WHERE person_id = ?').all(personId);
   // no_lunch keeps the day whole — the same rule capacity.patternOf applies
-  const noLunch = Boolean(db.prepare('SELECT no_lunch FROM people WHERE id = ?').get(personId)?.no_lunch);
+  // …and a person's own lunch length, where set, replaces the agency's
+  const pl = db.prepare('SELECT no_lunch, lunch_minutes FROM people WHERE id = ?').get(personId) || {};
+  const noLunch = Boolean(pl.no_lunch);
+  const LUNCH_E = LUNCH_S + (pl.lunch_minutes != null ? pl.lunch_minutes : LUNCH_MIN);
   const byDow = new Map();
   for (const r of rows) {
     const s = hm(r.start_time), e = hm(r.end_time);

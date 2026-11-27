@@ -336,7 +336,7 @@ const okAsync = (fn) => async (req, res) => {
 
 const listPeople = (withArchived) => db.prepare(
   `SELECT id, harvest_user_id, slack_user_id, name, initials, weekly_hours, rate, utilisation, colour,
-          active, sort_order, archived, email, role, department, no_lunch,
+          active, sort_order, archived, email, role, department, no_lunch, lunch_minutes,
           EXISTS (SELECT 1 FROM person_days pd WHERE pd.person_id = people.id) AS has_pattern,
           password_hash != '' AS has_login
      FROM people ${withArchived ? '' : 'WHERE archived = 0'}
@@ -1303,6 +1303,12 @@ app.post('/api/person-days/:id', ok((req, res) => {
 
   if (b.no_lunch !== undefined) {
     db.prepare('UPDATE people SET no_lunch = ? WHERE id = ?').run(b.no_lunch ? 1 : 0, id);
+  }
+  // their own lunch length: null hands them back to the agency's lunch
+  if (b.lunch_minutes !== undefined) {
+    const lm = b.lunch_minutes === null || b.lunch_minutes === '' ? null : Math.round(Number(b.lunch_minutes));
+    if (lm !== null && !(lm >= 0 && lm <= 180)) throw new Error('Lunch is between 0 and 180 minutes.');
+    db.prepare('UPDATE people SET lunch_minutes = ? WHERE id = ?').run(lm, id);
   }
   if (b.clear) {
     db.prepare('DELETE FROM person_days WHERE person_id = ?').run(id);

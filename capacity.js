@@ -92,14 +92,26 @@ const isoDow = (iso) => ((new Date(`${iso}T00:00:00Z`).getUTCDay() + 6) % 7) + 1
  * standard week. Minutes are net of lunch, the same way weekly_hours already
  * is — a 09:00–17:30 day with an hour's lunch is 7.5h, not 8.5.
  */
+/**
+ * How long this person's lunch is, in minutes: none at all, their own length,
+ * or the agency's. It starts when the agency's lunch starts.
+ */
+function lunchMinutesOf(person) {
+  if (!person) return Number(get('lunch_minutes') || 30);
+  if (person.no_lunch) return 0;
+  if (person.lunch_minutes != null) return Number(person.lunch_minutes);
+  return Number(get('lunch_minutes') || 30);
+}
+
 function patternOf(personId) {
   const rows = db.prepare(
     'SELECT dow, start_time, end_time FROM person_days WHERE person_id = ? ORDER BY dow')
     .all(personId);
   if (!rows.length) return null;
   const lunchS = toMinutes(get('lunch_start') || '13:00');
-  const lunchE = lunchS + Number(get('lunch_minutes') || 30);
-  const noLunch = Boolean(db.prepare('SELECT no_lunch FROM people WHERE id = ?').get(personId)?.no_lunch);
+  const lunchMin = lunchMinutesOf(db.prepare('SELECT no_lunch, lunch_minutes FROM people WHERE id = ?').get(personId));
+  const lunchE = lunchS + lunchMin;
+  const noLunch = lunchMin === 0;
   const days = new Map();
   for (const r of rows) {
     const s = toMinutes(r.start_time), e = toMinutes(r.end_time);
@@ -109,6 +121,7 @@ function patternOf(personId) {
   }
   if (!days.size) return null;
   days.noLunch = noLunch;   // the scheduler reads this to leave the day whole
+  days.lunchMin = lunchMin; // and this for how much of the day lunch takes
   return days;
 }
 
@@ -929,6 +942,7 @@ function personView(personId, period) {
 }
 
 module.exports = {
+  lunchMinutesOf,
   changesFor, changeIn, monthlyUnitsIn, changeReviewDue, changeView,
   periodOf, thisPeriod, parsePeriod, shiftPeriod,
   workingDates, workingDays, weekBuckets, monthHours, teamHours,

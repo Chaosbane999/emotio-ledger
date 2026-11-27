@@ -25,10 +25,9 @@ function dayWindows() {
   return carveLunch(start, end);
 }
 
-function carveLunch(start, end) {
+function carveLunch(start, end, lunchLen = Number(get('lunch_minutes') || 30)) {
   const lunch = toMin(get('lunch_start') || '13:00');
-  const lunchLen = Number(get('lunch_minutes') || 30);
-  if (lunch <= start || lunch >= end) return [[start, end]];
+  if (!lunchLen || lunch <= start || lunch >= end) return [[start, end]];
   return [[start, lunch], [Math.min(end, lunch + lunchLen), end]];
 }
 
@@ -37,15 +36,16 @@ function carveLunch(start, end) {
  * day to their own hours; no pattern means the agency-standard day. A day
  * the pattern leaves out has no window at all.
  */
-function personWindows(pattern, iso, noLunch = false) {
+function personWindows(pattern, iso, noLunch = false, lunchLen) {
   if (!pattern) {
-    if (!noLunch) return dayWindows();
-    return [[toMin(get('work_start') || '09:00'), toMin(get('work_end') || '17:30')]];
+    const day = [toMin(get('work_start') || '09:00'), toMin(get('work_end') || '17:30')];
+    return noLunch ? [day] : carveLunch(day[0], day[1], lunchLen);
   }
   const d = pattern.get(cap.isoDow(iso));
   if (!d) return [];
   if (pattern.noLunch || noLunch) return [[toMin(d.start), toMin(d.end)]];
-  return carveLunch(toMin(d.start), toMin(d.end));
+  // the person's own lunch length, where they have one
+  return carveLunch(toMin(d.start), toMin(d.end), pattern.lunchMin ?? lunchLen);
 }
 
 // A backstop against confetti, not a design constraint. It only bites when the
@@ -278,7 +278,7 @@ function planPerson(personId, period) {
     for (const iso of week) {
       dayOf.set(iso, {
         iso,
-        free: personWindows(pattern, iso, Boolean(person.no_lunch)).map(([a, b]) => [a, b]),
+        free: personWindows(pattern, iso, Boolean(person.no_lunch), cap.lunchMinutesOf(person)).map(([a, b]) => [a, b]),
         capMin: pattern ? cap.dayMinutes(person, iso, pattern) : perDayCapMin,
         used: 0,
         byContract: new Map(),

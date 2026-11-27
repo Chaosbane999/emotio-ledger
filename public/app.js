@@ -1780,12 +1780,13 @@ async function renderSettings() {
   const patternWeekHours = (p) => {
     const std = [{ start: st.work_start, end: st.work_end }];
     const days = patterns[p.id] || [1, 2, 3, 4, 5].map(() => std[0]);
-    const lS = toMin(st.lunch_start || '13:00'); const lE = lS + Number(st.lunch_minutes || 30);
+    const own = p.no_lunch ? 0 : p.lunch_minutes != null ? p.lunch_minutes : Number(st.lunch_minutes || 30);
+    const lS = toMin(st.lunch_start || '13:00'); const lE = lS + own;
     let mins = 0;
     for (const d of days) {
       const a = toMin(d.start); const b = toMin(d.end);
       if (b <= a) continue;
-      mins += (b - a) - (p.no_lunch ? 0 : Math.max(0, Math.min(b, lE) - Math.max(a, lS)));
+      mins += (b - a) - Math.max(0, Math.min(b, lE) - Math.max(a, lS));
     }
     return Math.round(mins / 60 * 100) / 100;
   };
@@ -1844,8 +1845,9 @@ async function renderSettings() {
         <p>Who works when. Capacity, the scheduler and the Slack status all follow this</p></header>
       <div class="body" style="border-bottom:1px solid var(--rule)">
         <p class="muted">Each cell is a day's hours as <span class="mono">09:00-17:30</span>; blank
-        means a day off. The agency lunch is carved out of every day unless <b>No lunch</b> is ticked —
-        for someone on mornings only, say. The pattern says <em>when</em> a person is around; their
+        means a day off. The agency lunch (${h(st.lunch_minutes)} min from ${esc(st.lunch_start)}) is carved out of every
+        day unless <b>Lunch</b> says otherwise — a part-timer on a 30-minute break, or none at all for
+        someone on mornings only. The pattern says <em>when</em> a person is around; their
         hours/week (set on the People row above) say how much work they can take. <b>Reset</b>
         returns them to the standard week. Someone on 3.5 days might be
         <span class="mono">09:00-17:30</span> Monday to Wednesday and
@@ -1853,14 +1855,19 @@ async function renderSettings() {
       </div>
       <div class="scroll"><table>
         <thead><tr><th>Person</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th>
-          <th title="Tick for someone whose day has no lunch break in it">No lunch</th>
-          <th class="num" title="What the pattern adds up to, net of lunch unless No lunch is ticked">Pattern</th>
+          <th title="This person's lunch break. Standard is the agency lunch set under Working day.">Lunch</th>
+          <th class="num" title="What the pattern adds up to, net of this person's lunch">Pattern</th>
           <th class="num" title="Allocatable hours/week — set on the People row, or adopt the pattern's figure">Hours/wk</th><th></th></tr></thead>
         <tbody>${S.boot.people.filter((p) => !p.archived && p.active).map((p) => `<tr data-wp="${p.id}">
           <td class="name">${esc(p.name)}
             ${patterns[p.id] ? '<span class="pill ok">custom</span>' : '<span class="pill mute">standard</span>'}</td>
           ${[1, 2, 3, 4, 5].map((d) => patternCell(p, d)).join('')}
-          <td><input type="checkbox" class="wpNL"${p.no_lunch ? ' checked' : ''}></td>
+          <td><select class="wpLunch">${(() => {
+            const cur = p.no_lunch ? '0' : p.lunch_minutes != null ? String(p.lunch_minutes) : '';
+            const opts = [['', `Standard (${h(st.lunch_minutes)} min)`], ['0', 'None'], ['15', '15 min'], ['30', '30 min'], ['45', '45 min'], ['60', '60 min']];
+            if (!opts.some(([v]) => v === cur)) opts.push([cur, `${cur} min`]);
+            return opts.map(([v, t]) => `<option value="${v}"${v === cur ? ' selected' : ''}>${t}</option>`).join('');
+          })()}</select></td>
           <td class="num muted">${h(patternWeekHours(p))} h</td>
           <td class="num">${h(p.weekly_hours)} h${Math.abs(patternWeekHours(p) - p.weekly_hours) > 0.01
             ? `<br><button class="linky wpAdopt" data-h="${patternWeekHours(p)}" title="Set hours/week to what the pattern adds up to">use ${h(patternWeekHours(p))}</button>` : ''}</td>
@@ -2155,7 +2162,9 @@ function wireSettings() {
       if (!m) return toast(`Use 09:00-17:30 or leave the day blank (${['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri'][inp.dataset.dow]}).`, true);
       days.push({ dow: Number(inp.dataset.dow), start: m[1], end: m[2] });
     }
-    const r = await api(`/api/person-days/${tr.dataset.wp}`, { body: { days, no_lunch: $('.wpNL', tr).checked } });
+    const r = await api(`/api/person-days/${tr.dataset.wp}`, { body: { days,
+      no_lunch: $('.wpLunch', tr).value === '0',
+      lunch_minutes: ['', '0'].includes($('.wpLunch', tr).value) ? null : Number($('.wpLunch', tr).value) } });
     S.boot.people = r.people;
     toast('Pattern saved. Weekly hours are unchanged — set those on the People row.'); renderSettings();
   }));
